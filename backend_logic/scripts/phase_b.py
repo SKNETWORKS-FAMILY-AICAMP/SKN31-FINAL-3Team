@@ -23,6 +23,8 @@ ERP_BASE_URL = os.environ["ERPNEXT_BASE_URL"]
 ERP_API_KEY = os.environ["ERPNEXT_API_KEY"]
 ERP_API_SECRET = os.environ["ERPNEXT_API_SECRET"]
 
+tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
 def _erp_headers():
     return {
         "Authorization": f"token {ERP_API_KEY}:{ERP_API_SECRET}",
@@ -118,8 +120,7 @@ def search_new_vendors_node(state: ProcurementState) -> Command[Literal["cleanse
 def tavily_search_vendors(item_name: str, category: str) -> List[dict]:
     """Tavily API로 '{item_name} 공급업체 / 제조사' 웹 검색"""
     
-    client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-    results = client.search(f"{item_name} 공급업체 제조사 견적", max_results=5)
+    results = tavily_client.search(f"{item_name} 공급업체 제조사 견적", max_results=5)
     return [{"name": r["title"], "source_url": r["url"], "raw_snippet": r["content"]} for r in results["results"]]
     
 
@@ -190,12 +191,8 @@ def _enrich_vendor_contact_info(vendor: dict) -> dict:
 
 
 
-
-
-
 def _search_contact(vendor_name: str) -> Optional[str]:
     """Tavily로 업체 대표 연락처(전화번호) 검색"""
-    tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
     # 한국 전화번호 패턴 (지역번호/휴대폰/대표번호)
     _PHONE_PATTERN = re.compile(r"(0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4})")
@@ -221,9 +218,67 @@ def _search_contact(vendor_name: str) -> Optional[str]:
 
 
 def _search_business_reg_no(vendor_name: str) -> Optional[str]:
-    # TODO: 국세청 사업자등록정보 진위확인 API 등
+    """
+    1) Tavily 검색 스니펫에서 사업자등록번호 후보를 정규식으로 추출
+    2) 국세청 상태조회 API로 해당 번호가 실제 등록된 유효 사업자인지 검증
+    """
+    candidate = _extract_biz_reg_no_via_tavily(vendor_name)
+    if not candidate:
+        return None
+
+    if _verify_biz_reg_no(candidate):
+        return candidate
     return None
 
+
+def _extract_biz_reg_no_via_tavily(vendor_name: str) -> Optional[str]:
+
+    _BIZ_REG_PATTERN = re.compile(r"\b(\d{3}-\d{2}-\d{5})\b")
+
+    try:
+        results = tavily_client.search(
+            query=f"{vendor_name} 사업자등록번호",
+            max_results=5,
+            search_depth="basic",
+        )
+    except Exception as e:
+        print(f"[Tavily] biz reg no search failed for {vendor_name}: {e}")
+        return None
+
+    for r in results.get("results", []):
+        text = f"{r.get('title', '')} {r.get('content', '')}"
+        match = _BIZ_REG_PATTERN.search(text)
+        if match:
+            return match.group(1).replace("-", "")  # 국세청 API는 하이픈 없는 10자리 요구
+
+    return None
+
+
+def _verify_biz_reg_no(b_no: str) -> bool:
+    """국세청 상태조회 API로 b_no가 유효(계속사업자)한지 확인"""
+
+    NTS_API_KEY = os.environ["NTS_API_KEY"]
+    NTS_STATUS_URL = "https://api.odcloud.kr/api/nts-businessman/v1/status"
+
+    try:
+        resp = requests.post(
+            NTS_STATUS_URL,
+            params={"serviceKey": NTS_API_KEY, "returnType": "JSON"},
+            json={"b_no": [b_no]},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        print(f"[NTS] status check failed for {b_no}: {e}")
+        return False
+
+    results = data.get("data", [])
+    if not results:
+        return False
+
+    b_stt_cd = results[0].get("b_stt_cd", "")
+    return b_stt_cd == "01"  # 01 = 계속사업자(정상)
 
 def _is_complete(vendor: dict) -> bool:
     return bool(vendor.get("contact")) and bool(vendor.get("business_reg_no"))
