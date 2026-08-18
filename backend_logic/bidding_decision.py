@@ -97,23 +97,37 @@ def _get_all(doctype: str, filters: list, fields: list[str]) -> list[dict]:
 
 
 def _purchase_dates(item_code: str, lookback_days: int) -> tuple[str, ...]:
-    """제출된 구매주문의 실제 거래일을 품목 기준으로 반환한다."""
+    """제출된 구매주문의 실제 거래일을 품목 기준으로 반환한다.
+
+    Purchase Order Item(자식테이블) 직접조회는 권한 에러가 나서,
+    부모 Purchase Order를 가져와 items 배열을 직접 확인하는 방식으로 변경.
+    """
     cutoff = date.today().toordinal() - lookback_days
-    child_rows = _get_all(
-        "Purchase Order Item",
-        filters=[["item_code", "=", item_code], ["docstatus", "=", 1]],
-        fields=["parent"],
+    cutoff_date_str = date.fromordinal(cutoff).isoformat()
+
+    # 자식테이블 대신 부모(Purchase Order)를 날짜로 필터링해서 가져옴
+    # (transaction_date는 부모 자체 필드라 필터링 가능함)
+    purchase_orders = _get_all(
+        "Purchase Order",
+        filters=[
+            ["docstatus", "=", 1],
+            ["transaction_date", ">=", cutoff_date_str],
+        ],
+        fields=["name"],
     )
 
     dates: set[str] = set()
-    for po_name in {row["parent"] for row in child_rows if row.get("parent")}:
-        po = erp_get_one("Purchase Order", po_name)
-        transaction_date = po.get("transaction_date") if po else None
+    for po in purchase_orders:
+        po_doc = erp_get_one("Purchase Order", po["name"])
+        if not po_doc:
+            continue
+        transaction_date = po_doc.get("transaction_date")
         if not transaction_date:
             continue
-        parsed = date.fromisoformat(transaction_date)
-        if parsed.toordinal() >= cutoff:
-            dates.add(parsed.isoformat())
+        # items 배열 안에 이 품목이 있는지 파이썬에서 직접 확인
+        if any(item.get("item_code") == item_code for item in po_doc.get("items", [])):
+            dates.add(transaction_date)
+
     return tuple(sorted(dates))
 
 
