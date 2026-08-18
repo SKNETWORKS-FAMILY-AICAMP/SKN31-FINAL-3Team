@@ -17,7 +17,9 @@ from erp_client import get_pending_material_requests, get_material_request_detai
 from pipeline_graph import app
 
 POLL_INTERVAL_SECONDS = 300
-PENDING_FILE = "pending_reviews.json"
+# ⚠️ 상대경로 대신, 이 파일(watcher.py) 위치 기준 절대경로로 고정
+# (resume_pending.py도 똑같이 고정해야 서로 같은 파일을 보게 됨)
+PENDING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_reviews.json")
 
 processed_mr_names = set()   # 이미 그래프에 넘긴 MR (완료든 대기중이든 상관없이)
 

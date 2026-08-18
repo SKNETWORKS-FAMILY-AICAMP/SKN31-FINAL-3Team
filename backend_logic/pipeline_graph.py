@@ -17,6 +17,7 @@ from typing import TypedDict, Literal, Optional
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 import sqlite3
+import os
 
 from pipeline_nodes import (
     check_stock_node,
@@ -116,7 +117,12 @@ graph.add_edge("bidding_node", END)
 # 파일 기반(sqlite) 체크포인터 — 그래프가 interrupt()로 멈췄을 때 그 상태를
 # 파일에 저장해둠. watcher.py랑 resume_pending.py가 서로 다른 실행이어도
 # 같은 파일을 보니까 "이어서 재개"가 가능해짐.
-_conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
+# ⚠️ 상대경로("checkpoints.sqlite")로 두면 어느 폴더에서 실행하느냐에 따라
+# 서로 다른 파일을 보게 되는 문제가 생겨서, 이 파일(pipeline_graph.py) 자체의
+# 위치를 기준으로 한 절대경로로 고정함.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_DB_PATH = os.path.join(_THIS_DIR, "checkpoints.sqlite")
+_conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
 checkpointer = SqliteSaver(_conn)
 
 app = graph.compile(checkpointer=checkpointer)

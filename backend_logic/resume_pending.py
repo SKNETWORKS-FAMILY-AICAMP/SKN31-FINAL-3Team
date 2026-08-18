@@ -14,7 +14,9 @@ import os
 from langgraph.types import Command
 from pipeline_graph import app
 
-PENDING_FILE = "pending_reviews.json"
+# ⚠️ watcher.py와 반드시 같은 방식(이 파일 위치 기준 절대경로)으로 맞춰야
+# 서로 같은 pending_reviews.json을 보게 됨
+PENDING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_reviews.json")
 
 
 def load_pending():
@@ -51,7 +53,8 @@ def main():
 
     print(f"\n'{info.get('item_name')}' 품절! 대체품을 선택해주세요.")
     for idx, cand in enumerate(info.get("candidates", []), start=1):
-        print(f" {idx}. {cand['name']} (잔여 재고: {cand['qty']}개)  *코드: {cand['code']}")
+        wh_detail = ", ".join(f"{w['warehouse']}:{w['qty']}개" for w in cand.get("warehouses", []))
+        print(f" {idx}. {cand['name']} (총 재고: {cand['qty']}개 / {wh_detail})  *코드: {cand['code']}")
     print(" 0. 적절한 대체품 없음 (신규 발주 진행)")
 
     choice = int(input(">> 번호 입력: "))

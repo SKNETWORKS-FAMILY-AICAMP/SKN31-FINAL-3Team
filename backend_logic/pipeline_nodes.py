@@ -68,7 +68,8 @@ def check_substitute_node(state):
         else:
             print(f"[check_substitute_node] 과거 이력 있으나 현재 품절, AI 추천으로 진행")
 
-    in_stock_dict = get_all_available_candidates(warehouse)
+    # warehouse를 넘기지 않음 → 전체 창고에서 검색 (다른 창고 대체품도 후보로 봄)
+    in_stock_dict = get_all_available_candidates()
     in_stock_dict.pop(item_code, None)
 
     if not in_stock_dict:
@@ -77,7 +78,12 @@ def check_substitute_node(state):
 
     ai_filtered_codes = filter_similar_items_with_ai(item_name, in_stock_dict)
     candidates_list = [
-        {"code": code, "name": in_stock_dict[code]["name"], "qty": in_stock_dict[code]["qty"]}
+        {
+            "code": code,
+            "name": in_stock_dict[code]["name"],
+            "qty": in_stock_dict[code]["qty"],
+            "warehouses": in_stock_dict[code]["warehouses"],  # 창고별 상세 — 사람이 판단할 때 씀
+        }
         for code in ai_filtered_codes
     ]
 

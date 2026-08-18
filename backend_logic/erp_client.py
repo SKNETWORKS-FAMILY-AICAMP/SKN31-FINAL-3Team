@@ -681,21 +681,22 @@ def send_rfq_with_portal_access(rfq_name, supplier_name, contact_email):
         subject=f"Request for Quotation: {rfq_name}",
         content=content,
     )
-
+ 
+ 
 # ============================================================
 # 10. 대체품(Substitute) 관련 — 팀원 check_substitute_node 로직 지원용
 # ============================================================
-
+ 
 def get_item_name(item_code):
     """품목코드로 품목명(item_name)만 간단히 조회."""
     item = erp_get_one("Item", item_code)
     return item.get("item_name", item_code) if item else item_code
-
-
+ 
+ 
 def get_saved_substitute(item_code):
     """
     이 품목에 대해 예전에 사람이 골라뒀던 대체품이 있는지 조회.
-
+ 
     ⚠️ 저장 위치는 Item의 커스텀 필드로 가정함(예: 'preferred_substitute').
     이 필드가 아직 ERPNext에 없으면, Customize Form에서 Item 문서에
     Link 타입 필드로 하나 추가해야 함 (Options: Item).
@@ -704,8 +705,8 @@ def get_saved_substitute(item_code):
     if not item:
         return None
     return item.get("preferred_substitute") or None
-
-
+ 
+ 
 def save_substitute_to_erp(item_code, substitute_code):
     """사람이 고른 대체품을 다음번에 자동으로 쓸 수 있게 Item에 저장."""
     res = requests.put(
@@ -716,44 +717,57 @@ def save_substitute_to_erp(item_code, substitute_code):
     if res.status_code != 200:
         raise ERPNextAPIError(f"대체품 저장 실패: {res.text[:300]}")
     return True
-
-
+ 
+ 
 def get_all_available_candidates(warehouse=None):
     """
-    재고가 남아있는(actual_qty > 0) 품목들을 {item_code: {name, qty, group}} 형태로 반환.
+    재고가 남아있는(actual_qty > 0) 품목들을 {item_code: {name, qty, group, warehouses}} 형태로 반환.
     AI가 대체품 후보를 고를 때 넘겨줄 '전체 재고 카탈로그' 역할.
+ 
+    warehouse=None(기본값)이면 전체 창고를 검색함 — 대체품은 다른 창고에
+    있어도, 신규구매(비딩)보다는 거의 항상 빠르므로 창고로 미리 좁히지 않음.
+    같은 품목이 여러 창고에 나눠 있으면 qty는 합산하고, warehouses에
+    창고별 상세 내역을 남겨서 나중에 사람이 "어디 있는지" 보고 판단 가능하게 함.
     """
     filters = [["actual_qty", ">", 0]]
     if warehouse:
         filters.append(["warehouse", "=", warehouse])
-
-    bins = erp_get("Bin", filters=filters, fields=["item_code", "actual_qty"])
+ 
+    bins = erp_get("Bin", filters=filters, fields=["item_code", "warehouse", "actual_qty"])
     result = {}
     for b in (bins or []):
-        item = erp_get_one("Item", b["item_code"])
-        if not item:
-            continue
-        result[b["item_code"]] = {
-            "name": item.get("item_name", b["item_code"]),
-            "qty": b["actual_qty"],
-            "group": item.get("item_group", ""),
-        }
+        item_code = b["item_code"]
+        if item_code not in result:
+            item = erp_get_one("Item", item_code)
+            if not item:
+                continue
+            result[item_code] = {
+                "name": item.get("item_name", item_code),
+                "qty": 0,
+                "group": item.get("item_group", ""),
+                "warehouses": [],
+            }
+        result[item_code]["qty"] += b["actual_qty"]
+        result[item_code]["warehouses"].append({"warehouse": b["warehouse"], "qty": b["actual_qty"]})
     return result
-
-
+ 
+ 
 if __name__ == "__main__":
     print("=== 1. 연결 확인 ===")
     res = requests.get(f"{SITE_URL}/api/method/frappe.auth.get_logged_user", headers=HEADERS)
     print(res.status_code, res.text[:200])
-
+ 
     print("\n=== 2. Supplier 목록 조회 ===")
     suppliers = erp_get("Supplier", fields=["name", "supplier_name"])
     if suppliers:
         for s in suppliers:
             print(f"  - {s['name']}: {s['supplier_name']}")
-
+ 
     print("\n=== 3. Item 목록 조회 ===")
     items = erp_get("Item", fields=["item_code", "item_name"])
     if items:
         for i in items:
             print(f"  - {i['item_code']}: {i['item_name']}")
+ 
+    print("\n여기까지 에러 없이 나왔으면 성공입니다.")
+    print("다음 단계: 이 파일 맨 아래에 RFQ 생성 코드를 추가해보세요.")
