@@ -221,3 +221,5 @@ __marimo__/
 
 # Local overrides
 .local
+
+*.csv
