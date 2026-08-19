@@ -55,39 +55,43 @@ def watch_for_new_material_requests():
             if not mr_detail or not mr_detail.get("items"):
                 continue
 
-            item = mr_detail["items"][0]
+            # 품목이 여러 줄이면 각각 따로 처리. thread_id에 품목코드까지
+            # 붙여서, 같은 MR 안 여러 품목이 서로 다른 실행으로 구분되게 함.
+            for item in mr_detail["items"]:
+                print(f"  → 품목 처리: {item['item_code']} (수량 {item['qty']})")
 
-            initial_state = {
-                "item_code": item["item_code"],
-                "item_name": "",
-                "qty": item["qty"],
-                "warehouse": item["warehouse"],
-                "mr_name": mr["name"],
-                "stock_check": "",
-                "candidates": [],
-                "final_substitute": None,
-                "substitute_check": "",
-                "substitute_item": None,
-                "route": "",
-                "reasons": [],
-                "bidding_decision": {},
-                "result_message": "",
-            }
+                initial_state = {
+                    "item_code": item["item_code"],
+                    "item_name": "",
+                    "qty": item["qty"],
+                    "warehouse": item["warehouse"],
+                    "mr_name": mr["name"],
+                    "stock_check": "",
+                    "candidates": [],
+                    "final_substitute": None,
+                    "substitute_check": "",
+                    "substitute_item": None,
+                    "route": "",
+                    "reasons": [],
+                    "bidding_decision": {},
+                    "result_message": "",
+                }
 
-            # thread_id로 mr_name을 씀 — 나중에 이 이름으로 다시 찾아서 이어감
-            config = {"configurable": {"thread_id": mr["name"]}}
-            result = app.invoke(initial_state, config=config)
+                # thread_id = MR이름 + 품목코드. 품목별로 독립적인 실행/재개가 되게 함.
+                thread_id = f"{mr['name']}::{item['item_code']}"
+                config = {"configurable": {"thread_id": thread_id}}
+                result = app.invoke(initial_state, config=config)
 
-            if "__interrupt__" in result:
-                # 멈췄음 — 기다리지 않고 기록만 남기고 바로 다음으로 넘어감
-                interrupt_payload = result["__interrupt__"][0].value
-                print(f"⏸  '{mr['name']}' 사람 입력 대기중 (나중에 resume_pending.py로 처리)")
+                if "__interrupt__" in result:
+                    # 멈췄음 — 기다리지 않고 기록만 남기고 바로 다음 품목으로 넘어감
+                    interrupt_payload = result["__interrupt__"][0].value
+                    print(f"⏸  '{thread_id}' 사람 입력 대기중 (나중에 resume_pending.py로 처리)")
 
-                pending = load_pending()
-                pending[mr["name"]] = interrupt_payload
-                save_pending(pending)
-            else:
-                print(f"✅ 처리 완료: {result['result_message']}")
+                    pending = load_pending()
+                    pending[thread_id] = interrupt_payload
+                    save_pending(pending)
+                else:
+                    print(f"✅ 처리 완료: {result['result_message']}")
 
             processed_mr_names.add(mr["name"])
 

@@ -17,7 +17,6 @@ from erp_client import (
     create_material_request,
     get_pending_material_requests,
     get_material_request_detail,
-    is_bidding_required,
     create_rfq_from_material_request,
     send_rfq_to_suppliers,
     get_quotations_for_rfq,
@@ -91,11 +90,6 @@ if mr_name:
         lambda: get_material_request_detail(mr_name),
     )
 
-    if mr_detail:
-        run_test(
-            "2-4. 카탈로그/비딩 판별 (is_bidding_required)",
-            lambda: is_bidding_required(mr_detail["items"][0]),
-        )
 else:
     print("\n⚠️ 2-1이 실패해서 2-3, 2-4는 건너뜁니다.")
 
@@ -167,3 +161,7 @@ for name, ok, err in results:
     print(f"{mark} {name}")
     if err:
         print(f"    → {err[:150]}")
+
+# 1. 지금 MR 하나 조회해서 actual_qty 확인
+mr = get_material_request_detail("MAT-MR-2026-00008")
+print(mr["items"][0]["actual_qty"])

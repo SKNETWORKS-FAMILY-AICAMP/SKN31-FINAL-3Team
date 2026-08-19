@@ -38,18 +38,19 @@ def main():
         return
 
     print(f"=== 대기중인 확인 요청 {len(pending)}건 ===\n")
-    mr_names = list(pending.keys())
-    for idx, mr_name in enumerate(mr_names, start=1):
-        info = pending[mr_name]
-        print(f"{idx}. [{mr_name}] {info.get('item_name')} 대체품 확인 필요")
+    # key 형식: "MR이름::품목코드" (품목별로 독립된 실행이라 이렇게 저장됨)
+    thread_ids = list(pending.keys())
+    for idx, tid in enumerate(thread_ids, start=1):
+        info = pending[tid]
+        print(f"{idx}. [{tid}] {info.get('item_name')} 대체품 확인 필요")
 
     print()
     pick = input("처리할 번호 선택 (그냥 Enter=종료): ").strip()
     if not pick:
         return
 
-    mr_name = mr_names[int(pick) - 1]
-    info = pending[mr_name]
+    thread_id = thread_ids[int(pick) - 1]
+    info = pending[thread_id]
 
     print(f"\n'{info.get('item_name')}' 품절! 대체품을 선택해주세요.")
     for idx, cand in enumerate(info.get("candidates", []), start=1):
@@ -60,13 +61,13 @@ def main():
     choice = int(input(">> 번호 입력: "))
 
     # 여기서 멈춰있던 그래프를 이어서 실행 (thread_id로 어느 건인지 찾음)
-    config = {"configurable": {"thread_id": mr_name}}
+    config = {"configurable": {"thread_id": thread_id}}
     result = app.invoke(Command(resume=choice), config=config)
 
     print(f"\n✅ 처리 완료: {result.get('result_message', '(완료)')}")
 
     # 처리된 건은 대기목록에서 제거
-    del pending[mr_name]
+    del pending[thread_id]
     save_pending(pending)
 
 
