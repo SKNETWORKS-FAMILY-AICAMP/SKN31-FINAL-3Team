@@ -5,6 +5,16 @@
 2. 일회성 또는 비주기적 구매
 
 공용 ``erp_client.py``는 수정하지 않고, 연결 정보와 예외 클래스만 재사용한다.
+
+[수정 이력]
+- _purchase_dates(): Purchase Order Item(자식테이블) 직접조회는 권한(403)
+  문제가 반복 발생해서, 부모(Purchase Order)만 필터링하고 items는 파이썬에서
+  대조하는 안전한 방식으로 되돌림. Role Permissions Manager에서
+  'Purchase Order Item'에 Read 권한을 확실히 열어두면, 성능을 위해 다시
+  2단계 조회 방식으로 바꿔도 됨 (그 경우를 위해 파일 맨 아래에 대안 버전 주석으로 남겨둠).
+- decide_bidding(): is_high_amount/reasons/return이 for 루프 안에 잘못
+  들여쓰기 되어있던 버그 수정. 이전 버전은 품목이 여러 개인 MR에서 첫
+  품목만 처리하고 바로 종료되는 문제가 있었음.
 """
 
 from __future__ import annotations
@@ -99,35 +109,35 @@ def _get_all(doctype: str, filters: list, fields: list[str]) -> list[dict]:
 def _purchase_dates(item_code: str, lookback_days: int) -> tuple[str, ...]:
     """제출된 구매주문의 실제 거래일을 품목 기준으로 반환한다.
 
-    child table(Purchase Order Item)을 item_code로 먼저 필터링해 관련 PO 이름만
-    추리고, 그 이름 목록 + 날짜조건으로 부모(Purchase Order)를 한 번에 조회한다.
-    (기존 N+1 방식 대비 API 호출 횟수가 PO 건수와 무관하게 최대 2회로 고정됨)
+    ⚠️ Purchase Order Item(자식테이블) 직접조회는 권한 에러(403)가 반복
+    발생해서, 부모(Purchase Order)를 기간으로 먼저 필터링해서 가져온 뒤,
+    각 문서의 items 배열 안에서 파이썬으로 이 품목이 있는지 대조하는
+    방식으로 되돌림. API 호출 수는 PO 건수에 비례해서 늘지만, 권한 문제
+    없이 항상 동작하는 게 우선.
     """
     cutoff = date.today().toordinal() - lookback_days
     cutoff_date_str = date.fromordinal(cutoff).isoformat()
 
-    # 1) 이 품목을 포함한 PO 이름만 추출 (child table 직접조회, count_recent_purchases와 동일 패턴)
-    item_rows = _get_all(
-        "Purchase Order Item",
-        filters=[["item_code", "=", item_code]],
-        fields=["parent"],
-    )
-    parent_names = list({row["parent"] for row in item_rows})
-    if not parent_names:
-        return tuple()
-
-    # 2) 위 PO들 중 제출완료 + 기간조건에 맞는 것만 한 번에 조회
     purchase_orders = _get_all(
         "Purchase Order",
         filters=[
-            ["name", "in", parent_names],
             ["docstatus", "=", 1],
             ["transaction_date", ">=", cutoff_date_str],
         ],
-        fields=["transaction_date"],
+        fields=["name"],
     )
 
-    dates = {po["transaction_date"] for po in purchase_orders if po.get("transaction_date")}
+    dates: set[str] = set()
+    for po_summary in purchase_orders:
+        po_doc = erp_get_one("Purchase Order", po_summary["name"])
+        if not po_doc:
+            continue
+        transaction_date = po_doc.get("transaction_date")
+        if not transaction_date:
+            continue
+        if any(item.get("item_code") == item_code for item in po_doc.get("items", [])):
+            dates.add(transaction_date)
+
     return tuple(sorted(dates))
 
 
@@ -166,6 +176,10 @@ def decide_bidding(
 
     네 조건 중 하나라도 참이면 비딩 대상으로 판정한다. 금액은 요청서 전체,
     대량·일회성·비주기성은 각 품목 단위로 평가한다.
+
+    ⚠️ 수정: is_high_amount 계산과 최종 return을 for 루프 밖으로 뺌.
+    이전 버전은 이게 루프 안에 있어서, 품목이 여러 개면 첫 품목만
+    처리하고 함수가 끝나버리는 버그가 있었음.
     """
     policy = policy or BiddingPolicy()
     request_doc = erp_get_one("Material Request", material_request_name)
@@ -176,6 +190,8 @@ def decide_bidding(
 
     item_decisions: list[ItemDecision] = []
     total_amount = 0.0
+
+    # ----- 품목별 평가 (루프 안에서는 품목 단위 판단만 함) -----
     for item in request_doc.get("items", []):
         item_code = item.get("item_code")
         if not item_code:
@@ -191,17 +207,18 @@ def decide_bidding(
         is_large = quantity >= policy.large_quantity_threshold
         is_one_time = past_order_count <= policy.one_time_max_past_orders
         is_irregular = _is_irregular(purchase_dates, policy)
-        reasons: list[str] = []
+
+        item_reasons: list[str] = []
         if is_large:
-            reasons.append(
+            item_reasons.append(
                 f"대량 발주: {quantity:g} >= {policy.large_quantity_threshold:g}"
             )
         if is_one_time:
-            reasons.append(
+            item_reasons.append(
                 f"일회성 구매: 최근 {policy.history_lookback_days}일 내 구매주문 {past_order_count}건"
             )
         if is_irregular:
-            reasons.append("비주기적 구매: 구매 간격 변동계수가 기준 이상")
+            item_reasons.append("비주기적 구매: 구매 간격 변동계수가 기준 이상")
 
         item_decisions.append(
             ItemDecision(
@@ -213,25 +230,28 @@ def decide_bidding(
                 is_large_quantity=is_large,
                 is_one_time_purchase=is_one_time,
                 is_irregular_purchase=is_irregular,
-                reasons=tuple(reasons),
+                reasons=tuple(item_reasons),
             )
         )
 
-        is_high_amount = total_amount >= policy.high_amount_threshold
-        reasons: list[str] = []
-        if is_high_amount:
-            reasons.append(
-                f"고액 발주: {total_amount:,.0f} >= {policy.high_amount_threshold:,.0f}"
-            )
-
-        return BiddingDecision(
-            material_request=material_request_name,
-            bidding_required=is_high_amount or any(item.reasons for item in item_decisions),
-            total_estimated_amount=total_amount,
-            is_high_amount=is_high_amount,
-            reasons=tuple(reasons),
-            items=tuple(item_decisions),
+    # ----- 여기서부터는 루프 밖 — MR 전체를 다 본 뒤 최종 판단 -----
+    is_high_amount = total_amount >= policy.high_amount_threshold
+    overall_reasons: list[str] = []
+    if is_high_amount:
+        overall_reasons.append(
+            f"고액 발주: {total_amount:,.0f} >= {policy.high_amount_threshold:,.0f}"
         )
+    for item_decision in item_decisions:
+        overall_reasons.extend(item_decision.reasons)
+
+    return BiddingDecision(
+        material_request=material_request_name,
+        bidding_required=is_high_amount or any(item.reasons for item in item_decisions),
+        total_estimated_amount=total_amount,
+        is_high_amount=is_high_amount,
+        reasons=tuple(overall_reasons),
+        items=tuple(item_decisions),
+    )
 
 
 def is_bidding_required(
@@ -240,3 +260,36 @@ def is_bidding_required(
 ) -> bool:
     """기존 파이프라인에서 bool 값만 필요할 때 사용하는 간편 함수."""
     return decide_bidding(material_request_name, policy).bidding_required
+
+
+# ============================================================
+# 참고: Role Permissions Manager에서 'Purchase Order Item'에 Read
+# 권한을 확실히 열어두셨다면, 아래 버전으로 _purchase_dates()를
+# 교체하면 API 호출 수가 줄어들어 더 빠름 (PO 건수와 무관하게 최대 2회).
+# 지금은 권한 문제 재발 방지를 위해 위쪽의 안전한 버전을 기본으로 둠.
+# ============================================================
+#
+# def _purchase_dates(item_code, lookback_days):
+#     cutoff = date.today().toordinal() - lookback_days
+#     cutoff_date_str = date.fromordinal(cutoff).isoformat()
+#
+#     item_rows = _get_all(
+#         "Purchase Order Item",
+#         filters=[["item_code", "=", item_code]],
+#         fields=["parent"],
+#     )
+#     parent_names = list({row["parent"] for row in item_rows})
+#     if not parent_names:
+#         return tuple()
+#
+#     purchase_orders = _get_all(
+#         "Purchase Order",
+#         filters=[
+#             ["name", "in", parent_names],
+#             ["docstatus", "=", 1],
+#             ["transaction_date", ">=", cutoff_date_str],
+#         ],
+#         fields=["transaction_date"],
+#     )
+#     dates = {po["transaction_date"] for po in purchase_orders if po.get("transaction_date")}
+#     return tuple(sorted(dates))

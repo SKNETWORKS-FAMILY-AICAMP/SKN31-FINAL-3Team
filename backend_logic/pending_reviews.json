@@ -1,33 +1,4 @@
 {
-  "MAT-MR-2026-00213::SF-001": {
-    "type": "substitute_selection",
-    "item_code": "SF-001",
-    "item_name": "안전모 (백색)",
-    "candidates": [
-      {
-        "code": "SF-013",
-        "name": "안전모 (황색)",
-        "qty": 2000.0,
-        "warehouses": [
-          {
-            "warehouse": "Finished Goods - SKN31",
-            "qty": 2000.0
-          }
-        ]
-      },
-      {
-        "code": "SF-014",
-        "name": "안전모 (적색)",
-        "qty": 2000.0,
-        "warehouses": [
-          {
-            "warehouse": "Finished Goods - SKN31",
-            "qty": 2000.0
-          }
-        ]
-      }
-    ]
-  },
   "MAT-MR-2026-00214::SF-001": {
     "type": "substitute_selection",
     "item_code": "SF-001",
@@ -139,6 +110,24 @@
           {
             "warehouse": "Finished Goods - SKN31",
             "qty": 2000.0
+          }
+        ]
+      }
+    ]
+  },
+  "MAT-MR-2026-00200::ITEM-SUB-102": {
+    "type": "substitute_selection",
+    "item_code": "ITEM-SUB-102",
+    "item_name": "보호장갑 #102",
+    "candidates": [
+      {
+        "code": "SF-006",
+        "name": "절연장갑",
+        "qty": 10.0,
+        "warehouses": [
+          {
+            "warehouse": "Stores - SKN31",
+            "qty": 10.0
           }
         ]
       }
