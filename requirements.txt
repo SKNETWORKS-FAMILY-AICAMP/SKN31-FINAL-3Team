@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+requests
+PyJWT
+pydantic
+jinja2
+python-dotenv
+langgraph
+langgraph-checkpoint-sqlite
+tavily-python
