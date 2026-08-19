@@ -99,45 +99,42 @@ def _get_all(doctype: str, filters: list, fields: list[str]) -> list[dict]:
 def _purchase_dates(item_code: str, lookback_days: int) -> tuple[str, ...]:
     """제출된 구매주문의 실제 거래일을 품목 기준으로 반환한다.
 
-    Purchase Order Item(자식테이블) 직접조회는 권한 에러가 나서,
-    부모 Purchase Order를 가져와 items 배열을 직접 확인하는 방식으로 변경.
+    child table(Purchase Order Item)을 item_code로 먼저 필터링해 관련 PO 이름만
+    추리고, 그 이름 목록 + 날짜조건으로 부모(Purchase Order)를 한 번에 조회한다.
+    (기존 N+1 방식 대비 API 호출 횟수가 PO 건수와 무관하게 최대 2회로 고정됨)
     """
     cutoff = date.today().toordinal() - lookback_days
     cutoff_date_str = date.fromordinal(cutoff).isoformat()
 
-    # 자식테이블 대신 부모(Purchase Order)를 날짜로 필터링해서 가져옴
-    # (transaction_date는 부모 자체 필드라 필터링 가능함)
+    # 1) 이 품목을 포함한 PO 이름만 추출 (child table 직접조회, count_recent_purchases와 동일 패턴)
+    item_rows = _get_all(
+        "Purchase Order Item",
+        filters=[["item_code", "=", item_code]],
+        fields=["parent"],
+    )
+    parent_names = list({row["parent"] for row in item_rows})
+    if not parent_names:
+        return tuple()
+
+    # 2) 위 PO들 중 제출완료 + 기간조건에 맞는 것만 한 번에 조회
     purchase_orders = _get_all(
         "Purchase Order",
         filters=[
+            ["name", "in", parent_names],
             ["docstatus", "=", 1],
             ["transaction_date", ">=", cutoff_date_str],
         ],
-        fields=["name"],
+        fields=["transaction_date"],
     )
 
-    dates: set[str] = set()
-    for po in purchase_orders:
-        po_doc = erp_get_one("Purchase Order", po["name"])
-        if not po_doc:
-            continue
-        transaction_date = po_doc.get("transaction_date")
-        if not transaction_date:
-            continue
-        # items 배열 안에 이 품목이 있는지 파이썬에서 직접 확인
-        if any(item.get("item_code") == item_code for item in po_doc.get("items", [])):
-            dates.add(transaction_date)
-
+    dates = {po["transaction_date"] for po in purchase_orders if po.get("transaction_date")}
     return tuple(sorted(dates))
 
 
 def _is_irregular(dates: Iterable[str], policy: BiddingPolicy) -> bool:
     parsed = [date.fromisoformat(value) for value in sorted(dates)]
-    if 0 < len(parsed) < policy.minimum_orders_for_cycle_check:
-        # 반복성이 입증될 만큼의 이력이 없으므로 비주기 구매로 취급한다.
-        return True
     if len(parsed) < policy.minimum_orders_for_cycle_check:
-        return False
+        return len(parsed) > 0
 
     intervals = [(right - left).days for left, right in zip(parsed, parsed[1:])]
     average_interval = mean(intervals)
@@ -220,22 +217,21 @@ def decide_bidding(
             )
         )
 
-    is_high_amount = total_amount >= policy.high_amount_threshold
-    reasons = [reason for item in item_decisions for reason in item.reasons]
-    if is_high_amount:
-        reasons.insert(
-            0,
-            f"고액 발주: {total_amount:,.0f} >= {policy.high_amount_threshold:,.0f}",
-        )
+        is_high_amount = total_amount >= policy.high_amount_threshold
+        reasons: list[str] = []
+        if is_high_amount:
+            reasons.append(
+                f"고액 발주: {total_amount:,.0f} >= {policy.high_amount_threshold:,.0f}"
+            )
 
-    return BiddingDecision(
-        material_request=material_request_name,
-        bidding_required=is_high_amount or any(item.reasons for item in item_decisions),
-        total_estimated_amount=total_amount,
-        is_high_amount=is_high_amount,
-        reasons=tuple(reasons),
-        items=tuple(item_decisions),
-    )
+        return BiddingDecision(
+            material_request=material_request_name,
+            bidding_required=is_high_amount or any(item.reasons for item in item_decisions),
+            total_estimated_amount=total_amount,
+            is_high_amount=is_high_amount,
+            reasons=tuple(reasons),
+            items=tuple(item_decisions),
+        )
 
 
 def is_bidding_required(
