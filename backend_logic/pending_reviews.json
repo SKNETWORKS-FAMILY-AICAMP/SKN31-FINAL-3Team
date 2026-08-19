@@ -132,5 +132,63 @@
         ]
       }
     ]
+  },
+  "MAT-MR-2026-00217::SF-001": {
+    "type": "substitute_selection",
+    "item_code": "SF-001",
+    "item_name": "안전모 (백색)",
+    "candidates": [
+      {
+        "code": "SF-013",
+        "name": "안전모 (황색)",
+        "qty": 2000.0,
+        "warehouses": [
+          {
+            "warehouse": "Finished Goods - SKN31",
+            "qty": 2000.0
+          }
+        ]
+      },
+      {
+        "code": "SF-014",
+        "name": "안전모 (적색)",
+        "qty": 2000.0,
+        "warehouses": [
+          {
+            "warehouse": "Finished Goods - SKN31",
+            "qty": 2000.0
+          }
+        ]
+      }
+    ]
+  },
+  "MAT-MR-2026-00214::SF-001": {
+    "type": "substitute_selection",
+    "item_code": "SF-001",
+    "item_name": "안전모 (백색)",
+    "candidates": [
+      {
+        "code": "SF-013",
+        "name": "안전모 (황색)",
+        "qty": 2000.0,
+        "warehouses": [
+          {
+            "warehouse": "Finished Goods - SKN31",
+            "qty": 2000.0
+          }
+        ]
+      },
+      {
+        "code": "SF-014",
+        "name": "안전모 (적색)",
+        "qty": 2000.0,
+        "warehouses": [
+          {
+            "warehouse": "Finished Goods - SKN31",
+            "qty": 2000.0
+          }
+        ]
+      }
+    ]
   }
 }

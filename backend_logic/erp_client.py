@@ -71,22 +71,26 @@ def erp_submit(doctype, name):
  
 def erp_send_email(doctype, name, recipients, subject, content):
     """문서를 이메일로 발송 (RFQ, PO 등)"""
-    payload = {
-        "doctype": doctype,
-        "name": name,
-        "recipients": recipients,
-        "subject": subject,
-        "content": content,
-        "send_email": 1,
-    }
-    res = requests.post(
-        f"{SITE_URL}/api/method/frappe.core.doctype.communication.email.make",
-        headers=HEADERS,
-        json=payload,
-    )
-    if res.status_code != 200:
-        raise ERPNextAPIError(f"EMAIL: {res.status_code} - {res.text[:500]}")
-    return res.json().get("message")
+    if os.getenv("TEST_MODE", "false").lower() == "true":
+        print(f"수신자: {recipients}, 내용: {content}")
+
+    else:
+        payload = {
+            "doctype": doctype,
+            "name": name,
+            "recipients": recipients,
+            "subject": subject,
+            "content": content,
+            "send_email": 1,
+        }
+        res = requests.post(
+            f"{SITE_URL}/api/method/frappe.core.doctype.communication.email.make",
+            headers=HEADERS,
+            json=payload,
+        )
+        if res.status_code != 200:
+            raise ERPNextAPIError(f"EMAIL: {res.status_code} - {res.text[:500]}")
+        return res.json().get("message")
  
  
 # ============================================================

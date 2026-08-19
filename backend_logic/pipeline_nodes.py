@@ -15,7 +15,7 @@ pipeline_nodes.py — 노드 함수 모음 (통합본)
 
 import os
 import re
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from dotenv import load_dotenv
 from tavily import TavilyClient
@@ -31,6 +31,7 @@ from erp_client import (
     ERPNextAPIError,
     create_rfq_from_material_request,
     send_rfq_with_portal_access,
+    erp_post,
 )
 from bidding_decision import decide_bidding
 
@@ -40,7 +41,7 @@ _tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 _EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _PHONE_PATTERN = re.compile(r"(0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4})")
 
-MIN_RAG_CANDIDATES = 3  # RAG 결과가 이 개수 미만이면 Tavily로 보완
+TARGET_SUPPLIER_COUNT = 10  # 신규탐색 시 이메일 확보된 후보를 몇 개 채울지
 
 
 # ============================================================
@@ -243,6 +244,12 @@ def check_existing_suppliers_node(state) -> Command[
     print(f"[check_existing_suppliers_node] '{item_name}({item_code})' 기존 공급사 {len(suppliers)}건 → "
           f"{'있음' if found else '없음'}")
 
+    if found:
+        print(f"  기존 승인 공급사 목록:")
+        for s in suppliers:
+            supplier_name = s.get("supplier") or s.get("name")
+            print(f"    - {supplier_name}")
+
     return Command(
         update={"item_name": item_name, "existing_suppliers": suppliers, "supplier_found": found},
         goto="create_rfq_node" if found else "search_and_enrich_vendors_node",
@@ -340,24 +347,21 @@ def rag_search_past_vendors(item_name: str, limit_categories: int = 5, limit_ven
     ]
 
 
-def tavily_search_vendors(item_name: str) -> List[dict]:
-    """Tavily 쓰임새 ① — 새 벤더 후보 자체를 웹에서 찾음"""
-    results = _tavily_client.search(f"{item_name} 공급업체 제조사 견적", max_results=5)
+def tavily_search_vendors(item_name: str, max_results: int = 15) -> List[dict]:
+    """
+    Tavily 쓰임새 ① — 새 벤더 후보 자체를 웹에서 찾음.
+    이메일 없는 후보가 많이 걸러질 걸 감안해서 넉넉하게 뽑음 (기본 15개).
+    """
+    results = _tavily_client.search(f"{item_name} 공급업체 제조사 견적", max_results=max_results)
     return [{"name": r["title"], "source_url": r["url"], "raw_snippet": r["content"]} for r in results["results"]]
 
 
-def _dedupe_vendors(vendors: List[dict]) -> List[dict]:
-    seen, result = set(), []
-    for v in vendors:
-        key = v.get("name", "").strip().lower()
-        if key and key not in seen:
-            seen.add(key)
-            result.append(v)
-    return result
-
-
 def _enrich_contact_info(vendor: dict) -> dict:
-    """Tavily 쓰임새 ② — 후보 업체의 이메일·전화번호 검색"""
+    """
+    Tavily 쓰임새 ② — 후보 업체의 이메일·전화번호 검색 (제약조건 없는 단순 버전).
+    ⚠️ 팩스번호가 전화번호로 잡히거나, 다른 회사 정보가 섞일 수 있음 — 일단
+    "아무것도 안 뜨는 것"보다 "뭐라도 뜨는 것"을 우선한 버전.
+    """
     if vendor.get("email") and vendor.get("phone"):
         return vendor
 
@@ -383,55 +387,103 @@ def _enrich_contact_info(vendor: dict) -> dict:
     return vendor
 
 
+def find_qualified_suppliers(item_name, target_count=10):
+    """
+    1) RAG로 1차 후보 target_count개 추림
+    2) 각각 Tavily로 이메일·전화 보강
+    3) 이메일 없으면 가차없이 버림 (RFQ 못 보내는 후보는 의미 없음)
+    4) 버려서 부족해진 만큼 Tavily 직접검색으로 채워서 target_count개 맞춤
+    """
+    qualified = []
+    seen_names = set()
+
+    def add_if_qualified(vendor):
+        key = vendor.get("name", "").strip().lower()
+        if not key or key in seen_names:
+            return False
+        vendor = _enrich_contact_info(vendor)
+        if vendor.get("email"):
+            qualified.append(vendor)
+            seen_names.add(key)
+            return True
+        print(f"  '{vendor.get('name')}' 이메일 없음 → 버림")
+        return False
+
+    # 1) RAG 1차 후보
+    rag_candidates = rag_search_past_vendors(item_name, limit_vendors=target_count)
+    print(f"[find_qualified_suppliers] RAG 1차 후보 {len(rag_candidates)}건 → 이메일 확인 중...")
+    for c in rag_candidates:
+        add_if_qualified(c)
+
+    print(f"[find_qualified_suppliers] RAG 중 이메일 확보 {len(qualified)}/{target_count}건")
+
+    # 2) 부족한 만큼 Tavily 직접검색으로 채움
+    if len(qualified) < target_count:
+        needed = target_count - len(qualified)
+        print(f"[find_qualified_suppliers] {needed}건 부족 → Tavily 직접검색으로 보충")
+
+        web_candidates = tavily_search_vendors(item_name)
+        for c in web_candidates:
+            if len(qualified) >= target_count:
+                break
+            add_if_qualified(c)
+
+    print(f"[find_qualified_suppliers] 최종 확보: {len(qualified)}/{target_count}건")
+    return qualified
+
+
 def search_and_enrich_vendors_node(state) -> Command[Literal["create_rfq_node"]]:
     """
-    RAG 먼저 → 부족하면 Tavily로 후보 보완 → 각 후보 이메일/전화번호 Tavily로 채움.
-    이메일 없는 후보는 RFQ 자체를 못 보내므로 걸러내거나 사람에게 확인받음.
+    기존 공급사가 없을 때, 이메일까지 확보된 신규 후보 10곳을 채워서 넘김.
     """
     item_name = state["item_name"]
 
-    rag_candidates = rag_search_past_vendors(item_name)
-    print(f"[search_and_enrich_vendors_node] RAG 후보 {len(rag_candidates)}건")
+    qualified = find_qualified_suppliers(item_name, target_count=TARGET_SUPPLIER_COUNT)
 
-    if len(rag_candidates) >= MIN_RAG_CANDIDATES:
-        merged = _dedupe_vendors(rag_candidates)
-        print("[search_and_enrich_vendors_node] RAG만으로 충분 → Tavily 후보탐색 생략")
-    else:
-        web_candidates = tavily_search_vendors(item_name)
-        merged = _dedupe_vendors(rag_candidates + web_candidates)
-        print(f"[search_and_enrich_vendors_node] RAG 부족 → Tavily 보완, 총 {len(merged)}건")
-
-    if not merged:
+    if not qualified:
         decision = interrupt({
             "reason": "no_vendor_candidates_found",
             "item_name": item_name,
-            "question": "후보 업체를 찾지 못했습니다. 수동으로 입력하시겠습니까?",
+            "question": "이메일이 확보된 후보 업체를 하나도 찾지 못했습니다. 수동으로 입력하시겠습니까?",
         })
-        merged = decision.get("manual_vendors", []) if isinstance(decision, dict) else []
-
-    enriched = [_enrich_contact_info(v) for v in merged]
-    with_email = [v for v in enriched if v.get("email")]
-    without_email = [v for v in enriched if not v.get("email")]
-
-    print(f"[search_and_enrich_vendors_node] 이메일 확보 {len(with_email)}건 / 못찾음 {len(without_email)}건")
-
-    if without_email:
-        decision = interrupt({
-            "reason": "vendor_email_missing",
-            "vendors_without_email": without_email,
-            "question": "일부 업체 이메일을 못 찾았습니다. 제외하고 진행할까요, 수동 입력할까요?",
-        })
-        if isinstance(decision, dict) and decision.get("manual_emails"):
-            for v in without_email:
-                email = decision["manual_emails"].get(v["name"])
-                if email:
-                    v["email"] = email
-                    with_email.append(v)
+        qualified = decision.get("manual_vendors", []) if isinstance(decision, dict) else []
 
     return Command(
-        update={"existing_suppliers": state["existing_suppliers"] + with_email},
+        update={"existing_suppliers": state["existing_suppliers"] + qualified},
         goto="create_rfq_node",
     )
+
+
+def _ensure_supplier_exists(name, email=None):
+    """
+    이 이름의 Supplier가 ERPNext에 이미 있는지 확인하고, 없으면 새로 생성.
+    RFQ의 suppliers 필드는 Link라서, 존재하지 않는 이름을 그냥 넣으면
+    LinkValidationError로 RFQ 생성 자체가 실패함 (실제로 겪은 에러).
+
+    반환: (등록된 이름, 이메일) — 등록 실패하면 (None, None)
+    """
+    try:
+        existing = erp_get_one("Supplier", name)
+        return name, (existing.get("email_id") or email)
+    except ERPNextAPIError:
+        pass  # 없다는 뜻, 아래에서 새로 만듦
+
+    payload = {
+        "supplier_name": name,
+        "supplier_group": "All Supplier Groups",
+        "country": "Korea, Republic of",
+        "supplier_type": "Company",
+    }
+    if email:
+        payload["email_id"] = email
+
+    try:
+        created = erp_post("Supplier", payload)
+        print(f"[_ensure_supplier_exists] 신규 Supplier 등록: {name}")
+        return created["name"], email
+    except ERPNextAPIError as e:
+        print(f"[_ensure_supplier_exists] '{name}' 등록 실패: {e}")
+        return None, None
 
 
 def create_rfq_node(state) -> dict:
@@ -439,26 +491,25 @@ def create_rfq_node(state) -> dict:
     existing_suppliers에 담긴 대상(기존 승인공급사 or 신규발굴+연락처보강된 벤더)
     전체를 대상으로 RFQ 생성 + 발송.
 
-    ⚠️ 기존 ERPNext 공급사는 email이 바로 안 들어있을 수 있어서, 없으면
-    Supplier 문서에서 email_id를 따로 조회함.
+    ⚠️ RFQ 만들기 전에, 아직 ERPNext Supplier로 없는 신규 벤더는 먼저
+    Supplier로 등록함 (RAG/Tavily로 찾은 후보는 이 시점까지 ERPNext에
+    한 번도 안 올라가있는 상태라서, 등록 없이 RFQ 만들면 에러남).
     """
     supplier_names, supplier_emails = [], {}
 
     for s in state["existing_suppliers"]:
-        name = s.get("supplier") or s.get("name")
-        if not name:
+        raw_name = s.get("supplier") or s.get("name")
+        if not raw_name:
             continue
-        supplier_names.append(name)
 
-        email = s.get("email")
-        if not email:
-            try:
-                supplier_doc = erp_get_one("Supplier", name)
-                email = supplier_doc.get("email_id") if supplier_doc else None
-            except ERPNextAPIError:
-                email = None
+        registered_name, email = _ensure_supplier_exists(raw_name, s.get("email"))
+        if not registered_name:
+            print(f"[create_rfq_node] '{raw_name}' 등록 실패, RFQ 대상에서 제외")
+            continue
+
+        supplier_names.append(registered_name)
         if email:
-            supplier_emails[name] = email
+            supplier_emails[registered_name] = email
 
     if not supplier_names:
         msg = f"[create_rfq_node] '{state['item_code']}' 공급사 후보 없음, RFQ 생성 불가"

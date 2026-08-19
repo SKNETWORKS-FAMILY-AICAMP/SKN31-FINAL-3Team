@@ -10,7 +10,11 @@ START → check_stock_node
                                               → save_and_end_node
                                                    ├─ 대체품 선택함 → END
                                                    └─ "없음" 선택 → classify_route_node
-                                                                        → catalog_node / bidding_node → END
+                                                                        ├─ catalog → catalog_node → END
+                                                                        └─ bidding → check_existing_suppliers_node
+                                                                             ├─ 있음 → create_rfq_node → END
+                                                                             └─ 없음 → search_and_enrich_vendors_node
+                                                                                          → create_rfq_node → END
 """
 
 from typing import TypedDict, Literal, Optional
@@ -25,10 +29,11 @@ from pipeline_nodes import (
     check_substitute_node,
     human_interaction_node,
     save_and_end_node,
-    use_substitute_node,
     classify_route_node,
     catalog_node,
-    bidding_node,
+    check_existing_suppliers_node,
+    search_and_enrich_vendors_node,
+    create_rfq_node,
 )
 
 
@@ -46,6 +51,10 @@ class PipelineState(TypedDict):
     route: str                   # "catalog" | "bidding"
     reasons: list
     bidding_decision: dict
+    # ↓ 벤더 발굴/RFQ 관련 필드
+    existing_suppliers: list
+    supplier_found: bool
+    rfq_name: Optional[str]
     result_message: str
 
 
@@ -65,8 +74,8 @@ def after_save_decision(state) -> Literal["classify_route_node", "__end__"]:
     return END if state.get("substitute_item") else "classify_route_node"
 
 
-def route_decision(state) -> Literal["catalog_node", "bidding_node"]:
-    return {"catalog": "catalog_node", "bidding": "bidding_node"}[state["route"]]
+def route_decision(state) -> Literal["catalog_node", "check_existing_suppliers_node"]:
+    return {"catalog": "catalog_node", "bidding": "check_existing_suppliers_node"}[state["route"]]
 
 
 # ---------------- 그래프 조립 ----------------
@@ -80,7 +89,10 @@ graph.add_node("human_interaction_node", human_interaction_node)
 graph.add_node("save_and_end_node", save_and_end_node)
 graph.add_node("classify_route_node", classify_route_node)
 graph.add_node("catalog_node", catalog_node)
-graph.add_node("bidding_node", bidding_node)
+# vendor_discovery_nodes.py 쪽 노드들 — 이 안에서 서로 Command(goto=...)로 알아서 이동함
+graph.add_node("check_existing_suppliers_node", check_existing_suppliers_node)
+graph.add_node("search_and_enrich_vendors_node", search_and_enrich_vendors_node)
+graph.add_node("create_rfq_node", create_rfq_node)
 
 graph.add_edge(START, "check_stock_node")
 
@@ -107,12 +119,16 @@ graph.add_conditional_edges(
 graph.add_conditional_edges(
     "classify_route_node",
     route_decision,
-    {"catalog_node": "catalog_node", "bidding_node": "bidding_node"},
+    {"catalog_node": "catalog_node", "check_existing_suppliers_node": "check_existing_suppliers_node"},
 )
+
+# check_existing_suppliers_node / search_and_enrich_vendors_node는
+# 함수 안에서 Command(goto=...)로 직접 다음 노드를 지정하니, 여기서 add_conditional_edges
+# 따로 안 해도 됨 — LangGraph가 Command 반환값을 보고 알아서 연결함.
 
 graph.add_edge("stock_sufficient_node", END)
 graph.add_edge("catalog_node", END)
-graph.add_edge("bidding_node", END)
+graph.add_edge("create_rfq_node", END)
 
 # 파일 기반(sqlite) 체크포인터 — 그래프가 interrupt()로 멈췄을 때 그 상태를
 # 파일에 저장해둠. watcher.py랑 resume_pending.py가 서로 다른 실행이어도
