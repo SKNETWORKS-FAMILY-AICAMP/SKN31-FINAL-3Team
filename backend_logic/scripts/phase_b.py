@@ -5,8 +5,11 @@ from typing import TypedDict, List, Literal, Optional
 from dotenv import load_dotenv
 from tavily import TavilyClient
 from langgraph.types import Command, interrupt
-
+import psycopg2
+from pgvector.psycopg2 import register_vector
 from erp_client import erp_get_one, ERPNextAPIError
+from openai import OpenAI
+import time
 
 load_dotenv()
 
@@ -80,6 +83,10 @@ def check_existing_suppliers_node(state: ProcurementState) -> Command[
 # 2) search_new_vendors_node
 # ============================================================
 
+DATABASE_URL = os.environ["DATABASE_URL"]
+VENDOR_TABLE = "vendor_master"
+RAG_TOP_K = 5
+
 def tavily_search_vendors(item_name: str) -> List[dict]:
     """Tavily API로 '{item_name} 공급업체 / 제조사' 웹 검색"""
     results = _tavily_client.search(f"{item_name} 공급업체 제조사 견적", max_results=5)
@@ -88,12 +95,81 @@ def tavily_search_vendors(item_name: str) -> List[dict]:
         for r in results["results"]
     ]
 
-##########################
+def _get_pgvector_connection():
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
+    return conn
+
+def embed_batch(texts: List[str], max_retries: int = 3) -> List[List[float]]:
+    EMBEDDING_MODEL = "text-embedding-3-small"
+    openai_client = OpenAI()
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+            return [item.embedding for item in resp.data]
+        except Exception as e:
+            wait = 2 ** attempt
+            print(f"[embed_batch] 실패 (시도 {attempt}/{max_retries}): {e} → {wait}초 후 재시도")
+            time.sleep(wait)
+    raise RuntimeError("임베딩 API 재시도 초과")
+
+
 def rag_search_past_vendors(item_name: str) -> List[dict]:
-    """과거 RFQ/발주 이력 벡터DB에서 유사 품목 취급 업체 검색"""
-    # TODO: 벡터스토어 연동 (예: Qdrant, Chroma 등) — 스택 확정되면 채워넣을 것
-    return []
-##########################
+    """
+    pgvector(vendor_master)에서 item_name과 의미상 유사한 업체를 검색.
+    나라장터 등록 업체 마스터 DB 기반이라, 찾으면 사업자등록번호까지
+    바로 채워서 반환함 (뒤 단계에서 국세청 재검증 없이 활용 가능).
+    """
+    try:
+        query_embedding = embed_batch([item_name])[0]
+    except Exception as e:
+        print(f"[rag_search_past_vendors] 쿼리 임베딩 실패: {e}")
+        return []
+
+    try:
+        conn = _get_pgvector_connection()
+    except Exception as e:
+        print(f"[rag_search_past_vendors] DB 연결 실패: {e}")
+        return []
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+           f"""
+           SELECT
+               업체명,
+               사업자등록번호,
+               업체소재시군구,
+               업체국가,
+               embedding <=> %s::vector AS distance
+           FROM {VENDOR_TABLE}
+           ORDER BY distance ASC
+           LIMIT %s;
+           """,
+           (query_embedding, RAG_TOP_K),
+        )
+            rows = cur.fetchall()
+    except Exception as e:
+        print(f"[rag_search_past_vendors] 쿼리 실패: {e}")
+        return []
+    finally:
+        conn.close()
+
+    candidates = [
+        {
+            "name": name,
+            "business_reg_no": biz_reg_no or None,
+            "location": location,
+            "country": country,
+            "source": "internal_vendor_db",
+            "similarity_distance": float(distance),
+        }
+        for name, biz_reg_no, location, country, distance in rows
+    ]
+
+    print(f"[rag_search_past_vendors] '{item_name}' 유사업체 {len(candidates)}건 발견 (top-{RAG_TOP_K})")
+    return candidates
 
 def _dedupe_vendors(vendors: List[dict]) -> List[dict]:
     seen, result = set(), []
@@ -130,6 +206,9 @@ def search_new_vendors_node(state: ProcurementState) -> Command[Literal["cleanse
 # ============================================================
 # 3) cleanse_vendor_data_node
 # ============================================================
+
+_EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+
 def cleanse_vendor_data_node(state: ProcurementState) -> Command[Literal["create_rfq_node"]]:
     """찾은 후보업체의 빈칸(연락처·사업자번호)을 채움. 항상 -> create_rfq_node"""
     candidates = state["candidate_vendors"]
@@ -163,10 +242,31 @@ def cleanse_vendor_data_node(state: ProcurementState) -> Command[Literal["create
 def _enrich_vendor_contact_info(vendor: dict) -> dict:
     if not vendor.get("contact"):
         vendor["contact"] = _search_contact(vendor.get("name", ""))
+    if not vendor.get("email"):
+        vendor["email"] = _search_email(vendor.get("name", ""))
     if not vendor.get("business_reg_no"):
         vendor["business_reg_no"] = _search_business_reg_no(vendor.get("name", ""))
     return vendor
 
+
+def _search_email(vendor_name: str) -> Optional[str]:
+    """Tavily로 업체 대표 이메일 검색"""
+    try:
+        results = _tavily_client.search(
+            query=f"{vendor_name} 이메일 contact email",
+            max_results=5,
+            search_depth="basic",
+        )
+    except Exception as e:
+        print(f"[_search_email] Tavily 검색 실패 ({vendor_name}): {e}")
+        return None
+
+    for r in results.get("results", []):
+        text = f"{r.get('title', '')} {r.get('content', '')}"
+        match = _EMAIL_PATTERN.search(text)
+        if match:
+            return match.group(0)
+    return None
 
 def _search_contact(vendor_name: str) -> Optional[str]:
     """Tavily로 업체 대표 연락처(전화번호) 검색"""
@@ -239,4 +339,8 @@ def _verify_biz_reg_no(b_no: str) -> bool:
 
 
 def _is_complete(vendor: dict) -> bool:
-    return bool(vendor.get("contact")) and bool(vendor.get("business_reg_no"))
+    return (
+        bool(vendor.get("contact"))
+        and bool(vendor.get("email"))
+        and bool(vendor.get("business_reg_no"))
+    )
