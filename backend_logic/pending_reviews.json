@@ -190,5 +190,44 @@
         ]
       }
     ]
+  },
+  "MAT-MR-2026-00220::SF-001": {
+    "type": "substitute_selection",
+    "item_code": "SF-001",
+    "item_name": "안전모 (백색)",
+    "candidates": [
+      {
+        "code": "SF-013",
+        "name": "안전모 (황색)",
+        "qty": 2000.0,
+        "warehouses": [
+          {
+            "warehouse": "Finished Goods - SKN31",
+            "qty": 2000.0
+          }
+        ]
+      },
+      {
+        "code": "SF-014",
+        "name": "안전모 (적색)",
+        "qty": 2000.0,
+        "warehouses": [
+          {
+            "warehouse": "Finished Goods - SKN31",
+            "qty": 2000.0
+          }
+        ]
+      }
+    ]
+  },
+  "MAT-MR-2026-00219::ITEM-CONS-105": {
+    "reason": "no_vendor_candidates_found",
+    "item_name": "연마재 #105",
+    "question": "이메일이 확보된 후보 업체를 하나도 찾지 못했습니다. 수동으로 입력하시겠습니까?"
+  },
+  "MAT-MR-2026-00221::ITEM-SUB-116": {
+    "reason": "no_vendor_candidates_found",
+    "item_name": "용접마스크 #116",
+    "question": "이메일이 확보된 후보 업체를 하나도 찾지 못했습니다. 수동으로 입력하시겠습니까?"
   }
 }

@@ -15,10 +15,10 @@ pipeline_nodes.py — 노드 함수 모음 (통합본)
 
 import os
 import re
+import requests
 from typing import List, Literal, Optional
 
 from dotenv import load_dotenv
-from tavily import TavilyClient
 from langgraph.types import Command, interrupt
 
 from erp_client import (
@@ -28,15 +28,15 @@ from erp_client import (
     save_substitute_to_erp,
     get_all_available_candidates,
     erp_get_one,
+    erp_post,
     ERPNextAPIError,
     create_rfq_from_material_request,
     send_rfq_with_portal_access,
-    erp_post,
 )
 from bidding_decision import decide_bidding
 
 load_dotenv()
-_tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+# Tavily 완전히 안 씀 — 벤더검색·연락처확보 다 네이버 웹문서검색으로 대체함
 
 _EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _PHONE_PATTERN = re.compile(r"(0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4})")
@@ -281,6 +281,17 @@ def _get_query_embedding(text: str) -> list:
     return _embedding_model.encode(text).tolist()
 
 
+def _clean_search_term(item_name: str) -> str:
+    """
+    검색 질의 만들 때만 쓰는 정리 함수 — item_name 원본은 안 건드림 (RFQ 등엔
+    원래 이름 그대로 나가야 함). "#132" 같은 내부 관리용 코드/번호가 붙어있으면
+    검색엔진·임베딩엔 노이즈만 되므로 떼어냄.
+    """
+    cleaned = re.sub(r"#\s*\d+", "", item_name)  # "#132" 같은 패턴 제거
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or item_name  # 다 지워져서 빈 문자열이면 원본으로 되돌림
+
+
 def rag_search_past_vendors(item_name: str, limit_categories: int = 5, limit_vendors: int = 10) -> List[dict]:
     """
     Postgres(pgvector) 벤더풀에서 2단계로 검색:
@@ -296,7 +307,7 @@ def rag_search_past_vendors(item_name: str, limit_categories: int = 5, limit_ven
     PG_PASSWORD = os.environ["PG_PASSWORD"]
     PG_DBNAME = os.environ["PG_DBNAME"]
 
-    query_embedding = _get_query_embedding(item_name)
+    query_embedding = _get_query_embedding(_clean_search_term(item_name))
 
     conn = psycopg.connect(
         host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASSWORD, dbname=PG_DBNAME,
@@ -347,42 +358,206 @@ def rag_search_past_vendors(item_name: str, limit_categories: int = 5, limit_ven
     ]
 
 
-def tavily_search_vendors(item_name: str, max_results: int = 15) -> List[dict]:
+def search_new_vendor_candidates(item_name: str, max_results: int = 15) -> List[dict]:
     """
-    Tavily 쓰임새 ① — 새 벤더 후보 자체를 웹에서 찾음.
+    새 벤더 후보 자체를 웹에서 찾음. 네이버 웹문서검색 사용 (Tavily 안 씀).
     이메일 없는 후보가 많이 걸러질 걸 감안해서 넉넉하게 뽑음 (기본 15개).
     """
-    results = _tavily_client.search(f"{item_name} 공급업체 제조사 견적", max_results=max_results)
-    return [{"name": r["title"], "source_url": r["url"], "raw_snippet": r["content"]} for r in results["results"]]
+    items = _search_naver_web(f"{_clean_search_term(item_name)} 공급업체 제조사 견적", display=max_results)
+    return [{"name": r.get("title", ""), "source_url": r.get("link", ""), "raw_snippet": r.get("description", "")} for r in items]
+
+
+_EXCLUDED_CONTACT_DOMAINS = [
+    "jobkorea.co.kr", "saramin.co.kr", "wanted.co.kr", "catch.co.kr",
+    "incruit.com", "albamon.com", "job.co.kr", "linkedin.com",
+]
+
+
+def _search_naver_web(query: str, display: int = 5) -> list:
+    """네이버 웹문서검색 공통 헬퍼. 응답의 title/description엔 <b> 태그가 섞여있어서 제거함."""
+    try:
+        res = requests.get(
+            "https://naverapihub.apigw.ntruss.com/search/v1/webkr",
+            headers={
+                "X-NCP-APIGW-API-KEY-ID": os.environ["NAVER_CLIENT_ID"],
+                "X-NCP-APIGW-API-KEY": os.environ["NAVER_CLIENT_SECRET"],
+            },
+            params={"query": query, "display": display},
+            timeout=10,
+        )
+        res.raise_for_status()
+        items = res.json().get("items", [])
+    except Exception as e:
+        print(f"[_search_naver_web] 검색 실패 ('{query}'): {e}")
+        return []
+
+    for item in items:
+        item["title"] = re.sub(r"<.*?>", "", item.get("title", ""))
+        item["description"] = re.sub(r"<.*?>", "", item.get("description", ""))
+    return items
+
+
+def _find_official_site(company_name: str) -> Optional[dict]:
+    """
+    회사의 공식 홈페이지로 추정되는 검색결과 1건을 찾음.
+    네이버 웹문서검색 사용 (무료 할당량 안에서 처리, Tavily 안 씀).
+    채용사이트 등은 결과에서 직접 걸러냄 (Tavily의 exclude_domains 같은
+    파라미터가 없어서, 반환된 링크 도메인을 파이썬에서 직접 확인).
+    """
+    items = _search_naver_web(f"{company_name} 공식 홈페이지")
+
+    for item in items:
+        link = item.get("link", "")
+        if any(domain in link for domain in _EXCLUDED_CONTACT_DOMAINS):
+            continue  # 채용사이트 등은 건너뜀
+        return {"url": link, "content": item.get("description", "")}
+
+    return None  # 걸러내고 남은 게 하나도 없으면 못 찾은 것
+
+
+def _fetch_page_text(url: str, max_chars: int = 6000) -> str:
+    """
+    URL을 직접 요청해서 HTML 태그 벗겨낸 텍스트만 반환 (Tavily 안 씀).
+    네이버 검색 스니펫보다 훨씬 풍부한 본문을 무료로 확보하기 위함.
+    """
+    if not url:
+        return ""
+    try:
+        res = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        res.raise_for_status()
+        text = re.sub(r"<script.*?</script>", " ", res.text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<.*?>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:max_chars]
+    except Exception as e:
+        print(f"[_fetch_page_text] 페이지 가져오기 실패 ({url}): {e}")
+        return ""
+
+
+def _extract_contact_from_page(company_name: str, source_url: str, page_text: str) -> dict:
+    """
+    공식 홈페이지로 추정되는 페이지 '하나'의 내용에서 이메일·전화번호·회사명(clean_name) 추출.
+    여러 문서를 모아놓고 AI가 어디서 뽑을지 고민하게 하는 대신, 신뢰할 만한
+    출처 하나로 미리 좁혀놓고 그 안에서만 뽑게 함 — 훨씬 더 정확함.
+
+    ⚠️ clean_name을 추가한 이유: 웹검색 결과의 title(페이지 제목)을 그대로
+    회사명으로 쓰면, "\"플라스틱 용접\" - 중국 제조 업체, 공급 업체 및 제품"
+    같은 깨진 텍스트가 그대로 ERPNext Supplier 이름으로 들어가는 사고가
+    실제로 있었음(포털 500 에러의 원인으로 의심됨). AI가 페이지 내용을 보고
+    진짜 회사명이 뭔지 판단해서 따로 뽑아줌.
+    """
+    import json
+    from langchain_openai import ChatOpenAI
+    from langchain_core.prompts import PromptTemplate
+
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    prompt = PromptTemplate.from_template(
+        "당신은 정보 추출 전문가입니다. 아래는 '{company_name}'의 공식 홈페이지로 "
+        "추정되는 페이지({url})의 내용입니다.\n"
+        "이 회사의 (1)정확한 회사명, (2)대표 이메일, (3)대표 전화번호를 찾아주세요.\n\n"
+        "[페이지 내용]\n{text}\n\n"
+        "규칙:\n"
+        "- 이 페이지가 진짜 이 회사의 것이 맞는지 스스로 확인하고, 아니라고 "
+        "판단되면 clean_name, email, phone 전부 null로 답하세요.\n"
+        "- clean_name은 검색결과 제목이나 페이지 <title> 태그 원문을 그대로 "
+        "베끼지 말고, 실제 상호명만 간결하게 답하세요 (예: '플라스틱 용접 전문 "
+        "업체 - 중국 제조사 목록' 같은 문구가 아니라 실제 회사 이름만).\n"
+        "- 페이지 안에 잡코리아·사람인·원티드 같은 채용중개사이트나 다른 "
+        "제3자 서비스의 연락처(채용문의, 고객센터 등)가 같이 언급되어 있을 수 "
+        "있습니다. 그런 제3자 연락처는 절대 답하지 말고, 반드시 이 회사 "
+        "자체의 연락처만 답하세요.\n"
+        "- 전화번호와 팩스번호를 명확히 구분하세요. 팩스번호를 전화번호로 답하면 안 됩니다.\n"
+        "- 확신이 없으면 해당 값을 null로 답하세요. 틀린 값을 넣는 것보다 모른다고 하는 게 낫습니다.\n"
+        "- 반드시 아래 JSON 형식으로만 답하세요, 다른 설명 붙이지 마세요:\n"
+        '{{"clean_name": "값 또는 null", "email": "값 또는 null", "phone": "값 또는 null"}}'
+    )
+    chain = prompt | llm
+    result_text = chain.invoke({"company_name": company_name, "url": source_url, "text": page_text[:6000]}).content
+
+    try:
+        cleaned = result_text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        parsed = json.loads(cleaned)
+        clean_name = parsed.get("clean_name") if parsed.get("clean_name") not in (None, "null", "") else None
+        email = parsed.get("email") if parsed.get("email") not in (None, "null", "") else None
+        phone = parsed.get("phone") if parsed.get("phone") not in (None, "null", "") else None
+    except (json.JSONDecodeError, AttributeError) as e:
+        print(f"[_extract_contact_from_page] '{company_name}' AI 응답 파싱 실패: {e}")
+        return {"clean_name": None, "email": None, "phone": None}
+
+    # 코드로 한 번 더 검증 — AI가 프롬프트 지시를 놓쳐도, 이메일 도메인이
+    # 제3자 서비스면 여기서 무조건 걸러냄 (실제로 잡코리아 이메일이 샌 적 있어서 추가함)
+    if email and any(f"@{domain}" in email or email.endswith(f"@{domain}") for domain in _EXCLUDED_CONTACT_DOMAINS):
+        print(f"[_extract_contact_from_page] '{company_name}' 추출된 이메일({email})이 제3자 도메인이라 폐기")
+        email = None
+
+    return {"clean_name": clean_name, "email": email, "phone": phone}
+
+
+# [보류] 카카오 로컬 API — 전화번호 전용 구조화 조회, 지금은 안 씀
+# (연락처가 그렇게까지 중요하지 않다고 판단, 웹문서검색+AI로 통합함.
+#  나중에 히트율이 너무 낮으면 이거 다시 살려서 쓰면 됨)
+# def _search_kakao_local_phone(company_name: str) -> Optional[str]:
+#     try:
+#         res = requests.get(
+#             "https://dapi.kakao.com/v2/local/search/keyword.json",
+#             headers={"Authorization": f"KakaoAK {os.environ['KAKAO_REST_API_KEY']}"},
+#             params={"query": company_name, "size": 1},
+#             timeout=10,
+#         )
+#         res.raise_for_status()
+#         documents = res.json().get("documents", [])
+#     except Exception as e:
+#         print(f"[_search_kakao_local_phone] 카카오 검색 실패 ({company_name}): {e}")
+#         return None
+#     if not documents:
+#         return None
+#     phone = documents[0].get("phone", "").strip()
+#     return phone or None
 
 
 def _enrich_contact_info(vendor: dict) -> dict:
     """
-    Tavily 쓰임새 ② — 후보 업체의 이메일·전화번호 검색 (제약조건 없는 단순 버전).
-    ⚠️ 팩스번호가 전화번호로 잡히거나, 다른 회사 정보가 섞일 수 있음 — 일단
-    "아무것도 안 뜨는 것"보다 "뭐라도 뜨는 것"을 우선한 버전.
+    후보 업체의 이메일·전화번호 확보. 네이버 웹문서검색으로 공식사이트를
+    찾고, 그 페이지 내용을 AI로 추출해서 이메일·전화 둘 다 채움.
     """
+    name = vendor.get("name", "")
+
     if vendor.get("email") and vendor.get("phone"):
-        return vendor
+        return vendor  # 둘 다 채워졌으면 더 안 봐도 됨
 
     name = vendor.get("name", "")
-    try:
-        results = _tavily_client.search(query=f"{name} 이메일 연락처 전화번호", max_results=5, search_depth="basic")
-    except Exception as e:
-        print(f"[_enrich_contact_info] Tavily 검색 실패 ({name}): {e}")
+    site = _find_official_site(name)
+
+    if not site:
+        print(f"[_enrich_contact_info] '{name}' 공식 홈페이지로 추정되는 곳을 못 찾음")
         return vendor
 
-    combined_text = " ".join(f"{r.get('title', '')} {r.get('content', '')}" for r in results.get("results", []))
+    site_url = site.get("url", "")
+    page_text = site.get("content", "")  # 네이버 검색 스니펫 (기본값)
+
+    # 직접 페이지를 가져와서 스니펫보다 풍부한 본문 확보 시도 (Tavily 안 씀, 실패하면 스니펫으로 진행)
+    fetched = _fetch_page_text(site_url)
+    if fetched:
+        page_text = fetched
+
+    extracted = _extract_contact_from_page(name, site_url, page_text)
+
+    # 검색결과 title을 그대로 회사명으로 썼던 게 문제였어서, AI가 페이지에서
+    # 직접 확인한 정식 회사명이 있으면 그걸로 교체함 (Supplier 이름 깨짐 방지)
+    if extracted.get("clean_name"):
+        print(f"[_enrich_contact_info] 회사명 정리: '{name}' → '{extracted['clean_name']}'")
+        vendor["name"] = extracted["clean_name"]
+
+    if not vendor.get("email") and extracted.get("email"):
+        vendor["email"] = extracted["email"]
+    if not vendor.get("phone") and extracted.get("phone"):
+        vendor["phone"] = extracted["phone"]
 
     if not vendor.get("email"):
-        m = _EMAIL_PATTERN.search(combined_text)
-        if m:
-            vendor["email"] = m.group(0)
-
+        print(f"[_enrich_contact_info] '{name}' 신뢰할 만한 이메일 못 찾음")
     if not vendor.get("phone"):
-        m = _PHONE_PATTERN.search(combined_text)
-        if m:
-            vendor["phone"] = m.group(1)
+        print(f"[_enrich_contact_info] '{name}' 신뢰할 만한 전화번호 못 찾음")
 
     return vendor
 
@@ -390,24 +565,39 @@ def _enrich_contact_info(vendor: dict) -> dict:
 def find_qualified_suppliers(item_name, target_count=10):
     """
     1) RAG로 1차 후보 target_count개 추림
-    2) 각각 Tavily로 이메일·전화 보강
+    2) 각각 네이버 웹문서검색+AI로 이메일·전화 보강
     3) 이메일 없으면 가차없이 버림 (RFQ 못 보내는 후보는 의미 없음)
-    4) 버려서 부족해진 만큼 Tavily 직접검색으로 채워서 target_count개 맞춤
+    4) 버려서 부족해진 만큼 네이버 웹문서검색으로 새 후보 찾아서 target_count개 맞춤
+
+    ⚠️ 중복 방지를 "이름"만으로 하면 안 됨 — RAG랑 네이버 검색에서 같은 회사가
+    서로 다른 이름 문자열로 나올 수 있어서(예: "허닝스톤즈" vs "Honing Stones"),
+    실제로 같은 회사한테 RFQ가 두 번 나간 사고가 있었음. 그래서 이메일이
+    확인된 후에는 이메일 기준으로도 한 번 더 중복 체크함.
     """
     qualified = []
     seen_names = set()
+    seen_emails = set()
 
     def add_if_qualified(vendor):
         key = vendor.get("name", "").strip().lower()
         if not key or key in seen_names:
             return False
         vendor = _enrich_contact_info(vendor)
-        if vendor.get("email"):
-            qualified.append(vendor)
-            seen_names.add(key)
-            return True
-        print(f"  '{vendor.get('name')}' 이메일 없음 → 버림")
-        return False
+
+        email = vendor.get("email")
+        if not email:
+            print(f"  '{vendor.get('name')}' 이메일 없음 → 버림")
+            return False
+
+        email_key = email.strip().lower()
+        if email_key in seen_emails:
+            print(f"  '{vendor.get('name')}' 이메일({email})이 이미 확보된 다른 업체와 동일 → 중복으로 버림")
+            return False
+
+        qualified.append(vendor)
+        seen_names.add(key)
+        seen_emails.add(email_key)
+        return True
 
     # 1) RAG 1차 후보
     rag_candidates = rag_search_past_vendors(item_name, limit_vendors=target_count)
@@ -417,12 +607,12 @@ def find_qualified_suppliers(item_name, target_count=10):
 
     print(f"[find_qualified_suppliers] RAG 중 이메일 확보 {len(qualified)}/{target_count}건")
 
-    # 2) 부족한 만큼 Tavily 직접검색으로 채움
+    # 2) 부족한 만큼 네이버 웹문서검색으로 새 후보 찾아서 채움
     if len(qualified) < target_count:
         needed = target_count - len(qualified)
-        print(f"[find_qualified_suppliers] {needed}건 부족 → Tavily 직접검색으로 보충")
+        print(f"[find_qualified_suppliers] {needed}건 부족 → 네이버 웹문서검색으로 보충")
 
-        web_candidates = tavily_search_vendors(item_name)
+        web_candidates = search_new_vendor_candidates(item_name)
         for c in web_candidates:
             if len(qualified) >= target_count:
                 break
@@ -460,8 +650,19 @@ def _ensure_supplier_exists(name, email=None):
     RFQ의 suppliers 필드는 Link라서, 존재하지 않는 이름을 그냥 넣으면
     LinkValidationError로 RFQ 생성 자체가 실패함 (실제로 겪은 에러).
 
+    ⚠️ 이름 정제(sanitize)를 마지막 안전장치로 한 번 더 함 — AI가 clean_name을
+    잘 뽑아주는 게 기본이지만, 혹시 놓쳐도 여기서 HTML 인코딩(&quot; 등)이나
+    비정상적으로 긴 텍스트가 그대로 Supplier 이름으로 들어가는 걸 막음
+    (실제로 이것 때문에 포털 페이지가 500 에러로 깨진 적 있음).
+
     반환: (등록된 이름, 이메일) — 등록 실패하면 (None, None)
     """
+    import html as _html
+
+    name = _html.unescape(name).strip()
+    if len(name) > 140:  # ERPNext Supplier 이름 필드 길이 여유있게 제한
+        name = name[:140].strip()
+
     try:
         existing = erp_get_one("Supplier", name)
         return name, (existing.get("email_id") or email)

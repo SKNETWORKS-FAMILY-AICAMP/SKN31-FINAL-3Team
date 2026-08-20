@@ -99,4 +99,5 @@ def watch_for_new_material_requests():
 
 
 if __name__ == "__main__":
+    print(os.getenv('NAVER-CLIENT-Id'))
     watch_for_new_material_requests()
