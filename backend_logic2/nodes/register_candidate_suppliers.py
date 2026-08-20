@@ -1,0 +1,102 @@
+"""
+nodes/register_candidate_suppliers.py — 5번 모듈:
+resolve_suppliers.py로 찾은 신규 후보들을 실제 ERPNext Supplier로 등록
+
+⚠️ Contact/User/User Permission은 여기서 안 만듦 — 그건 포털 로그인이
+필요한 "RFQ 발송" 단계(아직 구현 안 함)에서, ERPNext 내장기능
+(send_supplier_emails)이 알아서 처리하는 부분. 여기는 순수하게
+"Supplier 문서로 존재하게만" 만드는 역할.
+
+이미 존재하는 Supplier는 건너뜀 (중복 생성 방지).
+
+폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/이 파일
+
+실행: python nodes/register_candidate_suppliers.py
+"""
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import html
+from erp_client import erp_get_one, erp_post, ERPNextAPIError
+
+
+def _sanitize_name(name: str, max_length: int = 140) -> str:
+    """
+    HTML 인코딩(&quot; 등) 풀고 길이 제한 — 검색결과 제목을 그대로 이름으로
+    쓰다가 깨진 텍스트가 Supplier 이름으로 들어가서 포털 페이지가 500 에러로
+    깨진 적이 실제로 있어서, 등록 직전에 마지막 안전장치로 정리함.
+    """
+    cleaned = html.unescape(name).strip()
+    return cleaned[:max_length].strip()
+
+
+def supplier_exists(name: str) -> bool:
+    """이 이름의 Supplier가 ERPNext에 이미 있는지 확인"""
+    try:
+        return erp_get_one("Supplier", name) is not None
+    except ERPNextAPIError:
+        return False
+
+
+def register_candidate_suppliers(candidates: list) -> list:
+    """
+    candidates: [{"name": ..., "email": ...(선택), "phone": ...(선택)}, ...]
+    이미 존재하는 이름은 건너뛰고, 없는 것만 새로 생성.
+
+    반환: [{"name": 등록된이름, "status": "created" 또는 "already_exists" 또는 "failed", ...}]
+    """
+    results = []
+
+    for c in candidates:
+        raw_name = c.get("name")
+        if not raw_name:
+            results.append({"name": None, "status": "failed", "reason": "이름 없음"})
+            continue
+
+        name = _sanitize_name(raw_name)
+
+        if supplier_exists(name):
+            results.append({"name": name, "status": "already_exists"})
+            continue
+
+        payload = {
+            "supplier_name": name,
+            "supplier_group": "All Supplier Groups",
+            "country": "Korea, Republic of",
+            "supplier_type": "Company",
+        }
+        if c.get("email"):
+            payload["email_id"] = c["email"]
+
+        try:
+            created = erp_post("Supplier", payload)
+            results.append({"name": created["name"], "status": "created"})
+        except ERPNextAPIError as e:
+            results.append({"name": name, "status": "failed", "reason": str(e)})
+
+    return results
+
+
+if __name__ == "__main__":
+    # 실제 흐름 테스트: MR ID로 resolve_suppliers 결과를 가져와서 그대로 등록
+    from resolve_supplier import resolve_suppliers_for_mr
+
+    mr_name = input("Material Request ID 입력: ").strip()
+    resolved = resolve_suppliers_for_mr(mr_name)
+
+    for item_code, info in resolved.items():
+        print(f"\n{'='*50}")
+        print(f"[{item_code}] 출처: {info['source']}")
+        print("=" * 50)
+
+        if info["source"] == "existing":
+            print("  기존 승인공급사라 등록 불필요:")
+            for s in info["suppliers"]:
+                print(f"    - {s}")
+            continue
+
+        results = register_candidate_suppliers(info["suppliers"])
+        for r in results:
+            print(f"  - {r['name']}: {r['status']}" + (f" ({r.get('reason')})" if r.get("reason") else ""))

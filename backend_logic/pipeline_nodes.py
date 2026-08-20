@@ -31,7 +31,7 @@ from erp_client import (
     erp_post,
     ERPNextAPIError,
     create_rfq_from_material_request,
-    send_rfq_with_portal_access,
+    send_rfq_native,
 )
 from bidding_decision import decide_bidding
 
@@ -41,7 +41,9 @@ load_dotenv()
 _EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _PHONE_PATTERN = re.compile(r"(0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4})")
 
-TARGET_SUPPLIER_COUNT = 10  # 신규탐색 시 이메일 확보된 후보를 몇 개 채울지
+TARGET_SUPPLIER_COUNT = 1  # ⚠️ 테스트 속도 위해 임시로 1로 낮춤. 실제 비딩(여러 곳 견적비교)
+# 하려면 나중에 다시 10 정도로 늘려야 함 — 1개면 "비교"가 안 됨, 지금은 파이프라인
+# 로직 검증 속도 우선이라 이렇게 둠.
 
 
 # ============================================================
@@ -693,8 +695,12 @@ def create_rfq_node(state) -> dict:
     전체를 대상으로 RFQ 생성 + 발송.
 
     ⚠️ RFQ 만들기 전에, 아직 ERPNext Supplier로 없는 신규 벤더는 먼저
-    Supplier로 등록함 (RAG/Tavily로 찾은 후보는 이 시점까지 ERPNext에
+    Supplier로 등록함 (RAG/웹검색으로 찾은 후보는 이 시점까지 ERPNext에
     한 번도 안 올라가있는 상태라서, 등록 없이 RFQ 만들면 에러남).
+
+    발송은 ERPNext 자체 내장 기능(send_rfq_native)에 맡김 — 계정생성·
+    Contact연결·권한부여를 우리가 API로 직접 흉내내다가 계속 문제(500 에러)가
+    생겼어서, 사람이 UI에서 하는 것과 똑같은 내장 로직으로 전환함.
     """
     supplier_names, supplier_emails = [], {}
 
@@ -723,18 +729,11 @@ def create_rfq_node(state) -> dict:
         print(msg)
         return {**state, "result_message": msg}
 
-    sent_count = 0
-    for name in supplier_names:
-        email = supplier_emails.get(name)
-        if not email:
-            print(f"[create_rfq_node] '{name}' 이메일 없음, 발송 생략")
-            continue
-        try:
-            send_rfq_with_portal_access(rfq["name"], name, email)
-            sent_count += 1
-        except Exception as e:
-            print(f"[create_rfq_node] '{name}' 발송 실패: {e}")
+    try:
+        send_rfq_native(rfq["name"])
+        msg = f"[create_rfq_node] RFQ {rfq['name']} 생성 + 발송 완료 ({len(supplier_names)}개 공급사)"
+    except Exception as e:
+        msg = f"[create_rfq_node] RFQ {rfq['name']} 생성은 됐지만 발송 실패: {e}"
 
-    msg = f"[create_rfq_node] RFQ {rfq['name']} 생성 완료, {sent_count}/{len(supplier_names)}개 공급사에 발송"
     print(msg)
     return {**state, "rfq_name": rfq["name"], "result_message": msg}
