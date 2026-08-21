@@ -1,5 +1,5 @@
 """
-get_supplier_quotations.py — 공급사 견적 수신 조회
+nodes/get_supplier_quotations.py — 7번 모듈: 공급사 견적 수신 조회
 
 입력: RFQ 이름 (예: PUR-RFQ-2026-00270)
 하는 일: 해당 RFQ에 대해 공급사들이 포털에서 제출한 "Supplier Quotation" 문서들을 조회
@@ -9,9 +9,15 @@ get_supplier_quotations.py — 공급사 견적 수신 조회
 검토/생성 같은 다른 기능은 각자 독립된 모듈 파일에서 처리하고, 여기서는
 erp_client.py의 공통 함수(erp_get / erp_get_one)만 가져다 씀.
 이 파일만 단독으로 실행해도 동작함 (다른 모듈에 의존하지 않음).
+
+폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/이 파일
+
+실행: python nodes/get_supplier_quotations.py
 """
 
 import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from erp_client import erp_get, erp_get_one, ERPNextAPIError
 
@@ -106,12 +112,11 @@ def print_quotations_summary(rfq_name, quotations):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("사용법: python get_supplier_quotations.py <RFQ_이름>")
-        print("예:     python get_supplier_quotations.py PUR-RFQ-2026-00270")
-        sys.exit(1)
+    rfq_name = input("RFQ 이름 입력 (예: PUR-RFQ-2026-00270): ").strip()
 
-    rfq_name = sys.argv[1]
+    if not rfq_name:
+        print("RFQ 이름이 비어있습니다.")
+        sys.exit(1)
 
     try:
         quotations = get_supplier_quotations(rfq_name)
