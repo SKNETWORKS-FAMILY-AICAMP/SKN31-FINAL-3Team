@@ -76,6 +76,8 @@ def create_rfq(mr_name: str, supplier_names: list, message: str = DEFAULT_MESSAG
 
     payload = {
         "transaction_date": mr["transaction_date"],
+        "schedule_date": mr["items"][0]["schedule_date"],  # 헤더 레벨 필드 — UI로 만들면
+        # 자동으로 채워지는데 API로는 명시 안 하면 빈 채로 남아서 문제였을 가능성 있음
         "message_for_supplier": message,
         "items": items_payload,
         "suppliers": suppliers_payload,

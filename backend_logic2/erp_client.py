@@ -33,14 +33,18 @@ class ERPNextAPIError(Exception):
     pass
 
 
-def erp_get(doctype, filters=None, fields=None):
-    """ERPNext에서 문서 목록 조회"""
+def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None):
+    """ERPNext에서 문서 목록 조회. order_by 예: 'creation desc', limit은 최대 건수"""
     import json
     params = {}
     if filters:
         params["filters"] = json.dumps(filters)
     if fields:
         params["fields"] = json.dumps(fields)
+    if order_by:
+        params["order_by"] = order_by
+    if limit:
+        params["limit_page_length"] = limit
 
     res = requests.get(f"{SITE_URL}/api/resource/{doctype}", headers=HEADERS, params=params)
     if res.status_code != 200:
@@ -104,7 +108,8 @@ def erp_send_email(doctype, name, recipients, subject, content):
     없어서 그동안 실제 이메일이 나가버린 적도 있었고, 비밀번호 같은
     내용을 확인할 방법도 없었음. 이제 이걸로 둘 다 해결됨.
     """
-    if os.getenv("TEST_MODE", "false").lower() == "true":
+    # ⚠️ 기본값을 "true"(=발송 생략)로 둠 — .env 로딩 실패시 안전한 쪽으로 fallback
+    if os.getenv("TEST_MODE", "true").lower() != "false":
         print(f"\n[TEST_MODE] 실제 발송 생략 — {doctype}/{name}")
         print(f"  수신자: {recipients}")
         print(f"  제목: {subject}")
