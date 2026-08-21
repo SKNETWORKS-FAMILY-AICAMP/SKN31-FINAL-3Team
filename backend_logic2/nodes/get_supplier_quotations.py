@@ -16,9 +16,9 @@ erp_client.py의 공통 함수(erp_get / erp_get_one)만 가져다 씀.
 """
 
 import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import os 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from erp_client import erp_get, erp_get_one, ERPNextAPIError
 
 
