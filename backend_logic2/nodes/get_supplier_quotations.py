@@ -12,85 +12,75 @@ nodes/get_supplier_quotations.py — 7번 모듈: 공급사 견적 수신 조회
 erp_client.py의 공통 함수(erp_get / erp_get_one)만 가져다 씀.
 이 파일만 단독으로 실행해도 동작함 (다른 모듈에 의존하지 않음).
 
-<<<<<<< HEAD
-⚠️ Notes 필드 관련: ERPNext 화면상 "Notes"로 보이는 부분은 실제로는 Supplier
-Quotation의 "Terms" 탭 > "Terms and Conditions" 영역이고, API 필드명은
-"terms"로 확인됨. (Supplier Quotation > Terms 탭, 예: PUR-SQTN-2026-00262)
-=======
+⚠️ notes_raw를 가져오는 필드명(_extract_raw_notes 안의 candidate_fields)이
+아직 100% 확정이 아님 — check_sq_fields.py로 실제 Supplier Quotation 문서를
+열어서 Notes 텍스트박스가 정확히 어느 필드에 저장되는지 확인 후, 그 필드명을
+candidate_fields 맨 앞에 추가할 것.
+
 폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/이 파일
 
 실행: python nodes/get_supplier_quotations.py
->>>>>>> 7fbd5c8cb0cb5cdbb665fabd405d190cf6eec650
 """
 
 import json
 import os
 import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-<<<<<<< HEAD
 from openai import OpenAI
-from backend_logic2.erp_client import erp_get, erp_get_one, ERPNextAPIError
 
+from erp_client import erp_get, erp_get_one, ERPNextAPIError
 
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-# 확인된 실제 필드명(terms)을 최우선으로 두고, 혹시 다른 곳에 값이 있을 수도
-# 있으니 나머지는 fallback으로 남겨둠
-NOTES_FIELD_CANDIDATES = ["terms", "custom_notes", "notes", "remarks"]
+# ⚠️ "gpt-5.4-mini"는 실제 존재 확인이 안 된 모델명이라, 검증된 걸로 기본값 설정.
+# 팀에서 다른 모델 쓰기로 확정되면 .env의 OPENAI_MODEL로 덮어쓰면 됨.
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
 
 def _extract_raw_notes(detail):
-    """Supplier Quotation 문서에서 공급사가 남긴 자유 텍스트 Notes를 뽑아냄.
-    후보 필드명들을 순서대로 확인해서 값이 있는 첫 번째 걸 반환."""
-    for field in NOTES_FIELD_CANDIDATES:
-        val = detail.get(field)
-        if val:
-            return val
+    """
+    Supplier Quotation 문서에서 공급사가 남긴 Notes(자유텍스트) 추출.
+    정확한 필드명이 아직 미확인이라, 흔히 쓰이는 후보들을 순서대로 시도함.
+    (check_sq_fields.py로 확인되면 이 리스트 맨 앞에 확정된 필드명 추가)
+    """
+    candidate_fields = ["terms", "tc_name", "notes", "instructions", "remarks"]
+    for field in candidate_fields:
+        value = detail.get(field)
+        if value:
+            return value
     return None
 
 
-def parse_notes_to_json(raw_note, client=None):
+def parse_notes_to_json(raw_note, client):
     """
-    공급사가 자유 텍스트로 남긴 Notes(예: "2026/08/25까지 제출 가능합니다.
-    25*34*32 cm")를 AI로 구조화된 JSON으로 변환.
-
-    원문에 없는 내용은 추측해서 채우지 않고 null로 남기도록 프롬프트에 명시함.
+    공급사가 자유롭게 적은 Notes를 AI로 구조화된 JSON으로 변환.
+    확신 없는 항목은 억지로 채우지 않고 null로 둠.
     """
-    if not raw_note:
-        return None
+    empty_result = {"delivery_date": None, "dimensions": None, "other_notes": None}
 
-    client = client or OpenAI()
+    if not raw_note or not raw_note.strip():
+        return empty_result
 
-    system_prompt = (
-        "너는 구매 담당자를 돕는 어시스턴트다. 공급사가 견적서에 자유 텍스트로 "
-        "남긴 메모에서 납기(제출/납품 가능 일자)와 규격(치수) 등 구조화 가능한 "
-        "정보를 뽑아내라. 원문에 없는 내용을 추측해서 채우지 마라 — 없으면 null. "
-        "반드시 JSON으로만 응답하고 다른 텍스트는 포함하지 마라."
-    )
-    user_prompt = (
-        f"원문 메모:\n{raw_note}\n\n"
-        "아래 JSON 형식으로만 응답해라:\n"
-        "{\n"
-        '  "delivery_date": "<납기/제출 가능 일자, 원문 표현 그대로. 없으면 null>",\n'
-        '  "dimensions": "<규격/치수, 없으면 null>",\n'
-        '  "other_notes": "<위 두 항목 외 특이사항, 없으면 null>"\n'
-        "}"
+    prompt = (
+        "다음은 공급사가 견적서에 자유롭게 남긴 메모입니다. "
+        "여기서 납품 가능일(delivery_date), 규격/사이즈(dimensions), "
+        "그 외 특이사항(other_notes)을 뽑아서 JSON으로만 답하세요.\n\n"
+        f"메모: {raw_note}\n\n"
+        "확실하지 않은 항목은 null로 답하세요. 틀린 값을 넣는 것보다 "
+        "모른다고 하는 게 낫습니다.\n"
+        '반드시 이 형식으로만 답하세요: '
+        '{"delivery_date": "값 또는 null", "dimensions": "값 또는 null", "other_notes": "값 또는 null"}'
     )
 
-    res = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-    return json.loads(res.choices[0].message.content)
-=======
-import os 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from erp_client import erp_get, erp_get_one, ERPNextAPIError
->>>>>>> 7fbd5c8cb0cb5cdbb665fabd405d190cf6eec650
+    try:
+        res = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return json.loads(res.choices[0].message.content)
+    except Exception as e:
+        print(f"[parse_notes_to_json] 파싱 실패: {e}")
+        return empty_result
 
 
 def get_supplier_quotations(rfq_name):
@@ -123,8 +113,6 @@ def get_supplier_quotations(rfq_name):
     (notes_raw / notes_structured는 견적 문서 단위 정보라 같은 견적의 모든
     품목 행에 동일하게 반복돼서 들어감 — supplier/quotation_name 등과 같은 패턴)
     """
-    # 1) 이 RFQ를 참조(request_for_quotation)하는 Supplier Quotation 문서 목록 조회
-    #    (자식 테이블 Supplier Quotation Item의 필드로 필터링)
     quotations = erp_get(
         "Supplier Quotation",
         filters=[["Supplier Quotation Item", "request_for_quotation", "=", rfq_name]],
@@ -137,13 +125,9 @@ def get_supplier_quotations(rfq_name):
     openai_client = OpenAI()
     results = []
     for sq in quotations:
-        # 2) 목록 조회만으로는 자식 테이블(items)이 안 나오므로, 문서 하나씩
-        #    name으로 상세 조회해서 items(품목별 견적가/수량/납기)까지 가져옴
         detail = erp_get_one("Supplier Quotation", sq["name"])
         items = detail.get("items") or []
 
-        # 3) 공급사가 자유 텍스트로 남긴 Notes를 뽑아서 AI로 구조화
-        #    (문서 하나당 한 번만 호출 — 품목마다 반복 호출하지 않음)
         raw_note = _extract_raw_notes(detail)
         notes_structured = parse_notes_to_json(raw_note, client=openai_client)
 
