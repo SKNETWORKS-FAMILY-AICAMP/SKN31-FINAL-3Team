@@ -44,6 +44,7 @@ def create_rfq(mr_name: str, supplier_names: list, message: str = DEFAULT_MESSAG
     items_payload = [
         {
             "item_code": item["item_code"],
+            "item_name": item.get("item_name", ""),  # 필수값이었음 — 없으면 RFQ 생성 자체가 에러남
             "qty": item["qty"],
             "schedule_date": item["schedule_date"],
             "warehouse": item["warehouse"],
@@ -114,14 +115,19 @@ def send_rfq(rfq_name: str):
 
 
 def create_and_send_rfq(mr_name: str, supplier_names: list):
-    """create_rfq + send_rfq를 이어서 실행"""
+    """
+    RFQ 생성 (+ Submit). 발송은 이 함수가 따로 안 함 — erp_submit()이
+    Submit되는 순간 RFQ의 Suppliers 테이블에 있는 "Send Email" 체크박스가
+    이미 자동으로 발송을 트리거함. send_rfq()를 여기서 또 부르면 같은
+    이메일이 두 번 나가는 문제가 실제로 있었음(원인 확정됨).
+    """
     rfq = create_rfq(mr_name, supplier_names)
     if not rfq:
         print(f"[create_and_send_rfq] '{mr_name}' RFQ 생성 실패")
         return None
 
-    print(f"[create_and_send_rfq] RFQ 생성 완료: {rfq['name']}")
-    send_rfq(rfq["name"])
+    print(f"[create_and_send_rfq] RFQ 생성+발송 완료: {rfq['name']} "
+          f"(Submit 시 Suppliers의 'Send Email' 체크로 이미 자동 발송됨)")
     return rfq
 
 
