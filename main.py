@@ -63,31 +63,87 @@ import requests
 import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi import Header, HTTPException
+from urllib.parse import quote
 
 SECRET_KEY = get_or_create_jwt_secret()
 ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 
-def create_supabase_token(user_email: str, erp_sid: str, expires_delta: timedelta, token_type: str = "access_token"):
+def get_erp_user_profile(erp_base_url: str, erp_sid: str, user_id: str) -> dict:
+    """현재 ERPNext 세션의 User 문서에서 화면 표시용 계정 정보를 조회합니다."""
+    fallback = {
+        "id": user_id,
+        "email": user_id if "@" in user_id else "",
+        "username": user_id,
+        "full_name": user_id,
+        "user_type": "System User",
+    }
+
+    try:
+        response = requests.get(
+            f"{erp_base_url}/api/resource/User/{quote(user_id, safe='')}",
+            params={"fields": '["name","full_name","first_name","last_name","email","username","user_type"]'},
+            cookies={"sid": erp_sid},
+            timeout=10,
+        )
+        if response.status_code != 200:
+            return fallback
+
+        user = response.json().get("data") or {}
+        composed_name = " ".join(
+            part.strip() for part in (user.get("first_name"), user.get("last_name"))
+            if isinstance(part, str) and part.strip()
+        )
+        return {
+            "id": user.get("name") or user_id,
+            "email": user.get("email") or fallback["email"],
+            "username": user.get("username") or user.get("name") or user_id,
+            "full_name": user.get("full_name") or composed_name or user.get("name") or user_id,
+            "user_type": user.get("user_type") or fallback["user_type"],
+        }
+    except (requests.RequestException, ValueError, TypeError):
+        # 프로필 조회 실패가 이미 성공한 ERPNext 로그인을 막아서는 안 됩니다.
+        return fallback
+
+
+def create_supabase_token(
+    user_email: str,
+    erp_sid: str,
+    expires_delta: timedelta,
+    token_type: str = "access_token",
+    user_profile: dict | None = None,
+):
     """
     Supabase GoTrue JWT 사양을 완벽히 준수하는 토큰 생성 함수
     """
     now = datetime.now(timezone.utc)
     expire = now + expires_delta
+    profile = user_profile or {
+        "id": user_email,
+        "email": user_email if "@" in user_email else "",
+        "username": user_email,
+        "full_name": user_email,
+        "user_type": "System User",
+    }
     payload = {
         "iss": "biddingflow-auth",
         "sub": user_email,
         "aud": "authenticated",
         "role": "authenticated",
-        "email": user_email,
+        "email": profile.get("email") or user_email,
+        "name": profile.get("full_name") or user_email,
         "app_metadata": {
             "provider": "erpnext",
             "providers": ["erpnext"]
         },
         "user_metadata": {
-            "email": user_email,
-            "erp_sid": erp_sid
+            "email": profile.get("email") or user_email,
+            "erp_sid": erp_sid,
+            "erp_user_id": profile.get("id") or user_email,
+            "username": profile.get("username") or user_email,
+            "full_name": profile.get("full_name") or user_email,
+            "user_type": profile.get("user_type") or "System User",
         },
         "erp_sid": erp_sid,
         "token_type": token_type,
@@ -123,9 +179,10 @@ def login_to_erp(req: LoginRequest):
             sid = cookies.get("sid")
             
             if sid:
+                user_profile = get_erp_user_profile(ERP_BASE_URL, sid, req.email)
                 # Supabase GoTrue Auth 사양 토큰 발급
-                access_token = create_supabase_token(req.email, sid, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), token_type="access_token")
-                refresh_token = create_supabase_token(req.email, sid, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS), token_type="refresh_token")
+                access_token = create_supabase_token(req.email, sid, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), token_type="access_token", user_profile=user_profile)
+                refresh_token = create_supabase_token(req.email, sid, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS), token_type="refresh_token", user_profile=user_profile)
                 
                 return {
                     "success": True, 
@@ -135,12 +192,21 @@ def login_to_erp(req: LoginRequest):
                     "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
                     "refresh_token": refresh_token,
                     "user": {
-                        "id": req.email,
+                        "id": user_profile["id"],
                         "aud": "authenticated",
                         "role": "authenticated",
-                        "email": req.email,
+                        "email": user_profile["email"],
+                        "username": user_profile["username"],
+                        "full_name": user_profile["full_name"],
+                        "user_type": user_profile["user_type"],
                         "app_metadata": {"provider": "erpnext", "providers": ["erpnext"]},
-                        "user_metadata": {"email": req.email, "erp_sid": sid}
+                        "user_metadata": {
+                            "email": user_profile["email"],
+                            "erp_user_id": user_profile["id"],
+                            "username": user_profile["username"],
+                            "full_name": user_profile["full_name"],
+                            "user_type": user_profile["user_type"],
+                        }
                     }
                 }
             else:
@@ -160,14 +226,23 @@ def refresh_token(req: RefreshRequest):
     try:
         # 리프레시 토큰 검증
         payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM], audience="authenticated")
-        email = payload.get("email") or payload.get("sub")
-        sid = payload.get("erp_sid") or payload.get("user_metadata", {}).get("erp_sid")
+        metadata = payload.get("user_metadata") or {}
+        erp_user_id = payload.get("sub") or metadata.get("erp_user_id")
+        email = payload.get("email") or metadata.get("email") or erp_user_id
+        sid = payload.get("erp_sid") or metadata.get("erp_sid")
         
-        if email is None or sid is None:
+        if erp_user_id is None or sid is None:
             raise HTTPException(status_code=401, detail="유효하지 않은 토큰 페이로드입니다.")
             
         # 새 Access Token 발급
-        new_access_token = create_supabase_token(email, sid, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), token_type="access_token")
+        user_profile = {
+            "id": metadata.get("erp_user_id") or erp_user_id,
+            "email": metadata.get("email") or email,
+            "username": metadata.get("username") or erp_user_id,
+            "full_name": metadata.get("full_name") or payload.get("name") or email,
+            "user_type": metadata.get("user_type") or "System User",
+        }
+        new_access_token = create_supabase_token(erp_user_id, sid, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), token_type="access_token", user_profile=user_profile)
         
         return {
             "success": True,
