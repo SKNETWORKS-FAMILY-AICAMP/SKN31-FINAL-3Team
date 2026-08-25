@@ -199,9 +199,9 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
             fields=["actual_qty"],
         )
         total_qty = sum(b["actual_qty"] for b in (bins or []))
-        if total_qty > 0:
+        if total_qty > qty_needed:
             stocked_candidates.append({**c, "total_qty": total_qty})
-    print(f"[DEBUG] 재고 있는 후보만 추린 후: {len(stocked_candidates)}건")
+    print(f"[DEBUG] 재고가 요청량보다 많은 후보만 추린 후: {len(stocked_candidates)}건")
 
     if not stocked_candidates:
         return []
