@@ -6,10 +6,11 @@ find_duplicate_stock.py랑 다른 목적:
   - 이 모듈: "진짜 다른 물건인데, 변형(색상·규격 등)만 다르고 용도가 같아서
     대신 쓸 수 있는 것" 찾기 (예: 안전모(백색) 품절 → 안전모(황색) 대체가능)
 
-⚠️ 회사마다 표기방식이 다 달라서(괄호, ##, -, No. 등) 정규식 패턴 하나로는
-   커버 불가능함. 그래서 AI를 품목당 딱 1번만 써서 "핵심 물건 이름"을
-   뽑아내고, 그 이후 검색·필터링은 순수 문자열 포함여부(정규식 아님, 그냥
-   in 연산)로만 처리함 — AI 호출 최소화.
+⚠️ 회사마다 표기방식이 다 달라서(괄호, ##, -, No. 등 접미사형 / 등급·품질
+   수식어 등 접두사형) 정규식 패턴만으로는 edge case를 다 못 잡음. 그래서
+   AI를 품목당 딱 1번만 써서 "핵심 물건 이름"을 뽑아내고, 그 이후
+   검색·필터링은 순수 문자열 포함여부(정규식 아님, 그냥 in 연산)로만
+   처리함 — AI 호출 최소화.
 
 폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/이 파일
 
@@ -23,27 +24,34 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from erp_client import erp_get, erp_get_one
 
 
-def _get_base_name_ai(item_name: str) -> str:
+def _get_core_keyword(item_name: str) -> str:
     """
     AI로 품목명에서 핵심 단어(기본 품목명)만 뽑아냄.
-    회사마다 표기방식이 다 달라서(괄호, ##, -, No. 등) 정규식 하나로
-    커버가 안 됨 — AI가 표기방식 상관없이 "이게 진짜 무슨 물건인지" 핵심
-    단어를 뽑아주고, 그 이후 검색은 순수 문자열 포함여부(정규식)로만
-    처리해서 AI 호출을 품목당 딱 1번으로 제한함 (비용 절감).
+    회사마다 표기방식이 다 달라서(괄호, ##, -, No. 등 접미사형 / 등급·품질
+    수식어 등 접두사형) 정규식 패턴만으로는 edge case를 다 못 잡음 —
+    AI가 표기방식·위치 상관없이 "이게 진짜 무슨 물건인지" 핵심 명사를
+    판단해서 뽑아줌. AI 호출은 품목당 딱 1번으로 제한(비용 절감), 그 이후
+    검색·필터링은 순수 문자열 포함여부로만 처리함.
     """
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     prompt = PromptTemplate.from_template(
-        "다음은 회사 내부에서 쓰는 품목명입니다. 색상·규격·사이즈·관리번호 등 "
-        "부가정보를 다 떼어내고, 핵심 물건 이름만 뽑아주세요.\n\n"
+        "다음은 회사 내부에서 쓰는 품목명입니다. 색상·규격·사이즈·관리번호·등급·"
+        "품질수식어 등 부가정보를 다 떼어내고, 핵심 물건 이름(명사)만 뽑아주세요.\n\n"
+        "⚠️ 부가정보는 이름 뒤에 붙을 수도, 앞에 붙을 수도 있습니다. 위치와 "
+        "상관없이 다 떼어내고 핵심 명사만 남기세요.\n\n"
         "품목명: {item_name}\n\n"
-        "예시:\n"
+        "예시 (뒤에 붙는 경우):\n"
         "  안전모(백색) -> 안전모\n"
         "  안전모##1001 -> 안전모\n"
         "  장갑-L -> 장갑\n"
         "  연마재 No.132 -> 연마재\n\n"
+        "예시 (앞에 붙는 경우, 등급·품질 수식어):\n"
+        "  스탠다드 사무용 의자 -> 의자\n"
+        "  프리미엄 메쉬 의자 -> 의자\n"
+        "  고급 A4 복사용지 -> 복사용지\n\n"
         "핵심 이름만 답하세요, 다른 설명이나 문장부호 없이 단어만."
     )
     result = (prompt | llm).invoke({"item_name": item_name}).content
@@ -84,7 +92,7 @@ def find_substitute_items(item_code: str, qty_needed) -> list:
         return []
 
     item_name = item.get("item_name", item_code)
-    base = _get_base_name_ai(item_name)  # AI 호출은 여기 딱 한 번
+    base = _get_core_keyword(item_name)  # AI 호출은 여기 딱 한 번
     candidates = erp_get(
         "Item",
         filters=[["item_name", "like", f"%{base}%"]],
