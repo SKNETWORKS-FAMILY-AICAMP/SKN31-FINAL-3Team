@@ -232,51 +232,189 @@ def search_new_vendor_candidates(item_name, max_results=15):
 # 최종 조합: 공급사 확보
 # ────────────────────────────────
 
-def resolve_suppliers_for_item(item_code, item_name, target_count=TARGET_SUPPLIER_COUNT):
-    """
-    품목 하나에 대해 공급사 확보.
-    ① 기존 승인공급사 있으면 그대로 반환
-    ② 없으면 RAG로 찾고, 이메일 없으면 버리고, 부족하면 네이버 웹검색으로 보충
-    """
-    existing = get_existing_suppliers(item_code)
-    if existing:
-        return {"source": "existing", "suppliers": existing}
+# ────────────────────────────────
+# 적응형 탐색 (Agent) — RAG/웹검색을 도구로 두고 AI가 스스로 판단
+# ────────────────────────────────
 
+MAX_AGENT_ITERATIONS = 3  # 무한루프 방지, 최대 시도 횟수
+
+
+def _agent_decide_next_action(item_name, current_candidates, target_count, attempted_queries, iteration):
+    """
+    AI가 "이번엔 뭘 검색할지, RAG를 쓸지 웹검색을 쓸지" 판단.
+    이미 시도한 검색어는 피하고, 동의어/유사 카테고리 등으로 재시도하게 유도.
+    """
+    import json
+    from langchain_openai import ChatOpenAI
+    from langchain_core.prompts import PromptTemplate
+
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+    candidate_names = [c.get("name") for c in current_candidates]
+
+    prompt = PromptTemplate.from_template(
+        "당신은 공급사(벤더) 탐색을 돕는 에이전트입니다. 목표는 '{item_name}'을 "
+        "공급 가능한 업체를 {target_count}곳 찾는 것입니다.\n\n"
+        "지금까지 찾은 업체: {candidates}\n"
+        "지금까지 시도한 검색어: {attempted}\n"
+        "몇 번째 시도인지: {iteration}\n\n"
+        "다음에 뭘 할지 결정하세요:\n"
+        "- tool: 'rag'(내부 벤더DB, 이미 검증된 업체 위주, 빠름) 또는 "
+        "'web_search'(외부 웹검색, 더 넓지만 검증 안 됨) 중 선택\n"
+        "- query: 검색에 쓸 검색어. 이미 시도한 검색어와 겹치면 다른 표현(정식명칭, "
+        "업계 용어, 유사 카테고리 등)으로 바꿔서 제시하세요\n"
+        "- reason: 왜 이 도구/검색어를 골랐는지 한 문장\n\n"
+        '반드시 이 JSON 형식으로만 답하세요: '
+        '{{"tool": "rag 또는 web_search", "query": "검색어", "reason": "이유"}}'
+    )
+
+    result = (prompt | llm).invoke({
+        "item_name": item_name,
+        "target_count": target_count,
+        "candidates": json.dumps(candidate_names, ensure_ascii=False),
+        "attempted": json.dumps(attempted_queries, ensure_ascii=False),
+        "iteration": iteration,
+    }).content
+
+    try:
+        cleaned = result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        decision = json.loads(cleaned)
+        if decision.get("tool") not in ("rag", "web_search"):
+            raise ValueError("잘못된 tool 값")
+        return decision
+    except Exception:
+        # 파싱 실패시 안전한 기본값 (원래 고정순서 로직과 비슷하게)
+        fallback_tool = "rag" if iteration == 0 else "web_search"
+        return {"tool": fallback_tool, "query": item_name, "reason": "AI 응답 파싱 실패, 기본값 사용"}
+
+
+def _ai_confirm_relevant_vendor(item_name, vendor_name, vendor_description=None):
+    """
+    이 업체가 요청 품목을 실제로 공급할 만한 업체인지 AI로 확인.
+    RAG/웹검색 결과에 전혀 관련없는 업체(예: "안전모" 검색했는데 화장품회사)가
+    섞여 들어오는 걸 막는 관련성 검증. 연락처 보강(웹검색+AI추출, 비용 드는
+    작업) 하기 *전에* 먼저 걸러내서 낭비를 줄임.
+
+    반환: (관련있음 여부: bool, 이유: str)
+    """
+    import json
+    from langchain_openai import ChatOpenAI
+    from langchain_core.prompts import PromptTemplate
+
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    prompt = PromptTemplate.from_template(
+        "다음 업체가 '{item_name}'을(를) 공급·판매·제조할 만한 업체인지 판단하세요.\n\n"
+        "업체명: {vendor_name}\n"
+        "업체 설명: {vendor_description}\n\n"
+        "규칙:\n"
+        "- 업체명이나 설명에서 해당 품목과 관련된 업종(제조·유통·판매)이 드러나면 '관련있음'\n"
+        "- 완전히 다른 업종(예: 화장품회사가 안전모 검색결과에 나온 경우)이면 '관련없음'\n"
+        "- 애매하면 '관련있음'으로 판단하세요 (최종 선택은 사람이 하므로, 너무 "
+        "빡빡하게 걸러내면 후보 자체가 안 남는 게 더 문제)\n\n"
+        '반드시 이 JSON 형식으로만 답하세요: '
+        '{{"relevant": true 또는 false, "reason": "짧은 이유"}}'
+    )
+    result = (prompt | llm).invoke({
+        "item_name": item_name,
+        "vendor_name": vendor_name,
+        "vendor_description": vendor_description or "(설명 없음)",
+    }).content
+
+    try:
+        cleaned = result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        parsed = json.loads(cleaned)
+        return bool(parsed.get("relevant", True)), parsed.get("reason", "")
+    except Exception:
+        return True, "AI 응답 파싱 실패 (일단 포함, 사람이 최종 확인)"
+
+
+def resolve_suppliers_agent(item_code, item_name, target_count=TARGET_SUPPLIER_COUNT):
+    """
+    적응형 공급사 탐색 (Agent 버전).
+    RAG/웹검색을 "도구"로 두고, AI가 매 라운드마다 어떤 도구를 쓸지,
+    검색어를 뭘로 바꿀지 스스로 판단하며 반복함.
+
+    ⚠️ 기존 승인공급사 확인은 이 함수 밖(resolve_suppliers_for_item)에서
+    먼저 처리하는 게 맞음 — 이건 순수 "신규탐색"만 담당.
+    ⚠️ 최대 MAX_AGENT_ITERATIONS번까지만 시도 (무한루프/과금 방지 안전장치).
+
+    반환: {"source": "agent_search", "suppliers": [...], "tool_log": [...]}
+    tool_log에는 매 라운드 AI가 뭘 선택했는지 기록 (설명가능성용)
+    """
     qualified = []
     seen_names, seen_emails = set(), set()
+    attempted_queries = []
+    tool_log = []
 
     def add_if_qualified(vendor):
         key = vendor.get("name", "").strip().lower()
         if not key or key in seen_names:
             return
+
+        # 관련성 먼저 확인 (연락처 보강은 비용이 드는 작업이라, 그 전에 걸러냄)
+        is_relevant, reason = _ai_confirm_relevant_vendor(
+            item_name, vendor.get("name"), vendor.get("description")
+        )
+        if not is_relevant:
+            print(f"  '{vendor.get('name')}' 관련없는 업체로 판단, 제외: {reason}")
+            return
+
         vendor = enrich_contact_info(vendor)
         email = vendor.get("email")
         if not email:
-            print(f"  '{vendor.get('name')}' 이메일 없음 → 버림")
             return
         email_key = email.strip().lower()
         if email_key in seen_emails:
-            print(f"  '{vendor.get('name')}' 이메일 중복 → 버림")
             return
         qualified.append(vendor)
         seen_names.add(key)
         seen_emails.add(email_key)
 
-    rag_candidates = rag_search_vendors(item_name, limit_vendors=target_count * 3)
-    print(f"[resolve_suppliers] RAG 후보 {len(rag_candidates)}건 → 확인 중...")
-    for c in rag_candidates:
+    for iteration in range(MAX_AGENT_ITERATIONS):
         if len(qualified) >= target_count:
             break
-        add_if_qualified(c)
 
-    if len(qualified) < target_count:
-        print(f"[resolve_suppliers] {target_count - len(qualified)}건 부족 → 웹검색 보충")
-        for c in search_new_vendor_candidates(item_name):
+        decision = _agent_decide_next_action(
+            item_name, qualified, target_count, attempted_queries, iteration
+        )
+        tool_log.append(decision)
+        attempted_queries.append(decision["query"])
+
+        print(f"[Agent {iteration + 1}/{MAX_AGENT_ITERATIONS}] 도구: {decision['tool']} | "
+              f"검색어: '{decision['query']}' | 이유: {decision['reason']}")
+
+        if decision["tool"] == "rag":
+            raw_candidates = rag_search_vendors(decision["query"], limit_vendors=target_count * 3)
+        else:
+            raw_candidates = search_new_vendor_candidates(decision["query"])
+
+        print(f"  → 후보 {len(raw_candidates)}건 발견, 정제 중...")
+        for c in raw_candidates:
             if len(qualified) >= target_count:
                 break
             add_if_qualified(c)
 
-    return {"source": "new_search", "suppliers": qualified}
+        print(f"  → 현재까지 확보: {len(qualified)}/{target_count}건")
+
+    return {"source": "agent_search", "suppliers": qualified, "tool_log": tool_log}
+
+
+# ────────────────────────────────
+
+def resolve_suppliers_for_item(item_code, item_name, target_count=TARGET_SUPPLIER_COUNT, force_new_search=False):
+    """
+    품목 하나에 대해 공급사 확보.
+    ① 기존 승인공급사 있으면 그대로 반환 (force_new_search=True면 이 단계 건너뜀)
+    ② 없으면(또는 강제로) RAG로 찾고, 이메일 없으면 버리고, 부족하면 네이버 웹검색으로 보충
+    """
+    if not force_new_search:
+        existing = get_existing_suppliers(item_code)
+        if existing:
+            return {"source": "existing", "suppliers": existing}
+
+    # 신규탐색은 적응형 agent에게 위임 — RAG/웹검색 중 뭘 쓸지,
+    # 검색어를 어떻게 바꿔볼지 AI가 스스로 판단하며 반복함
+    return resolve_suppliers_agent(item_code, item_name, target_count)
 
 
 def resolve_suppliers_for_mr(mr_name, target_count=TARGET_SUPPLIER_COUNT):
