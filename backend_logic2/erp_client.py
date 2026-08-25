@@ -184,6 +184,8 @@ def erp_send_email(doctype, name, recipients, subject, content):
         "subject": subject,
         "content": content,
         "send_email": 1,
+        "attach_document_print": 1, 
+        "print_format": "Standard"
     }
     res = requests.post(
         f"{SITE_URL}/api/method/frappe.core.doctype.communication.email.make",
