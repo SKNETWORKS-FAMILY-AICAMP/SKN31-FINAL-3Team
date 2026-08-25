@@ -1,16 +1,24 @@
 """
-nodes/find_substitute_item.py — 대체품 추천 모듈
+nodes/find_substitute_item.py — 대체품 추천 모듈 (전면 재설계)
 
 find_duplicate_stock.py랑 다른 목적:
   - find_duplicate_stock: "이름만 다른 같은 물건" 찾기 (예: 장갑 == 장갑#103)
   - 이 모듈: "진짜 다른 물건인데, 변형(색상·규격 등)만 다르고 용도가 같아서
-    대신 쓸 수 있는 것" 찾기 (예: 안전모(백색) 품절 → 안전모(황색) 대체가능)
+    대신 쓸 수 있는 것" 찾기
 
-⚠️ 회사마다 표기방식이 다 달라서(괄호, ##, -, No. 등 접미사형 / 등급·품질
-   수식어 등 접두사형) 정규식 패턴만으로는 edge case를 다 못 잡음. 그래서
-   핵심 물건 이름 추출에만 AI를 품목당 딱 1번 씀. 그 이후 후보 그룹화는
-   ① 공백정규화 → ② 문자열 유사도(difflib, AI 아님) 순으로 처리해서
-   AI 호출을 최소화함.
+⚠️ 예전 버전(description 완전일치/유사도 비교로 그룹화)은 폐기함 — 실제
+   데이터를 보니 모든 품목의 description이 다 고유해서(같은 물건도 치수·
+   중량 등이 조금씩 달라 완전일치가 안 됨) 그 접근 자체가 전제부터 틀렸음.
+   문자열 유사도로 "AI가 이해하는 것"을 흉내내려다 계속 오판(스펙 좋은 게
+   오히려 유사도 낮게 나오는 등)이 나서, 흉내내지 않고 AI한테 후보 전체를
+   통째로 보여주고 판단을 맡기는 방식으로 바꿈.
+
+새 흐름:
+  ① item_group + 핵심단어(AI 1번)로 후보를 넓게 가져옴
+  ② 재고 있는 것만 추림
+  ③ AI 1번 호출로 후보 전체(이름+설명+재고)를 보여주고, 실제로 대체
+     가능한 것만 순위+이유와 함께 골라달라고 함
+  → AI 호출은 총 2번으로 고정 (후보 개수와 무관)
 
 폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/이 파일
 
@@ -21,17 +29,25 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import json
+import re
 from erp_client import erp_get, erp_get_one
+
+
+def _strip_html(text: str) -> str:
+    """description의 HTML 태그를 제거해서 순수 텍스트만 남김"""
+    if not text:
+        return ""
+    plain = re.sub(r"<[^>]+>", " ", text)
+    plain = re.sub(r"\s+", " ", plain)
+    return plain.strip()
 
 
 def _get_core_keyword(item_name: str) -> str:
     """
-    AI로 품목명에서 핵심 단어(기본 품목명)만 뽑아냄.
-    회사마다 표기방식이 다 달라서(괄호, ##, -, No. 등 접미사형 / 등급·품질
-    수식어 등 접두사형) 정규식 패턴만으로는 edge case를 다 못 잡음 —
-    AI가 표기방식·위치 상관없이 "이게 진짜 무슨 물건인지" 핵심 명사를
-    판단해서 뽑아줌. AI 호출은 품목당 딱 1번으로 제한(비용 절감), 그 이후
-    검색·필터링은 순수 문자열 포함여부로만 처리함.
+    AI로 품목명에서 핵심 단어(기본 품목명)만 뽑아냄. 회사마다 표기방식이
+    다 달라서(괄호·#·등급수식어 등, 위치도 앞/뒤 다양함) 정규식만으로는
+    edge case를 다 못 잡아 AI를 씀. 품목당 딱 1번만 호출.
     """
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
@@ -43,15 +59,11 @@ def _get_core_keyword(item_name: str) -> str:
         "⚠️ 부가정보는 이름 뒤에 붙을 수도, 앞에 붙을 수도 있습니다. 위치와 "
         "상관없이 다 떼어내고 핵심 명사만 남기세요.\n\n"
         "품목명: {item_name}\n\n"
-        "예시 (뒤에 붙는 경우):\n"
+        "예시:\n"
         "  안전모(백색) -> 안전모\n"
         "  안전모##1001 -> 안전모\n"
-        "  장갑-L -> 장갑\n"
-        "  연마재 No.132 -> 연마재\n\n"
-        "예시 (앞에 붙는 경우, 등급·품질 수식어):\n"
         "  스탠다드 사무용 의자 -> 의자\n"
-        "  프리미엄 메쉬 의자 -> 의자\n"
-        "  고급 A4 복사용지 -> 복사용지\n\n"
+        "  프리미엄 메쉬 의자 -> 의자\n\n"
         "핵심 이름만 답하세요, 다른 설명이나 문장부호 없이 단어만."
     )
     result = (prompt | llm).invoke({"item_name": item_name}).content
@@ -79,64 +91,78 @@ def _get_last_purchase_rate(item_code):
     return None
 
 
-def _merge_similar_groups_by_similarity(groups_summary, threshold=0.9):
+def _ai_rank_substitutes(item_name, item_description, qty_needed, candidates, max_results=5):
     """
-    1단계(공백정규화 기준 완전일치)로 이미 줄어든 그룹들을, 문자열 유사도
-    (difflib, 표준라이브러리 — AI 아님)로 다시 검토해서 "표현만 다르고 실제로
-    같은 규격"인 그룹끼리 병합함. 완전한 동의어(예: "고강도"↔"high-strength")
-    까지는 못 잡지만, 어순차이·사소한 표현차이는 충분히 잡아내면서 AI 호출
-    없이 처리됨.
+    후보 전체를 AI한테 한 번에 보여주고, 실제로 대체 가능한 것만 골라서
+    순위+이유를 매기게 함. 관련성 판단 + 순위 + 이유를 이 한 번의 호출로
+    다 처리함 (예전처럼 유사도 계산 → 임계값 필터 → 별도 최종검증, 이렇게
+    여러 단계로 흉내내지 않음).
 
-    groups_summary: [{"group_key": str, "description": str}]
-    반환: {group_key: 병합후_group_key} 형태의 매핑 (병합 안 되면 자기 자신에 매핑)
+    candidates: [{"item_code", "item_name", "description", "total_qty"}, ...]
+    반환: [{"item_code", "rank", "reason"}, ...] (AI가 부적합하다고 판단한 건 아예 목록에서 뺌)
     """
-    from difflib import SequenceMatcher
+    from langchain_openai import ChatOpenAI
+    from langchain_core.prompts import PromptTemplate
 
-    keys = [g["group_key"] for g in groups_summary]
-    descriptions = {g["group_key"]: g["description"] for g in groups_summary}
-    mapping = {k: k for k in keys}  # 기본값: 병합 없음(자기 자신)
+    if not candidates:
+        return []
 
-    for i in range(len(keys)):
-        for j in range(i + 1, len(keys)):
-            key_i, key_j = keys[i], keys[j]
-            # 이미 같은 그룹으로 병합됐으면 스킵
-            if mapping[key_i] == mapping[key_j]:
-                continue
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-            desc_i, desc_j = descriptions[key_i], descriptions[key_j]
-            if not desc_i or not desc_j:
-                continue  # 설명 없는 건 유사도 비교 자체를 안 함 (오판 방지)
+    candidates_json = [
+        {
+            "item_code": c["item_code"],
+            "item_name": c["item_name"],
+            "description": _strip_html(c.get("description") or ""),
+            "재고": c["total_qty"],
+        }
+        for c in candidates
+    ]
 
-            similarity = SequenceMatcher(None, desc_i, desc_j).ratio()
-            if similarity >= threshold:
-                # key_j가 속한 그룹 전체를 key_i의 그룹으로 병합
-                old_target = mapping[key_j]
-                new_target = mapping[key_i]
-                for k in keys:
-                    if mapping[k] == old_target:
-                        mapping[k] = new_target
+    prompt = PromptTemplate.from_template(
+        "요청품목: {item_name}\n"
+        "요청품목 설명: {item_description}\n"
+        "요청수량: {qty_needed}\n\n"
+        "아래 후보 품목들 중에서, 실제로 요청품목을 대신 쓸 수 있는 것들만 "
+        "골라서 적합도 순으로 순위를 매겨주세요 (최대 {max_results}개).\n\n"
+        "후보 목록:\n{candidates}\n\n"
+        "규칙:\n"
+        "- 용도·사용대상이 명확히 다른 물건(예: 화이트보드용 vs 연필용 지우개)은 "
+        "이름이 비슷해도 제외하세요.\n"
+        "- 스펙이 원본보다 낮아도(다운그레이드) 용도가 같으면 후보에 포함하되, "
+        "reason에 그 사실을 명시하세요.\n"
+        "- 재고가 요청수량보다 적으면 reason에 '부분충족(N개)'이라고 언급하세요.\n"
+        "- 적합한 후보가 하나도 없으면 빈 리스트를 반환하세요.\n\n"
+        '반드시 이 JSON 형식으로만 답하세요: '
+        '{{"ranking": [{{"item_code": "...", "rank": 1, "reason": "짧은 이유"}}]}}'
+    )
 
-    return mapping
+    result = (prompt | llm).invoke({
+        "item_name": item_name,
+        "item_description": _strip_html(item_description),
+        "qty_needed": qty_needed,
+        "candidates": json.dumps(candidates_json, ensure_ascii=False, indent=2),
+        "max_results": max_results,
+    }).content
+
+    try:
+        cleaned = result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        return json.loads(cleaned).get("ranking", [])
+    except Exception as e:
+        print(f"[_ai_rank_substitutes] AI 응답 파싱 실패: {e}")
+        return []
 
 
-def find_substitute_items(item_code: str, qty_needed, max_groups: int = 5) -> list:
+def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> list:
     """
-    특정 품목의 대체품 후보를 찾음. 3단계로 좁혀나감:
+    특정 품목의 대체품 후보를 찾음.
 
-    1차(item_group): 같은 분류만 대상으로 함. item_group이 없으면
-      이 단계는 건너뛰고 다음 단계로 진행 (없다고 탐색을 막지 않음).
-    2차(item_name): AI로 뽑은 핵심단어가 포함된 것만.
-    3차(description): 규격설명 유사도 0.9 이상인 것들끼리 하나로 묶어서
-      재고를 합산함 (예: "안전모#1"~"안전모#133"이 사실 같은 규격이면,
-      132줄이 아니라 1줄로 — 사람이 검토 가능한 수준으로).
-      description이 없는 항목은 서로 묶지 않음(잘못 합쳐지는 것 방지).
+    ① item_group(있으면) + 핵심단어로 후보를 넓게 가져옴
+    ② 재고 있는 것만 추림
+    ③ AI 1번 호출로 실제 대체가능한 것만 순위+이유 매겨서 반환
 
-    원본과 설명 유사도 0.8 이상인 것만 후보로 남기고, 그 안에서 유사도
-    높은 순으로 상위 max_groups개까지만 반환. 0.8 이상이 하나도 없으면
-    빈 리스트 반환.
-
-    반환: [{"item_codes"(list), "item_name", "description", "total_qty",
-            "fulfills_full_qty", "duplicate_count", "last_rate"}, ...]
+    반환: [{"item_code", "item_name", "description", "total_qty",
+            "fulfills_full_qty", "rank", "reason"}, ...]
     """
     item = erp_get_one("Item", item_code)
     if not item:
@@ -144,104 +170,65 @@ def find_substitute_items(item_code: str, qty_needed, max_groups: int = 5) -> li
 
     item_group = item.get("item_group")
     item_name = item.get("item_name", item_code)
-    base = _get_core_keyword(item_name)  # AI 호출은 여기 딱 한 번
+    item_description = item.get("description") or ""
+    base = _get_core_keyword(item_name)  # AI 호출 1번째
 
-    # ── 1차: item_group 필터링 ──
+    print(f"\n[DEBUG] 요청품목: {item_name} | item_group: {item_group} | 핵심단어: '{base}'")
+
+    # ① 후보 가져오기
+    filters = [["item_name", "like", f"%{base}%"]]
     if item_group:
-        group_filtered = erp_get(
-            "Item",
-            filters=[["item_group", "=", item_group]],
-            fields=["item_code", "item_name", "description"],
-        )
+        filters.append(["item_group", "=", item_group])
     else:
-        print(f"  '{item_code}'에 item_group이 없어 1차 필터링을 건너뜁니다.")
-        group_filtered = erp_get(
-            "Item",
-            filters=[["item_name", "like", f"%{base}%"]],  # item_group 없으면 최소한 이름으로는 좁혀서 가져옴
-            fields=["item_code", "item_name", "description"],
+        print(f"  '{item_code}'에 item_group이 없어 이름 기준으로만 탐색합니다.")
+
+    raw_candidates = erp_get(
+        "Item",
+        filters=filters,
+        fields=["item_code", "item_name", "description"],
+    )
+    raw_candidates = [c for c in (raw_candidates or []) if c["item_code"] != item_code]
+    print(f"[DEBUG] 후보 조회: {len(raw_candidates)}건")
+
+    # ② 재고 있는 것만 추림
+    stocked_candidates = []
+    for c in raw_candidates:
+        bins = erp_get(
+            "Bin",
+            filters=[["item_code", "=", c["item_code"]], ["actual_qty", ">", 0]],
+            fields=["actual_qty"],
         )
+        total_qty = sum(b["actual_qty"] for b in (bins or []))
+        if total_qty > 0:
+            stocked_candidates.append({**c, "total_qty": total_qty})
+    print(f"[DEBUG] 재고 있는 후보만 추린 후: {len(stocked_candidates)}건")
 
-    # ── 2차: item_name(핵심단어) 필터링 ──
-    candidates = [c for c in (group_filtered or []) if base in c["item_name"]]
+    if not stocked_candidates:
+        return []
 
-    matched = []
+    # ③ AI 최종 판단 (호출 2번째)
+    ranking = _ai_rank_substitutes(item_name, item_description, qty_needed, stocked_candidates, max_results)
+    print(f"[DEBUG] AI가 최종 선정한 대체품: {len(ranking)}건")
 
-    for c in candidates or []:
-        if c["item_code"] == item_code:
-            continue  # 요청한 그 품목 자체는 제외
-        if c["item_name"] == item_name:
-            continue  # 완전히 이름이 똑같으면 대체품이 아니라 그냥 같은 물건
-        matched.append(c)
-
-    # description 기준으로 그룹화 — 같은 규격이면 하나로 묶음
-    groups = {}
-    for c in matched:
-        desc = (c.get("description") or "").strip()
-        # 공백·줄바꿈 차이는 그룹키 계산에서 무시 (표시용 description은 원본 그대로 둠)
-        normalized_key = "".join(desc.split()) if desc else f"__no_desc__{c['item_code']}"
-        groups.setdefault(normalized_key, {"description": desc, "items": []})
-        groups[normalized_key]["items"].append(c)
-
-    # 2단계: 문자열 유사도(AI 아님)로, 공백정규화로도 안 잡힌 어순·표현
-    # 차이를 추가로 병합
-    groups_summary = [
-        {"group_key": k, "description": v["description"]} for k, v in groups.items()
-    ]
-    mapping = _merge_similar_groups_by_similarity(groups_summary)
-
-    merged_groups = {}
-    for group_key, group in groups.items():
-        target_key = mapping.get(group_key, group_key)
-        if target_key not in merged_groups:
-            merged_groups[target_key] = {"description": group["description"], "items": []}
-        merged_groups[target_key]["items"].extend(group["items"])
-    groups = merged_groups
-
+    candidates_by_code = {c["item_code"]: c for c in stocked_candidates}
     results = []
-    for group_key, group in groups.items():
-        group_items = group["items"]
-        total_qty = 0
-        item_codes = []
-
-        for gi in group_items:
-            bins = erp_get(
-                "Bin",
-                filters=[["item_code", "=", gi["item_code"]], ["actual_qty", ">", 0]],
-                fields=["actual_qty"],
-            )
-            group_qty = sum(b["actual_qty"] for b in (bins or []))
-            if group_qty > 0:
-                total_qty += group_qty
-                item_codes.append(gi["item_code"])
-
-        if not item_codes:
-            continue  # 이 그룹 전체 재고 0이면 후보에서 제외
-
-        # 원본 요청품목 description이랑 이 후보의 유사도 점수 (0~1)
-        from difflib import SequenceMatcher
-        original_desc = item.get("description") or ""
-        candidate_desc = group["description"] or ""
-        similarity = SequenceMatcher(None, original_desc, candidate_desc).ratio() if original_desc and candidate_desc else None
-
+    for r in ranking:
+        code = r.get("item_code")
+        c = candidates_by_code.get(code)
+        if not c:
+            continue
         results.append({
-            "item_codes": item_codes,
-            "item_name": group_items[0]["item_name"],
-            "description": group["description"] or "(설명 없음)",
-            "total_qty": total_qty,
-            "fulfills_full_qty": total_qty >= qty_needed,
-            "duplicate_count": len(item_codes),
-            "last_rate": _get_last_purchase_rate(item_codes[0]),
-            "similarity_to_original": similarity,
+            "item_code": code,
+            "item_name": c["item_name"],
+            "description": c.get("description"),
+            "total_qty": c["total_qty"],
+            "fulfills_full_qty": c["total_qty"] >= qty_needed,
+            "rank": r.get("rank"),
+            "reason": r.get("reason"),
+            "last_rate": _get_last_purchase_rate(code),
         })
 
-    # 유사도 0.8 이상인 것만 남기고, 그 안에서 유사도 높은 순 상위 max_groups개
-    # (0.8 미만이거나 애초에 비교 불가(설명없음)면 후보에서 제외 — 없으면 0개 반환)
-    results = [
-        r for r in results
-        if r["similarity_to_original"] is not None and r["similarity_to_original"] >= 0.8
-    ]
-    results.sort(key=lambda r: r["similarity_to_original"], reverse=True)
-    return results[:max_groups]
+    return results
 
 
 def find_substitutes_for_mr(mr_name: str) -> dict:
@@ -273,23 +260,18 @@ if __name__ == "__main__":
         original = erp_get_one("Item", item_code)
         print(f"\n{'='*50}")
         print(f"[요청품목] {item_code} — {original.get('item_name') if original else '?'}")
-        print(f"  설명: {original.get('description') or '(설명 없음)'}" if original else "")
         print(f"  요청수량: {info['qty_needed']}")
         print(f"{'='*50}")
 
         if not info["substitutes"]:
             print("  대체품 후보 없음")
 
-        for s in info["substitutes"]:
+        for s in sorted(info["substitutes"], key=lambda x: x.get("rank") or 99):
             rate_disp = f"{s['last_rate']:,.0f}원" if s["last_rate"] is not None else "구매이력 없음"
             fulfill_disp = "✅ 전량충족" if s["fulfills_full_qty"] else f"⚠️ 부분충족({s['total_qty']}개만 있음)"
-            dup_note = f" (동일규격 {s['duplicate_count']}개 코드 재고 합산)" if s["duplicate_count"] > 1 else ""
 
             print(f"\n  ─────────────────────────────")
-            print(f"  {s['item_name']}{dup_note}")
-            print(f"  코드: {', '.join(s['item_codes'][:5])}" + (" 외..." if len(s['item_codes']) > 5 else ""))
-            print(f"  합계재고: {s['total_qty']} | {fulfill_disp}")
-            sim_disp = f"{s['similarity_to_original']:.2f}" if s["similarity_to_original"] is not None else "비교불가(설명없음)"
-            print(f"  원본과 설명 유사도: {sim_disp}")
+            print(f"  #{s['rank']} {s['item_name']} ({s['item_code']})")
+            print(f"  재고: {s['total_qty']} | {fulfill_disp}")
             print(f"  최근단가: {rate_disp}")
-            print(f"  설명: {s['description']}")
+            print(f"  AI 판단 이유: {s['reason']}")
