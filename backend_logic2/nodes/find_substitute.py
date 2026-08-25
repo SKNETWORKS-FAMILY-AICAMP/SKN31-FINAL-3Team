@@ -8,9 +8,9 @@ find_duplicate_stock.py랑 다른 목적:
 
 ⚠️ 회사마다 표기방식이 다 달라서(괄호, ##, -, No. 등 접미사형 / 등급·품질
    수식어 등 접두사형) 정규식 패턴만으로는 edge case를 다 못 잡음. 그래서
-   AI를 품목당 딱 1번만 써서 "핵심 물건 이름"을 뽑아내고, 그 이후
-   검색·필터링은 순수 문자열 포함여부(정규식 아님, 그냥 in 연산)로만
-   처리함 — AI 호출 최소화.
+   핵심 물건 이름 추출에만 AI를 품목당 딱 1번 씀. 그 이후 후보 그룹화는
+   ① 공백정규화 → ② 문자열 유사도(difflib, AI 아님) 순으로 처리해서
+   AI 호출을 최소화함.
 
 폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/이 파일
 
@@ -79,52 +79,169 @@ def _get_last_purchase_rate(item_code):
     return None
 
 
-def find_substitute_items(item_code: str, qty_needed) -> list:
+def _merge_similar_groups_by_similarity(groups_summary, threshold=0.9):
     """
-    특정 품목의 대체품 후보를 찾음.
-    같은 기본품목명(base_name)이면서, 변형(전체이름)은 다르고,
-    요청수량보다 재고 있는 것들.
+    1단계(공백정규화 기준 완전일치)로 이미 줄어든 그룹들을, 문자열 유사도
+    (difflib, 표준라이브러리 — AI 아님)로 다시 검토해서 "표현만 다르고 실제로
+    같은 규격"인 그룹끼리 병합함. 완전한 동의어(예: "고강도"↔"high-strength")
+    까지는 못 잡지만, 어순차이·사소한 표현차이는 충분히 잡아내면서 AI 호출
+    없이 처리됨.
 
-    반환: [{"item_code", "item_name", "warehouse", "actual_qty", "last_rate"}, ...]
+    groups_summary: [{"group_key": str, "description": str}]
+    반환: {group_key: 병합후_group_key} 형태의 매핑 (병합 안 되면 자기 자신에 매핑)
+    """
+    from difflib import SequenceMatcher
+
+    keys = [g["group_key"] for g in groups_summary]
+    descriptions = {g["group_key"]: g["description"] for g in groups_summary}
+    mapping = {k: k for k in keys}  # 기본값: 병합 없음(자기 자신)
+
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            key_i, key_j = keys[i], keys[j]
+            # 이미 같은 그룹으로 병합됐으면 스킵
+            if mapping[key_i] == mapping[key_j]:
+                continue
+
+            desc_i, desc_j = descriptions[key_i], descriptions[key_j]
+            if not desc_i or not desc_j:
+                continue  # 설명 없는 건 유사도 비교 자체를 안 함 (오판 방지)
+
+            similarity = SequenceMatcher(None, desc_i, desc_j).ratio()
+            if similarity >= threshold:
+                # key_j가 속한 그룹 전체를 key_i의 그룹으로 병합
+                old_target = mapping[key_j]
+                new_target = mapping[key_i]
+                for k in keys:
+                    if mapping[k] == old_target:
+                        mapping[k] = new_target
+
+    return mapping
+
+
+def find_substitute_items(item_code: str, qty_needed, max_groups: int = 5) -> list:
+    """
+    특정 품목의 대체품 후보를 찾음. 3단계로 좁혀나감:
+
+    1차(item_group): 같은 분류만 대상으로 함. item_group이 없으면
+      이 단계는 건너뛰고 다음 단계로 진행 (없다고 탐색을 막지 않음).
+    2차(item_name): AI로 뽑은 핵심단어가 포함된 것만.
+    3차(description): 규격설명 유사도 0.9 이상인 것들끼리 하나로 묶어서
+      재고를 합산함 (예: "안전모#1"~"안전모#133"이 사실 같은 규격이면,
+      132줄이 아니라 1줄로 — 사람이 검토 가능한 수준으로).
+      description이 없는 항목은 서로 묶지 않음(잘못 합쳐지는 것 방지).
+
+    원본과 설명 유사도 0.8 이상인 것만 후보로 남기고, 그 안에서 유사도
+    높은 순으로 상위 max_groups개까지만 반환. 0.8 이상이 하나도 없으면
+    빈 리스트 반환.
+
+    반환: [{"item_codes"(list), "item_name", "description", "total_qty",
+            "fulfills_full_qty", "duplicate_count", "last_rate"}, ...]
     """
     item = erp_get_one("Item", item_code)
     if not item:
         return []
 
+    item_group = item.get("item_group")
     item_name = item.get("item_name", item_code)
     base = _get_core_keyword(item_name)  # AI 호출은 여기 딱 한 번
-    candidates = erp_get(
-        "Item",
-        filters=[["item_name", "like", f"%{base}%"]],
-        fields=["item_code", "item_name", "description"],
-    )
 
-    results = []
+    # ── 1차: item_group 필터링 ──
+    if item_group:
+        group_filtered = erp_get(
+            "Item",
+            filters=[["item_group", "=", item_group]],
+            fields=["item_code", "item_name", "description"],
+        )
+    else:
+        print(f"  '{item_code}'에 item_group이 없어 1차 필터링을 건너뜁니다.")
+        group_filtered = erp_get(
+            "Item",
+            filters=[["item_name", "like", f"%{base}%"]],  # item_group 없으면 최소한 이름으로는 좁혀서 가져옴
+            fields=["item_code", "item_name", "description"],
+        )
+
+    # ── 2차: item_name(핵심단어) 필터링 ──
+    candidates = [c for c in (group_filtered or []) if base in c["item_name"]]
+
+    matched = []
+
     for c in candidates or []:
         if c["item_code"] == item_code:
             continue  # 요청한 그 품목 자체는 제외
-        if base not in c["item_name"]:
-            continue  # AI가 뽑은 핵심단어가 실제로 포함된 것만 (like는 대소문자 등 느슨할 수 있어 재확인)
         if c["item_name"] == item_name:
             continue  # 완전히 이름이 똑같으면 대체품이 아니라 그냥 같은 물건
+        matched.append(c)
 
-        bins = erp_get(
-            "Bin",
-            filters=[["item_code", "=", c["item_code"]], ["actual_qty", ">", 0]],
-            fields=["warehouse", "actual_qty"],
-        )
-        for b in bins or []:
-            results.append({
-                "item_code": c["item_code"],
-                "item_name": c["item_name"],
-                "description": c.get("description"),
-                "warehouse": b["warehouse"],
-                "actual_qty": b["actual_qty"],
-                "fulfills_full_qty": b["actual_qty"] >= qty_needed,
-                "last_rate": _get_last_purchase_rate(c["item_code"]),
-            })
+    # description 기준으로 그룹화 — 같은 규격이면 하나로 묶음
+    groups = {}
+    for c in matched:
+        desc = (c.get("description") or "").strip()
+        # 공백·줄바꿈 차이는 그룹키 계산에서 무시 (표시용 description은 원본 그대로 둠)
+        normalized_key = "".join(desc.split()) if desc else f"__no_desc__{c['item_code']}"
+        groups.setdefault(normalized_key, {"description": desc, "items": []})
+        groups[normalized_key]["items"].append(c)
 
-    return results
+    # 2단계: 문자열 유사도(AI 아님)로, 공백정규화로도 안 잡힌 어순·표현
+    # 차이를 추가로 병합
+    groups_summary = [
+        {"group_key": k, "description": v["description"]} for k, v in groups.items()
+    ]
+    mapping = _merge_similar_groups_by_similarity(groups_summary)
+
+    merged_groups = {}
+    for group_key, group in groups.items():
+        target_key = mapping.get(group_key, group_key)
+        if target_key not in merged_groups:
+            merged_groups[target_key] = {"description": group["description"], "items": []}
+        merged_groups[target_key]["items"].extend(group["items"])
+    groups = merged_groups
+
+    results = []
+    for group_key, group in groups.items():
+        group_items = group["items"]
+        total_qty = 0
+        item_codes = []
+
+        for gi in group_items:
+            bins = erp_get(
+                "Bin",
+                filters=[["item_code", "=", gi["item_code"]], ["actual_qty", ">", 0]],
+                fields=["actual_qty"],
+            )
+            group_qty = sum(b["actual_qty"] for b in (bins or []))
+            if group_qty > 0:
+                total_qty += group_qty
+                item_codes.append(gi["item_code"])
+
+        if not item_codes:
+            continue  # 이 그룹 전체 재고 0이면 후보에서 제외
+
+        # 원본 요청품목 description이랑 이 후보의 유사도 점수 (0~1)
+        from difflib import SequenceMatcher
+        original_desc = item.get("description") or ""
+        candidate_desc = group["description"] or ""
+        similarity = SequenceMatcher(None, original_desc, candidate_desc).ratio() if original_desc and candidate_desc else None
+
+        results.append({
+            "item_codes": item_codes,
+            "item_name": group_items[0]["item_name"],
+            "description": group["description"] or "(설명 없음)",
+            "total_qty": total_qty,
+            "fulfills_full_qty": total_qty >= qty_needed,
+            "duplicate_count": len(item_codes),
+            "last_rate": _get_last_purchase_rate(item_codes[0]),
+            "similarity_to_original": similarity,
+        })
+
+    # 유사도 0.8 이상인 것만 남기고, 그 안에서 유사도 높은 순 상위 max_groups개
+    # (0.8 미만이거나 애초에 비교 불가(설명없음)면 후보에서 제외 — 없으면 0개 반환)
+    results = [
+        r for r in results
+        if r["similarity_to_original"] is not None and r["similarity_to_original"] >= 0.8
+    ]
+    results.sort(key=lambda r: r["similarity_to_original"], reverse=True)
+    return results[:max_groups]
 
 
 def find_substitutes_for_mr(mr_name: str) -> dict:
@@ -165,10 +282,14 @@ if __name__ == "__main__":
 
         for s in info["substitutes"]:
             rate_disp = f"{s['last_rate']:,.0f}원" if s["last_rate"] is not None else "구매이력 없음"
-            fulfill_disp = "✅ 전량충족" if s["fulfills_full_qty"] else f"⚠️ 부분충족({s['actual_qty']}개만 있음)"
+            fulfill_disp = "✅ 전량충족" if s["fulfills_full_qty"] else f"⚠️ 부분충족({s['total_qty']}개만 있음)"
+            dup_note = f" (동일규격 {s['duplicate_count']}개 코드 재고 합산)" if s["duplicate_count"] > 1 else ""
 
             print(f"\n  ─────────────────────────────")
-            print(f"  {s['item_name']} ({s['item_code']})")
-            print(f"  창고: {s['warehouse']} | 재고: {s['actual_qty']} | {fulfill_disp}")
+            print(f"  {s['item_name']}{dup_note}")
+            print(f"  코드: {', '.join(s['item_codes'][:5])}" + (" 외..." if len(s['item_codes']) > 5 else ""))
+            print(f"  합계재고: {s['total_qty']} | {fulfill_disp}")
+            sim_disp = f"{s['similarity_to_original']:.2f}" if s["similarity_to_original"] is not None else "비교불가(설명없음)"
+            print(f"  원본과 설명 유사도: {sim_disp}")
             print(f"  최근단가: {rate_disp}")
-            print(f"  설명: {s['description'] or '(설명 없음)'}")
+            print(f"  설명: {s['description']}")
