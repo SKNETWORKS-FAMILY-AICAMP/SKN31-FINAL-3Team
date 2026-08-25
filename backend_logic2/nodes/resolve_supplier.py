@@ -24,7 +24,7 @@ import re
 import requests
 from erp_client import erp_get_one
 
-TARGET_SUPPLIER_COUNT = 2  # MVP 단계라 적게. 나중에 실사용 단계에서 늘리면 됨
+TARGET_SUPPLIER_COUNT = 5  # MVP 단계라 적게. 나중에 실사용 단계에서 늘리면 됨
 
 _EXCLUDED_CONTACT_DOMAINS = [
     "jobkorea.co.kr", "saramin.co.kr", "wanted.co.kr", "catch.co.kr",

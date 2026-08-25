@@ -100,6 +100,67 @@ def erp_submit(doctype, name, max_retries=3):
         raise ERPNextAPIError(f"SUBMIT {doctype}/{name}: {res.status_code} - {res.text[:500]}")
 
 
+def erp_call(method, payload=None):
+    """Frappe의 whitelisted method를 POST로 호출한다."""
+    res = requests.post(
+        f"{SITE_URL}/api/method/{method}",
+        headers=HEADERS,
+        json=payload or {},
+    )
+    if res.status_code != 200:
+        raise ERPNextAPIError(f"CALL {method}: {res.status_code} - {res.text[:500]}")
+    return res.json().get("message")
+
+
+def erp_get_logged_user():
+    """현재 API 토큰으로 인증된 ERPNext 사용자 ID를 반환한다."""
+    res = requests.get(
+        f"{SITE_URL}/api/method/frappe.auth.get_logged_user",
+        headers=HEADERS,
+    )
+    if res.status_code != 200:
+        raise ERPNextAPIError(
+            f"GET LOGGED USER: {res.status_code} - {res.text[:500]}"
+        )
+    return res.json().get("message")
+
+
+def erp_add_comment(doctype, name, content):
+    """문서 타임라인의 Comments 영역에 현재 API 사용자 명의로 댓글을 남긴다."""
+    content = str(content or "").strip()
+    if not content:
+        raise ValueError("댓글 내용은 비어 있을 수 없습니다.")
+
+    user = erp_get_logged_user()
+    return erp_call(
+        "frappe.desk.form.utils.add_comment",
+        {
+            "reference_doctype": doctype,
+            "reference_name": name,
+            "content": content,
+            "comment_email": user,
+            "comment_by": user,
+        },
+    )
+
+
+def erp_discard_draft(doctype, name):
+    """Frappe Desk의 Discard와 동일하게 Draft 문서를 docstatus=2로 전환한다."""
+    document = erp_get_one(doctype, name)
+    if document is None:
+        raise ERPNextAPIError(f"DISCARD {doctype}/{name}: 문서를 찾을 수 없습니다.")
+    if document.get("docstatus") != 0:
+        raise ERPNextAPIError(
+            f"DISCARD {doctype}/{name}: Draft(docstatus=0)만 폐기할 수 있습니다. "
+            f"현재 docstatus={document.get('docstatus')}"
+        )
+
+    return erp_call(
+        "frappe.desk.form.save.discard",
+        {"doctype": doctype, "name": name},
+    )
+
+
 def erp_send_email(doctype, name, recipients, subject, content):
     """
     문서를 이메일로 발송.
