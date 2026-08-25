@@ -1,0 +1,820 @@
+{
+  "schema_version": 2,
+  "created_at": "2026-08-25T06:12:05+00:00",
+  "source_snapshot": "C:\\Users\\Playdata\\Desktop\\SKN31-FINAL-3Team\\backend_logic2\\evaluation\\vendor_retrieval_snapshot.json",
+  "source_snapshot_created_at": "2026-08-25T06:11:35+00:00",
+  "source_snapshot_schema_version": 2,
+  "label_depth": 5,
+  "items": [
+    {
+      "item_code": "SAF-HLM-001",
+      "item_name": "산업용 ABS 안전모 (백색, 통풍형)",
+      "labeling_status": "complete",
+      "label_depth": 5,
+      "labeling_guide": "relevance를 0(무관)~3(매우 적합)으로 입력하고 근거를 작성하세요.",
+      "candidates": [
+        {
+          "candidate_name": "검은별",
+          "vendor_id": "211815",
+          "business_no": "1820101268",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 1,
+              "url": null,
+              "category_similarity": 0.5240290760994106
+            }
+          ],
+          "relevance": 3,
+          "evidence": "건설이나 제조 현장에서 '백색 통풍형 ABS 안전모'를 대량 구매할 때, 해당 안전모를 납품한 오픈마켓 판매자나 도매 대리점의 상호명이 바로 이 '검은별'",
+          "verified_by": "",
+          "verified_at": ""
+        },
+        {
+          "candidate_name": "미루통상",
+          "vendor_id": "155086",
+          "business_no": "1292153481",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 2,
+              "url": null,
+              "category_similarity": 0.5240290760994106
+            }
+          ],
+          "relevance": 3,
+          "evidence": "자전거용 안전모와 산업용 보호구를 동시에 취급하는 업종 구조",
+          "verified_by": "",
+          "verified_at": ""
+        },
+        {
+          "candidate_name": "산해건설",
+          "vendor_id": "582452",
+          "business_no": "6843900303",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 3,
+              "url": null,
+              "category_similarity": 0.5240290760994106
+            }
+          ],
+          "relevance": 0,
+          "evidence": "안전모 납품처가 아닌 구매자",
+          "verified_by": "",
+          "verified_at": ""
+        },
+        {
+          "candidate_name": "신세기안전상사(주)",
+          "vendor_id": "550819",
+          "business_no": "6168193152",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 4,
+              "url": null,
+              "category_similarity": 0.5240290760994106
+            }
+          ],
+          "relevance": 0,
+          "evidence": "안전모 납품처가 아닌 구매자",
+          "verified_by": "",
+          "verified_at": ""
+        },
+        {
+          "candidate_name": "나인오투랩 주식회사",
+          "vendor_id": "332299",
+          "business_no": "3118153686",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 5,
+              "url": null,
+              "category_similarity": 0.5240290760994106
+            }
+          ],
+          "relevance": 2,
+          "evidence": "유통사가 아닌 제조사로 소규모 거래는 이뤄지기 힘들고 대규모 거래시에만 거래 진행 가능.",
+          "verified_by": "",
+          "verified_at": ""
+        },
+        {
+          "candidate_name": "대경안전산업",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [
+            "dk-safety.co.kr"
+          ],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 1,
+              "url": "http://dk-safety.co.kr",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "국내외 KCs 인증 브랜드 안전모를 다양하게 사입하여 도소매로 공급하는 종합 산업안전용품 전문 유통사",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:12:45+00:00"
+        },
+        {
+          "candidate_name": "협동안전물산",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 2,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "1982년에 설립된 대한민국 1세대 산업안전용품 종합 유통·도매 전문 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:13:16+00:00"
+        },
+        {
+          "candidate_name": "삼흥안전물산",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 3,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "안전모를 직접 생산하는 제조 공장이 아니라, 서울 동대문구 황물로(답십리동)에 기반을 둔 산업안전용품 및 공공기관 조달 전문 종합 유통·도매 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:13:39+00:00"
+        },
+        {
+          "candidate_name": "가자안전센터",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [
+            "bdenc.co.kr"
+          ],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 4,
+              "url": "http://www.bdenc.co.kr/",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "2004년에 설립되어 20년 이상의 업력을 지닌 국내 최대 규모의 산업·건설 안전용품 전문 종합 유통 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:14:36+00:00"
+        },
+        {
+          "candidate_name": "선덕안전상사",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [
+            "sdsafe119.com"
+          ],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 5,
+              "url": "http://sdsafe119.com/",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "2012년에 설립되어 서울 광진구/성동구 일대를 기반으로 둔 산업·건설 안전용품 전문 종합 도매 유통 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:14:51+00:00"
+        }
+      ]
+    },
+    {
+      "item_code": "SAF-GLV-001",
+      "item_name": "절단방지 니트릴 코팅장갑 (Cut Level D)",
+      "labeling_status": "complete",
+      "label_depth": 5,
+      "labeling_guide": "relevance를 0(무관)~3(매우 적합)으로 입력하고 근거를 작성하세요.",
+      "candidates": [
+        {
+          "candidate_name": "움찬",
+          "vendor_id": "639074",
+          "business_no": "8570902178",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 1,
+              "url": null,
+              "category_similarity": 0.564383864402775
+            }
+          ],
+          "relevance": 3,
+          "evidence": "전문 장갑 제조 공장(국내외 안전장갑 전문 OEM 공장)에서 생산된 고품질 제품을 초이스 및 사입하여 자사 브랜드 이름인 '움찬' 또는 '움찬글로벌' 제품으로 공급",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T04:59:14+00:00"
+        },
+        {
+          "candidate_name": "고려양행",
+          "vendor_id": "258609",
+          "business_no": "2172560201",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 2,
+              "url": null,
+              "category_similarity": 0.564383864402775
+            }
+          ],
+          "relevance": 0,
+          "evidence": "의료 및 위생용 일회용 비닐장갑(폴리글러브)을 주로 생산·공급하는 보건위생 전문 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:23:31+00:00"
+        },
+        {
+          "candidate_name": "골든타임",
+          "vendor_id": "571863",
+          "business_no": "6525600394",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 3,
+              "url": null,
+              "category_similarity": 0.564383864402775
+            }
+          ],
+          "relevance": 3,
+          "evidence": "'골든글러브' 또는 '골든타임'으로 현장에서 자주 불리는 디케이골든글러브는 국내 산업 현장에서 가성비 높은 작업용 장갑을 대량 공급하는 대표적인 브랜드입니다",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:24:07+00:00"
+        },
+        {
+          "candidate_name": "더준덴탈",
+          "vendor_id": "567513",
+          "business_no": "6393300238",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 4,
+              "url": null,
+              "category_similarity": 0.564383864402775
+            }
+          ],
+          "relevance": 0,
+          "evidence": "산업용 절단방지 코팅장갑이 아닌, 진료·위생용 '일회용 니트릴 장갑(위생 장갑)'을 주력으로 공급하는 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:24:21+00:00"
+        },
+        {
+          "candidate_name": "메디위드",
+          "vendor_id": "339198",
+          "business_no": "3141116498",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 5,
+              "url": null,
+              "category_similarity": 0.564383864402775
+            }
+          ],
+          "relevance": 0,
+          "evidence": "의료 및 위생용 일회용 소모품 전문 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:24:44+00:00"
+        },
+        {
+          "candidate_name": "메이크킹",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 1,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "가성비 중심의 산업·생활용 안전장갑 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:15:43+00:00"
+        },
+        {
+          "candidate_name": "오런",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [
+            "orun.kr"
+          ],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 2,
+              "url": "https://orun.kr",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "자체 공장 기술력을 갖춘 전통의 국산 장갑 전문 제조사",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:16:19+00:00"
+        },
+        {
+          "candidate_name": "강릉장갑",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 3,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "지역 밀착형 산업안전용품 및 작업용 장갑 전문 종합 도매 유통사",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:16:56+00:00"
+        },
+        {
+          "candidate_name": "디에스씨알",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [
+            "dscr.kr"
+          ],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 4,
+              "url": "https://www.dscr.kr/",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "'안셀(Ansell)' 및 '하이플렉스(HyFlex)'의 한국 공식 수입원이자 전문 유통 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:17:38+00:00"
+        },
+        {
+          "candidate_name": "장갑천지",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [
+            "blog.naver.com"
+          ],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 5,
+              "url": "https://blog.naver.com/jih9807",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "국내 최대 규모의 작업 장갑 제조·유통 전문 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:18:04+00:00"
+        }
+      ]
+    },
+    {
+      "item_code": "SAF-GOG-001",
+      "item_name": "김서림 방지 밀폐형 산업용 보안경",
+      "labeling_status": "complete",
+      "label_depth": 5,
+      "labeling_guide": "relevance를 0(무관)~3(매우 적합)으로 입력하고 근거를 작성하세요.",
+      "candidates": [
+        {
+          "candidate_name": "달리",
+          "vendor_id": "367483",
+          "business_no": "3731400827",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 1,
+              "url": null,
+              "category_similarity": 0.5823309421539307
+            }
+          ],
+          "relevance": 3,
+          "evidence": "쿠팡이나 네이버 스마트스토어 등 이커머스 유통 채널에서 가성비로 큰 인기를 끌고 있는 작업용 안전 고글 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:26:38+00:00"
+        },
+        {
+          "candidate_name": "마을",
+          "vendor_id": "74767",
+          "business_no": "1054461311",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 2,
+              "url": null,
+              "category_similarity": 0.5823309421539307
+            }
+          ],
+          "relevance": 3,
+          "evidence": "가성비 작업복 및 안전용품을 유통·판매하는 '마을(MAUL)' 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:26:54+00:00"
+        },
+        {
+          "candidate_name": "무진",
+          "vendor_id": "329988",
+          "business_no": "3103701144",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 3,
+              "url": null,
+              "category_similarity": 0.5823309421539307
+            }
+          ],
+          "relevance": 3,
+          "evidence": "3M의 공식 1등급 대리점인 (주)무진상사(또는 주식회사 무진)",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:27:14+00:00"
+        },
+        {
+          "candidate_name": "규다미",
+          "vendor_id": "370844",
+          "business_no": "3831601899",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 4,
+              "url": null,
+              "category_similarity": 0.5823309421539307
+            }
+          ],
+          "relevance": 3,
+          "evidence": "다양한 산업·일반 용역 물품을 취급하는 '규다미(대표 사업자)' 기업/유통 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:27:37+00:00"
+        },
+        {
+          "candidate_name": "광원무역",
+          "vendor_id": "456308",
+          "business_no": "5041876593",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 5,
+              "url": null,
+              "category_similarity": 0.5823309421539307
+            }
+          ],
+          "relevance": 3,
+          "evidence": "고글형 안전 장비와 시력 교정 용품을 유통하는 '광원무역(안경·산업안전 보호구 전문 유통사)'",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:27:52+00:00"
+        },
+        {
+          "candidate_name": "신아상사",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 1,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "국내외 최상위 KCs 인증 안전 브랜드의 보안경을 사입하여 유통·공급하는 대형 산업안전용품 전문 도매 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:18:28+00:00"
+        },
+        {
+          "candidate_name": "대경안전산업",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [
+            "dk-safety.co.kr"
+          ],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 2,
+              "url": "http://dk-safety.co.kr",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "국내외 최상위 안전 보호구 브랜드를 다양하게 사입하여 공급하는 산업안전용품 종합 도매 유통사",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:19:04+00:00"
+        },
+        {
+          "candidate_name": "케이투세이프티 삼성산업안전",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 3,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "국내 최정상급 아웃도어 및 산업 안전 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:19:38+00:00"
+        },
+        {
+          "candidate_name": "협동안전물산",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 4,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "내 1세대 산업안전용품 종합 유통·도매 전문 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:20:03+00:00"
+        },
+        {
+          "candidate_name": "선민안전 안전화매장",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 5,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "영남권 최대 규모의 산업안전용품 및 브랜드 안전화·보호구 전문 종합 도매 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:20:42+00:00"
+        }
+      ]
+    },
+    {
+      "item_code": "SAF-EXT-001",
+      "item_name": "ABC 분말소화기 (3.3kg 축압식)",
+      "labeling_status": "complete",
+      "label_depth": 5,
+      "labeling_guide": "relevance를 0(무관)~3(매우 적합)으로 입력하고 근거를 작성하세요.",
+      "candidates": [
+        {
+          "candidate_name": "화이어텍",
+          "vendor_id": "455124",
+          "business_no": "5040296147",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 1,
+              "url": null,
+              "category_similarity": 0.5780914002088132
+            }
+          ],
+          "relevance": 3,
+          "evidence": "제일인산암모늄 성분의 미세 분말약제가 충전되어 있으며, 제품 유효수명 10년을 보장하는 한국소방산업기술원(KFI) 검정 합격품",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:35:21+00:00"
+        },
+        {
+          "candidate_name": "티제이티소방",
+          "vendor_id": "146816",
+          "business_no": "1274713601",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 2,
+              "url": null,
+              "category_similarity": 0.5780914002088132
+            }
+          ],
+          "relevance": 3,
+          "evidence": "전기 화재(C급) 진압용 특수 소화 장비 분야에서 매우 높은 인지도",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:35:42+00:00"
+        },
+        {
+          "candidate_name": "주식회사 태일테크",
+          "vendor_id": "413816",
+          "business_no": "4168170258",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 3,
+              "url": null,
+              "category_similarity": 0.5780914002088132
+            }
+          ],
+          "relevance": 0,
+          "evidence": "전류 센서, 배터리 온도 센서, 엔진 하네스 등을 만드는 전형적인 자동차 부품 및 전자 부품 제조업체",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:36:39+00:00"
+        },
+        {
+          "candidate_name": "주식회사 케이 이 에스",
+          "vendor_id": "7871",
+          "business_no": "1268190588",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 4,
+              "url": null,
+              "category_similarity": 0.5780914002088132
+            }
+          ],
+          "relevance": 0,
+          "evidence": "KC인증, CE인증, FCC인증, 전자파 적합성(EMC) 등을 시험하고 대행해 주는 전문 시험 기관(컨설팅 회사)",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:37:05+00:00"
+        },
+        {
+          "candidate_name": "(주)가가이엔지",
+          "vendor_id": "553702",
+          "business_no": "6178174084",
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "rag",
+              "rank": 5,
+              "url": null,
+              "category_similarity": 0.5780914002088132
+            }
+          ],
+          "relevance": 0,
+          "evidence": "ABC 분말소화기를 직접 대량 제조하는 회사가 아니라, 소방시설 정밀 점검 및 시공을 전문으로 하는 소방전문 면허 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T05:37:23+00:00"
+        },
+        {
+          "candidate_name": "진도",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 1,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 3,
+          "evidence": "산업 자재 유통 시장에서 뛰어난 가격 경쟁력으로 대량 조달 시 높은 선호도를 보이는 가성비 중심의 소화기 브랜드",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:21:33+00:00"
+        },
+        {
+          "candidate_name": "세림안전소방",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 2,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "국내외 KFI 인증 소방 자재 및 ABC 분말소화기를 전문으로 공급하는 종합 소방·안전용품 유통 사업자",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:22:08+00:00"
+        },
+        {
+          "candidate_name": "청계소방안전",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 3,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "서울의 전통적인 자재 유통 중심지인 청계천(을지로/종로 일대) 소방거리에 기반을 둔 종합 소방·안전용품 도소매 전문 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:22:35+00:00"
+        },
+        {
+          "candidate_name": "아성소방",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 4,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "간이소화용구(소화패치) 및 국산/수입 KFI 인증 소화기를 유통·조달하는 소방 방재 전문 기업",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:23:05+00:00"
+        },
+        {
+          "candidate_name": "성일철물",
+          "vendor_id": null,
+          "business_no": null,
+          "domains": [],
+          "aliases": [],
+          "observed_sources": [
+            {
+              "source": "naver",
+              "rank": 5,
+              "url": "",
+              "category_similarity": null
+            }
+          ],
+          "relevance": 2,
+          "evidence": "각종 건축·토목 자재, 배관재, 수공구 및 산업안전 소모품을 도소매로 공급하는 지역 기반의 종합 철물 자재 유통사",
+          "verified_by": "이영창",
+          "verified_at": "2026-08-25T06:23:27+00:00"
+        }
+      ]
+    }
+  ]
+}

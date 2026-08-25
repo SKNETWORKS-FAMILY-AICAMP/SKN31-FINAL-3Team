@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "description": "ERPNext Item Data Import와 RAG/Naver 검색 평가에서 함께 사용하는 안전용품 품목 목록",
+  "erpnext_data_import": {
+    "doctype": "Item",
+    "import_type": "Insert New Records",
+    "csv_file": "erpnext_item_import_safety.csv",
+    "generator": "build_erpnext_item_import.py",
+    "join_key": "item_code",
+    "item_group": "안전용품",
+    "stock_uom": "Nos"
+  },
+  "erpnext_item_alternative_import": {
+    "doctype": "Item Alternative",
+    "import_type": "Insert New Records",
+    "csv_file": "erpnext_item_alternative_import.csv",
+    "join_key": "alternative_for",
+    "two_way": 1
+  },
+  "erpnext_stock_reconciliation_import": {
+    "doctype": "Stock Reconciliation",
+    "upload_method": "Stock Reconciliation > New > Items table > Upload",
+    "csv_file": "erpnext_stock_reconciliation_safety.csv",
+    "company": "SKN31 FINAL",
+    "warehouse": "Stores - SKN31",
+    "purpose": "Stock Reconciliation",
+    "posting_date": "2026-08-25",
+    "posting_time": "09:00:00",
+    "save_and_submit_after_upload": true,
+    "quantity_semantics": "각 수량은 입출고 증감량이 아니라 지정 시점의 창고별 최종 재고수량이다.",
+    "valuation_rate_note": "평가단가는 ERPNext Import 검증용 가상 기준값이며 실제 매입단가가 아니다."
+  },
+  "evaluation_selection": {
+    "mode": "pilot",
+    "description": "초기 평가는 품목군 대표 4개와 검색 Top 5만 사람이 검토한다.",
+    "item_codes": [
+      "SAF-HLM-001",
+      "SAF-GLV-001",
+      "SAF-GOG-001",
+      "SAF-EXT-001"
+    ],
+    "label_depth": 5
+  },
+  "items": [
+    {"item_code":"SAF-HLM-001","item_name":"산업용 ABS 안전모 (백색, 통풍형)","description":"규격: 프리사이즈 53~64cm, ABS 외피, 6점식 내피, 통풍구 및 턱끈 포함, 색상 백색","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":120,"valuation_rate":28000},
+    {"item_code":"SAF-HLM-002","item_name":"고소작업용 턱끈 안전모 (황색, 래칫형)","description":"규격: 프리사이즈 54~63cm, 충격흡수 내피, 후면 래칫 조절, 4점식 턱끈, 색상 황색","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":85,"valuation_rate":35000},
+    {"item_code":"SAF-GLV-001","item_name":"절단방지 니트릴 코팅장갑 (Cut Level D)","description":"규격: EN 388 Cut Level D 상당, 13게이지 편직, 손바닥 니트릴 코팅, 사이즈 L","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":240,"valuation_rate":15000},
+    {"item_code":"SAF-GLV-002","item_name":"내화학 니트릴 보호장갑 (장목형)","description":"규격: 길이 330mm 이상, 두께 0.38mm 이상, 무분말 니트릴, 다이아몬드 그립, 사이즈 L","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":175,"valuation_rate":18000},
+    {"item_code":"SAF-GLV-003","item_name":"용접 작업용 소가죽 보호장갑 (장목형)","description":"규격: 총길이 350mm 이상, 소가죽 재질, 면 안감, 손목 장목형, 내열 봉제사 적용","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":90,"valuation_rate":22000},
+    {"item_code":"SAF-MSK-001","item_name":"산업용 밸브형 방진 마스크 (2급)","description":"규격: 분진 포집효율 2급 상당, 배기밸브형, 코 지지대 및 조절식 머리끈, 개별 포장","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":320,"valuation_rate":2500},
+    {"item_code":"SAF-RSP-001","item_name":"반면형 방독 마스크 세트 (유기화합물용)","description":"규격: 실리콘 반면체, 교체식 유기화합물용 정화통 2개, 프리필터 및 리테이너 포함, 사이즈 M","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":65,"valuation_rate":55000},
+    {"item_code":"SAF-GOG-001","item_name":"김서림 방지 밀폐형 산업용 보안경","description":"규격: 투명 폴리카보네이트 렌즈, 간접 통풍구, 안티포그 및 스크래치 방지 코팅, 밴드 조절형","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":210,"valuation_rate":18000},
+    {"item_code":"SAF-FSH-001","item_name":"투명 폴리카보네이트 안면 보호구","description":"규격: 실드 크기 300×200mm 이상, 두께 1mm 이상, 각도 조절 헤드기어, 교체형 투명 PC 실드","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":140,"valuation_rate":22000},
+    {"item_code":"SAF-SHO-001","item_name":"경량 미끄럼방지 안전화 (6인치, 선심형)","description":"규격: 6인치 발목형, 광폭 보호선심, 미끄럼방지 고무창, 사이즈 260mm, 색상 흑색","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":55,"valuation_rate":68000},
+    {"item_code":"SAF-VST-001","item_name":"고휘도 반사 안전조끼 (형광 황색)","description":"규격: 프리사이즈, 형광 폴리에스터 망사, 전후면 50mm 고휘도 반사띠, 지퍼 여밈","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":180,"valuation_rate":12000},
+    {"item_code":"SAF-HAR-001","item_name":"고소작업용 전신형 안전대 (더블 랜야드)","description":"규격: 전신형 하네스, 더블 웨빙 랜야드, 충격흡수장치, 대구경 후크 2개, 허용하중 100kg 이상","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":35,"valuation_rate":110000},
+    {"item_code":"SAF-EAR-001","item_name":"산업용 소음차단 귀덮개 (SNR 28dB)","description":"규격: 차음성능 SNR 28dB 이상, 길이 조절 헤드밴드, 교체형 쿠션, 중량 300g 이하","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":110,"valuation_rate":42000},
+    {"item_code":"SAF-PLG-001","item_name":"일회용 폼 타입 귀마개 (NRR 32dB)","description":"규격: 차음성능 NRR 32dB 상당, 저압력 폴리우레탄 폼, 끈 없는 타입, 200쌍 포장","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":500,"valuation_rate":35000},
+    {"item_code":"SAF-CNE-001","item_name":"고무 베이스 반사 라바콘 (750mm)","description":"규격: 높이 750mm, 고휘도 반사띠 2단, 연질 PVC 콘, 중량형 재생고무 베이스, 주황색","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":72,"valuation_rate":22000},
+    {"item_code":"SAF-BAR-001","item_name":"위험구역 출입금지 차단 테이프","description":"규격: 폭 100mm × 길이 100m, 폴리에틸렌 필름, 황색·흑색 경고무늬, 문구 반복 인쇄","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":260,"valuation_rate":9000},
+    {"item_code":"SAF-EXT-001","item_name":"ABC 분말소화기 (3.3kg 축압식)","description":"규격: 소화약제 중량 3.3kg, ABC 분말, 축압식 압력계, 안전핀 및 호스 포함, 벽걸이 브래킷 포함","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":48,"valuation_rate":35000},
+    {"item_code":"SAF-BLN-001","item_name":"용접 불티 차단 난연 방염포","description":"규격: 1,000×1,000mm, 실리카 또는 동등 난연 섬유, 가장자리 봉제 및 아일렛 처리","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":95,"valuation_rate":45000},
+    {"item_code":"SAF-KIT-001","item_name":"산업현장용 응급처치 구급함 (20인용)","description":"규격: 20인 작업장용, 벽걸이·휴대 겸용 케이스, 멸균거즈·붕대·반창고·가위·장갑 기본 구성","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":150,"valuation_rate":80000},
+    {"item_code":"SAF-LGT-001","item_name":"충전식 LED 자석 경광등 (적색)","description":"규격: 적색 LED 점멸, 360도 시인성, 자석식 바닥, USB 충전, 연속 점멸 8시간 이상","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":130,"valuation_rate":55000},
+    {"item_code":"SAF-LCK-001","item_name":"전기작업용 잠금표찰 키트 (LOTO 세트)","description":"규격: 절연 안전자물쇠 4개, 다중 잠금장치 2개, 차단기 잠금장치, 위험표찰 10매, 휴대 케이스 포함","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":45,"valuation_rate":120000},
+    {"item_code":"SAF-MAT-001","item_name":"산업현장용 미끄럼방지 안전매트","description":"규격: 900×1,500mm, 두께 10mm 이상, 배수홀 구조, 내유성 고무, 가장자리 경사 마감","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":160,"valuation_rate":65000},
+    {"item_code":"SAF-DRN-001","item_name":"산업용 오일 전용 흡착포 (100매)","description":"규격: 400×500mm, 폴리프로필렌 재질, 오일 전용 발수형, 흡착량 장당 0.7L 이상, 100매 포장","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":275,"valuation_rate":90000},
+    {"item_code":"SAF-SGN-001","item_name":"접이식 미끄럼주의 안전표지판","description":"규격: 펼침 높이 600mm 이상, 양면 경고문구, 황색 폴리프로필렌, 접이식 손잡이 일체형","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":190,"valuation_rate":28000},
+    {"item_code":"SAF-HLM-003","item_name":"산업용 HDPE 안전모 (백색, 래칫형)","description":"규격: 프리사이즈 54~63cm, HDPE 외피, 6점식 내피, 후면 래칫 조절, 턱끈 포함, 색상 백색","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":105,"valuation_rate":30000,"alternative_for":"SAF-HLM-001","two_way_alternative":1},
+    {"item_code":"SAF-HLM-004","item_name":"고소작업용 통풍 안전모 (백색, 4점 턱끈)","description":"규격: 프리사이즈 53~64cm, ABS 외피, 상부 통풍구, 4점식 턱끈, 후면 다이얼 조절, 색상 백색","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":80,"valuation_rate":38000,"alternative_for":"SAF-HLM-002","two_way_alternative":1},
+    {"item_code":"SAF-GLV-004","item_name":"절단방지 PU 코팅장갑 (Cut Level D)","description":"규격: EN 388 Cut Level D 상당, 13게이지 HPPE 편직, 손바닥 PU 코팅, 사이즈 L","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":220,"valuation_rate":14000,"alternative_for":"SAF-GLV-001","two_way_alternative":1},
+    {"item_code":"SAF-GLV-005","item_name":"내화학 네오프렌 보호장갑 (장목형)","description":"규격: 길이 330mm 이상, 네오프렌 코팅, 면 플록 안감, 미끄럼방지 그립, 사이즈 L","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":155,"valuation_rate":20000,"alternative_for":"SAF-GLV-002","two_way_alternative":1},
+    {"item_code":"SAF-MSK-002","item_name":"산업용 컵형 방진 마스크 (2급, 무밸브)","description":"규격: 분진 포집효율 2급 상당, 컵형 무밸브 구조, 알루미늄 코 지지대, 이중 머리끈, 개별 포장","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":300,"valuation_rate":2200,"alternative_for":"SAF-MSK-001","two_way_alternative":1},
+    {"item_code":"SAF-GOG-002","item_name":"안경 겸용 김서림 방지 보안경","description":"규격: 안경 위 착용 가능, 투명 폴리카보네이트 렌즈, 간접 통풍구, 안티포그 코팅, 밴드 조절형","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":60,"valuation_rate":20000,"alternative_for":"SAF-GOG-001","two_way_alternative":1},
+    {"item_code":"SAF-SHO-002","item_name":"다이얼형 미끄럼방지 안전화 (6인치, 선심형)","description":"규격: 6인치 발목형, 광폭 보호선심, 다이얼 잠금, 내유·미끄럼방지 고무창, 사이즈 260mm","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":125,"valuation_rate":72000,"alternative_for":"SAF-SHO-001","two_way_alternative":1},
+    {"item_code":"SAF-VST-002","item_name":"고휘도 망사 안전조끼 (형광 주황색)","description":"규격: 프리사이즈, 형광 주황색 폴리에스터 망사, 전후면 50mm 반사띠, 벨크로 여밈","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":70,"valuation_rate":13000,"alternative_for":"SAF-VST-001","two_way_alternative":1},
+    {"item_code":"SAF-HAR-002","item_name":"고소작업용 전신형 안전대 (더블 로프 랜야드)","description":"규격: 전신형 하네스, 더블 로프 랜야드, 충격흡수장치, 대구경 후크 2개, 허용하중 100kg 이상","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":200,"valuation_rate":115000,"alternative_for":"SAF-HAR-001","two_way_alternative":1},
+    {"item_code":"SAF-EAR-002","item_name":"안전모 부착형 소음차단 귀덮개 (SNR 27dB)","description":"규격: 안전모 슬롯 부착형, 차음성능 SNR 27dB 이상, 회전식 이어컵, 교체형 밀폐 쿠션","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":145,"valuation_rate":45000,"alternative_for":"SAF-EAR-001","two_way_alternative":1},
+    {"item_code":"SAF-CNE-002","item_name":"중량 베이스 반사 안전콘 (700mm)","description":"규격: 높이 700mm, 고휘도 반사띠 2단, 연질 PE 콘, 중량형 고무 베이스, 주황색","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":100,"valuation_rate":24000,"alternative_for":"SAF-CNE-001","two_way_alternative":1},
+    {"item_code":"SAF-EXT-002","item_name":"ABC 분말소화기 (3.3kg 압력계형)","description":"규격: 소화약제 중량 3.3kg, ABC 분말, 압력계 부착 축압식, 안전핀·호스·받침대 포함","item_group":"안전용품","stock_uom":"Nos","is_stock_item":1,"include_item_in_manufacturing":0,"disabled":0,"enabled":true,"opening_qty":250,"valuation_rate":37000,"alternative_for":"SAF-EXT-001","two_way_alternative":1}
+  ]
+}

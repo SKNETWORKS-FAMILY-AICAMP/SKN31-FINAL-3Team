@@ -19,6 +19,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import html
 import re
 import requests
 from erp_client import erp_get_one
@@ -29,6 +30,12 @@ _EXCLUDED_CONTACT_DOMAINS = [
     "jobkorea.co.kr", "saramin.co.kr", "wanted.co.kr", "catch.co.kr",
     "incruit.com", "albamon.com", "job.co.kr", "linkedin.com",
 ]
+
+_DOCUMENT_RESULT_PATTERN = re.compile(
+    r"(?:\.(?:pdf|hwp|hwpx|xls|xlsx|csv|doc|docx|ppt|pptx|zip)(?:$|[\s?#])"
+    r"|filedown|file_download|download\.do|downloaddirect|/download(?:/|\?|$)|attachment)",
+    re.IGNORECASE,
+)
 
 
 # ────────────────────────────────
@@ -67,7 +74,12 @@ def _clean_search_term(item_name):
 
 
 def rag_search_vendors(item_name, limit_categories=5, limit_vendors=10):
-    """Postgres(pgvector) 벤더풀에서 2단계 검색: 품목명 → 분류 → 그 분류의 실제 업체들"""
+    """Postgres(pgvector) 벤더풀에서 품목명 → 분류 → 업체 순으로 검색.
+
+    평가와 재현을 위해 각 후보에 검색 출처, 순위, 매칭 카테고리와 cosine
+    distance/similarity를 함께 반환한다. 같은 업체가 여러 카테고리에 연결된
+    경우 가장 가까운 카테고리 한 건만 남긴다.
+    """
     import psycopg
 
     PG_HOST = os.environ["PG_HOST"]
@@ -76,43 +88,85 @@ def rag_search_vendors(item_name, limit_categories=5, limit_vendors=10):
     PG_PASSWORD = os.environ["PG_PASSWORD"]
     PG_DBNAME = os.environ["PG_DBNAME"]
 
-    query_embedding = _get_query_embedding(_clean_search_term(item_name))
+    search_query = _clean_search_term(item_name)
+    query_embedding = _get_query_embedding(search_query)
 
     conn = psycopg.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASSWORD, dbname=PG_DBNAME)
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT c.id FROM procurement_item_category_bge b
-                JOIN procurement_item_category c ON c.id = b.category_id
-                ORDER BY b.embedding <=> %s::vector
+                WITH nearest_categories AS (
+                    SELECT
+                        category_id,
+                        category_distance,
+                        ROW_NUMBER() OVER (
+                            ORDER BY category_distance ASC, category_id
+                        ) AS category_rank
+                    FROM (
+                        SELECT
+                            c.id AS category_id,
+                            b.embedding <=> %s::vector AS category_distance
+                        FROM procurement_item_category_bge b
+                        JOIN procurement_item_category c ON c.id = b.category_id
+                        ORDER BY category_distance ASC, c.id
+                        LIMIT %s
+                    ) category_candidates
+                ),
+                best_vendor_match AS (
+                    SELECT DISTINCT ON (v.id)
+                        v.id,
+                        v.business_no,
+                        v.company_name,
+                        v.address,
+                        v.email,
+                        v.phone,
+                        v.description,
+                        nc.category_id,
+                        nc.category_rank,
+                        nc.category_distance
+                    FROM nearest_categories nc
+                    JOIN vendor_item_category vic ON vic.category_id = nc.category_id
+                    JOIN vendor_catalog v ON v.id = vic.vendor_id
+                    ORDER BY v.id, nc.category_rank ASC, nc.category_distance ASC
+                )
+                SELECT
+                    id, business_no, company_name, address, email, phone,
+                    description, category_id, category_rank, category_distance
+                FROM best_vendor_match
+                ORDER BY category_rank ASC, category_distance ASC, company_name ASC, id ASC
                 LIMIT %s
-            """, (query_embedding, limit_categories))
-            category_ids = [r[0] for r in cur.fetchall()]
-            if not category_ids:
-                return []
-
-            cur.execute("""
-                SELECT v.id, v.business_no, v.company_name, v.address, v.email, v.phone, v.description
-                FROM vendor_item_category vic
-                JOIN vendor_catalog v ON v.id = vic.vendor_id
-                WHERE vic.category_id = ANY(%s)
-                LIMIT %s
-            """, (category_ids, limit_vendors))
+            """, (query_embedding, limit_categories, limit_vendors))
             rows = cur.fetchall()
     finally:
         conn.close()
 
-    return [
-        {"name": r[2], "business_no": r[1], "address": r[3], "email": r[4], "phone": r[5], "description": r[6]}
-        for r in rows
-    ]
+    results = []
+    for retrieval_rank, row in enumerate(rows, start=1):
+        category_distance = float(row[9])
+        results.append({
+            "vendor_id": str(row[0]),
+            "name": row[2],
+            "business_no": row[1],
+            "address": row[3],
+            "email": row[4],
+            "phone": row[5],
+            "description": row[6],
+            "source": "rag",
+            "query": search_query,
+            "retrieval_rank": retrieval_rank,
+            "category_id": str(row[7]),
+            "category_rank": int(row[8]),
+            "category_distance": category_distance,
+            "category_similarity": 1.0 - category_distance,
+        })
+    return results
 
 
 # ────────────────────────────────
 # 연락처 보강 (공식사이트 찾기 → 페이지 읽기 → AI 추출)
 # ────────────────────────────────
 
-def _search_naver_web(query, display=5):
+def _search_naver_web(query, display=5, raise_on_error=False):
     """네이버 웹문서검색 공통 헬퍼"""
     try:
         res = requests.get(
@@ -128,12 +182,88 @@ def _search_naver_web(query, display=5):
         items = res.json().get("items", [])
     except Exception as e:
         print(f"[_search_naver_web] 검색 실패 ('{query}'): {e}")
+        if raise_on_error:
+            raise
+        return []
+
+    for retrieval_rank, item in enumerate(items, start=1):
+        item["title"] = html.unescape(re.sub(r"<.*?>", "", item.get("title", ""))).strip()
+        item["description"] = html.unescape(
+            re.sub(r"<.*?>", "", item.get("description", ""))
+        ).strip()
+        item["retrieval_rank"] = retrieval_rank
+        item["query"] = query
+    return items
+
+
+def _is_document_search_result(item):
+    """웹문서 검색의 첨부파일·다운로드 결과인지 판별."""
+    target = " ".join(
+        str(item.get(field) or "") for field in ("title", "link", "description")
+    )
+    return bool(_DOCUMENT_RESULT_PATTERN.search(target))
+
+
+def _search_naver_local(query, display=5, raise_on_error=False):
+    """업체·기관 엔터티를 반환하는 Naver Local 검색."""
+    try:
+        res = requests.get(
+            "https://naverapihub.apigw.ntruss.com/search/v1/local",
+            headers={
+                "X-NCP-APIGW-API-KEY-ID": os.environ["NAVER_CLIENT_ID"],
+                "X-NCP-APIGW-API-KEY": os.environ["NAVER_CLIENT_SECRET"],
+            },
+            params={"query": query, "display": min(max(display, 1), 5)},
+            timeout=10,
+        )
+        res.raise_for_status()
+        items = res.json().get("items", [])
+    except Exception as error:
+        print(f"[_search_naver_local] 검색 실패 ('{query}'): {error}")
+        if raise_on_error:
+            raise
         return []
 
     for item in items:
-        item["title"] = re.sub(r"<.*?>", "", item.get("title", ""))
-        item["description"] = re.sub(r"<.*?>", "", item.get("description", ""))
+        item["title"] = html.unescape(
+            re.sub(r"<.*?>", "", item.get("title", ""))
+        ).strip()
+        item["query"] = query
     return items
+
+
+def _vendor_search_queries(item_name):
+    """세부 규격명과 업종명을 함께 사용해 Local 검색 recall을 확보."""
+    cleaned = _clean_search_term(item_name)
+    base = re.sub(r"\s*\([^)]*\)", "", cleaned).strip()
+    family_rules = (
+        (("소화기", "소방", "방염"), "소방용품"),
+        (("장갑",), "작업용 장갑"),
+        (("안전모",), "안전모"),
+        (("보안경", "안면", "고글"), "보안경 안전보호구"),
+        (("마스크", "호흡", "방진", "방독"), "산업용 마스크"),
+        (("안전화",), "안전화"),
+        (("안전대", "하네스", "랜야드"), "안전대"),
+        (("귀마개", "귀덮개"), "청력보호구"),
+    )
+    family = "산업안전용품"
+    industry = "산업안전용품"
+    for keywords, label in family_rules:
+        if any(keyword in cleaned for keyword in keywords):
+            family = label
+            if label == "소방용품":
+                industry = "소방용품"
+            break
+
+    queries = [f"{base} 판매", f"{family} 판매", industry, "안전보호구"]
+    return list(dict.fromkeys(query for query in queries if query.strip()))
+
+
+def _is_supplier_local_result(item):
+    """Local 결과 중 협회·교육·공공기관처럼 RFQ 대상이 아닌 엔터티 제외."""
+    category = str(item.get("category") or "")
+    excluded_categories = ("협회", "단체", "학교", "교육", "공공기관", "정부기관")
+    return not any(keyword in category for keyword in excluded_categories)
 
 
 def _find_official_site(company_name):
@@ -141,6 +271,8 @@ def _find_official_site(company_name):
     for item in _search_naver_web(f"{company_name} 공식 홈페이지"):
         link = item.get("link", "")
         if any(domain in link for domain in _EXCLUDED_CONTACT_DOMAINS):
+            continue
+        if _is_document_search_result(item):
             continue
         return {"url": link, "content": item.get("description", "")}
     return None
@@ -211,6 +343,7 @@ def enrich_contact_info(vendor):
 
     page_text = _fetch_page_text(site["url"]) or site.get("content", "")
     extracted = _extract_contact_from_page(name, site["url"], page_text)
+    vendor["official_site_url"] = site["url"]
 
     if extracted.get("clean_name"):
         vendor["name"] = extracted["clean_name"]
@@ -222,10 +355,79 @@ def enrich_contact_info(vendor):
     return vendor
 
 
-def search_new_vendor_candidates(item_name, max_results=15):
-    """새 벤더 후보 자체를 웹에서 찾음 (RAG로 부족할 때 보충용)"""
-    items = _search_naver_web(f"{_clean_search_term(item_name)} 공급업체 제조사 견적", display=max_results)
-    return [{"name": r.get("title", ""), "email": None, "phone": None} for r in items]
+def search_new_vendor_candidates(item_name, max_results=15, raise_on_error=False):
+    """Naver Local에서 실제 업체·기관 엔터티만 새 벤더 후보로 수집."""
+    candidates = []
+    seen = set()
+    queries = _vendor_search_queries(item_name)
+    errors = []
+
+    for query in queries:
+        try:
+            items = _search_naver_local(query, display=5, raise_on_error=True)
+        except Exception as error:
+            errors.append(error)
+            continue
+        for item in items:
+            if not _is_supplier_local_result(item):
+                continue
+            name = item.get("title", "").strip()
+            address = (item.get("roadAddress") or item.get("address") or "").strip()
+            identity = (re.sub(r"\W", "", name).casefold(), address.casefold())
+            if not name or identity in seen:
+                continue
+            seen.add(identity)
+            category = item.get("category", "").strip()
+            candidates.append({
+                "vendor_id": None,
+                "name": name,
+                "business_no": None,
+                "address": address or None,
+                "email": None,
+                "phone": item.get("telephone") or None,
+                "description": " | ".join(value for value in (category, address) if value),
+                "source": "naver",
+                "source_channel": "naver_local",
+                "candidate_type": "vendor",
+                "query": query,
+                "query_variants": queries,
+                "retrieval_rank": len(candidates) + 1,
+                "source_url": item.get("link", ""),
+                "official_site_url": item.get("link", ""),
+                "raw_title": item.get("title", ""),
+                "naver_category": category,
+                "mapx": item.get("mapx"),
+                "mapy": item.get("mapy"),
+            })
+            if len(candidates) >= max_results:
+                return candidates
+
+    if not candidates and errors and raise_on_error:
+        raise errors[0]
+    return candidates
+
+
+def collect_vendor_candidates_for_evaluation(
+    item_name,
+    rag_limit=20,
+    naver_limit=20,
+    limit_categories=5,
+):
+    """연락처 보강/AI 필터 전에 RAG와 Naver 원시 후보를 각각 수집.
+
+    검색기 자체의 품질을 평가할 때 이메일 유무나 LLM 관련성 판정을 섞으면
+    원인을 구분할 수 없으므로, 평가 코드는 이 함수를 사용한다.
+    """
+    return {
+        "item_name": item_name,
+        "clean_query": _clean_search_term(item_name),
+        "rag": rag_search_vendors(
+            item_name,
+            limit_categories=limit_categories,
+            limit_vendors=rag_limit,
+        ),
+        "naver": search_new_vendor_candidates(item_name, max_results=naver_limit),
+    }
 
 
 # ────────────────────────────────

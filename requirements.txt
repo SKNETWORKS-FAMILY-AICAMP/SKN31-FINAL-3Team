@@ -5,6 +5,11 @@ PyJWT
 pydantic
 jinja2
 python-dotenv
+openai
+psycopg[binary]
+sentence-transformers
+tokenizers>=0.22,<0.23
+langchain-openai
 langgraph
 langgraph-checkpoint-sqlite
 tavily-python
