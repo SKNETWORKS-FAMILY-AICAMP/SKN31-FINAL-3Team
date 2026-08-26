@@ -1,37 +1,9 @@
 {
   "schema_version": 2,
-  "description": "ERPNext Item Data Import와 RAG/Naver 검색 평가에서 함께 사용하는 안전용품 품목 목록",
-  "erpnext_data_import": {
-    "doctype": "Item",
-    "import_type": "Insert New Records",
-    "csv_file": "erpnext_item_import_safety.csv",
-    "join_key": "item_code",
-    "item_group": "안전용품",
-    "stock_uom": "Nos"
-  },
-  "erpnext_item_alternative_import": {
-    "doctype": "Item Alternative",
-    "import_type": "Insert New Records",
-    "csv_file": "erpnext_item_alternative_import.csv",
-    "join_key": "alternative_for",
-    "two_way": 1
-  },
-  "erpnext_stock_reconciliation_import": {
-    "doctype": "Stock Reconciliation",
-    "upload_method": "Stock Reconciliation > New > Items table > Upload",
-    "csv_file": "erpnext_stock_reconciliation_safety.csv",
-    "company": "SKN31 FINAL",
-    "warehouse": "Stores - SKN31",
-    "purpose": "Stock Reconciliation",
-    "posting_date": "2026-08-25",
-    "posting_time": "09:00:00",
-    "save_and_submit_after_upload": true,
-    "quantity_semantics": "각 수량은 입출고 증감량이 아니라 지정 시점의 창고별 최종 재고수량이다.",
-    "valuation_rate_note": "평가단가는 ERPNext Import 검증용 가상 기준값이며 실제 매입단가가 아니다."
-  },
+  "description": "ERPNext Item을 사용하는 공급사 검색 평가 품목 목록",
   "evaluation_selection": {
     "mode": "multi_group_pilot",
-    "description": "안전용품·사무용품·시약 대표 품목 각 5개 평가",
+    "description": "안전용품·사무용품·기계부품 대표 품목 각 5개 평가",
     "item_codes": [
       "SAF-HLM-001",
       "SAF-GLV-001",
@@ -43,11 +15,11 @@
       "OFC-ERS-011",
       "OFC-PAP-001",
       "OFC-PEN-001",
-      "REA-GLU-001-500G",
-      "REA-GLU-002-500G",
-      "REA-GLU-010-1KG",
-      "REA-KCL-001-500G",
-      "REA-NACL-001-500G"
+      "BLT-TMG-5M-500",
+      "BRG-6004-2RS",
+      "CHN-RS40-1R",
+      "FST-HEX-M08025",
+      "PNE-POC-0802"
     ],
     "label_depth": 5
   },
@@ -546,16 +518,15 @@
     },
     {
       "item_code": "OFC-BRD-001",
-      "item_name": "화이트보드 지우개(텐트/두문)",
+      "item_name": "화이트보드 지우개(펠트/두문)",
       "description": "<div><p><strong>[규격]</strong></p><p>- 150 x 50 x 30 mm</p><br><p><strong>[재질/구성]</strong></p><p>- EVA 스펀지 + 극세사 천, 내장 자석</p><br><p><strong>[기능]</strong></p><p>- 화이트보드 마커펜 지움, 자석 부착 가능</p><br><p><strong>[색상 옵션]</strong></p><p>- 파랑, 검정</p><br><p><strong>[박스 규격/중량]</strong></p><p>- 포장: 160 x 60 x 40 mm / 약 50g</p></div>",
       "item_group": "사무용품",
       "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 16:28:26.017699",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 14:30:45.688278",
+      "enabled": true
     },
     {
       "item_code": "OFC-CLP-001",
@@ -567,8 +538,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:07:41.515586",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-011",
@@ -580,8 +550,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:22.411737",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-012",
@@ -593,8 +562,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 16:35:18.474724",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-013",
@@ -606,8 +574,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:23.720157",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-014",
@@ -619,8 +586,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:24.256734",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-015",
@@ -632,8 +598,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:24.744909",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-016",
@@ -645,8 +610,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:25.226744",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-017",
@@ -658,8 +622,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:25.645436",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-018",
@@ -671,8 +634,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:26.074042",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-019",
@@ -684,8 +646,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:26.463671",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ERS-020",
@@ -697,8 +658,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:27.217193",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-ORG-001",
@@ -710,8 +670,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:08:12.877043",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PAD-001",
@@ -723,8 +682,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:08:24.128857",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PAP-001",
@@ -736,8 +694,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:08:32.279646",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-001",
@@ -749,8 +706,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:08:35.513201",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-011",
@@ -762,8 +718,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:28.192713",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-012",
@@ -775,8 +730,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:28.811820",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-013",
@@ -788,8 +742,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:29.292280",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-014",
@@ -801,8 +754,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:29.809381",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-015",
@@ -814,8 +766,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:30.320156",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-016",
@@ -827,8 +778,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:30.812982",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-017",
@@ -840,8 +790,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:31.302276",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-018",
@@ -853,8 +802,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:31.774553",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-019",
@@ -866,8 +814,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:32.235477",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PEN-020",
@@ -879,8 +826,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:33.566427",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-001",
@@ -892,8 +838,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:08:38.576388",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-002",
@@ -905,8 +850,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:08:42.094772",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-003",
@@ -918,8 +862,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:08:47.832497",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-011",
@@ -931,8 +874,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:34.067627",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-012",
@@ -944,8 +886,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:34.553718",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-013",
@@ -957,8 +898,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:35.033626",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-014",
@@ -970,8 +910,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:35.488401",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-015",
@@ -983,8 +922,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:35.979109",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-016",
@@ -996,8 +934,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:36.470062",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-017",
@@ -1009,8 +946,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:37.443859",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-018",
@@ -1022,8 +958,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:37.972297",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-019",
@@ -1035,8 +970,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:38.548549",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-PST-020",
@@ -1048,8 +982,7 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:33:40.005192",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
       "item_code": "OFC-TAP-001",
@@ -1061,398 +994,367 @@
       "include_item_in_manufacturing": 1,
       "disabled": 0,
       "modified": "2026-08-25 14:08:52.334894",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-001-500G",
-      "item_name": "D-(+)-포도당 무수물 ACS reagent 500 g - Sigma-Aldrich",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Sigma-Aldrich / 제조사 품번: G5767-500G / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: ACS reagent / 순도(Assay): 99.5% 이상 / 색상: 백색 / 물리적 형태: 결정성 고체 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 미생물 배양배지의 탄소원 및 발효 기질 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 ACS reagent 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 미생물 배양 시 멸균 방식과 배지 조성 적합성 확인 / 보관 조건: 흡습과 미생물 오염을 막도록 밀봉하여 건조한 실온 보관 / 안전자료: SDS의 노출방지·응급조치 항목과 Lot별 CoA 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-01",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BLT-TMG-5M-500",
+      "item_name": "타이밍벨트 HTD 5M-500-15",
+      "description": "고토크 고무 타이밍벨트 (피치 5mm / 길이 500mm / 폭 15mm / 치수 100T)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.517951",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:04.516244",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-002-500G",
-      "item_name": "D-(+)-포도당 무수물 Certified ACS 500 g - Fisher Chemical",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Fisher Chemical / 제조사 품번: D16-500 / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: Certified ACS / 순도(Assay): 99.5% 이상 / 색상: 백색 결정 / 물리적 형태: 결정 또는 분말 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 세포 대사 실험용 에너지원과 등장성 용액 조제 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 Certified ACS 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 세포배양에는 endotoxin·cell culture grade 요구 여부 확인 / 보관 조건: 배지 제조 전용 시약장에 넣고 청결 상태 유지 / 안전자료: 취급 전 최신 SDS와 분석성적서의 불순물 항목 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-02",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BLT-TMG-8M-720",
+      "item_name": "타이밍벨트 HTD 8M-720-20",
+      "description": "고토크 원호치 타이밍벨트 (피치 8mm / 길이 720mm / 폭 20mm / 치수 90T)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.550080",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:05.765487",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-003-500G",
-      "item_name": "D-(+)-포도당 무수물 ACS/Reag. Ph Eur 500 g - Merck EMSURE",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Merck EMSURE / 제조사 품번: 1083370500 / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: ACS/Reag. Ph Eur / 순도(Assay): 99.5% 이상 / 색상: 무색~백색 / 물리적 형태: 미세 결정성 분말 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/PE Bottle / 기준 재고 단위: Bottle / 용도: 환원당 정량법의 검량용 표준용액 제조 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 ACS/Reag. Ph Eur 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 정량 표준에는 수분 보정과 건조기준 함량을 적용 / 보관 조건: 표준물질용 데시케이터에 넣어 수분 노출 최소화 / 안전자료: 구매 승인 전 제조사 SDS 개정일과 Lot 시험성적 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-03",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BLT-V-A35",
+      "item_name": "표준 V-벨트 A형 A-35",
+      "description": "일반 산업용 랩형 V-벨트 A형 단면 (유효길이 35인치)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.583906",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:06.874228",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-004-500G",
-      "item_name": "D-(+)-포도당 무수물 ACS 500 g - Thermo Scientific Chemicals",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Thermo Scientific Chemicals / 제조사 품번: A16828.36 / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: ACS / 순도(Assay): 99.0% 이상 / 색상: 백색~무색 / 물리적 형태: 건조 결정성 고체 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/Plastic Bottle / 기준 재고 단위: Bottle / 용도: 효소반응 속도 측정과 당 대사 비교 실험 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 ACS 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 효소실험에는 D-이성질체 순도와 저해 불순물 확인 / 보관 조건: 직사광선과 열원을 피해 15~25℃에서 보관 / 안전자료: 분진 흡입을 피하고 보안경·실험용 장갑 착용, SDS 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-04",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BLT-V-A40",
+      "item_name": "표준 V-벨트 A형 A-40",
+      "description": "일반 산업용 랩형 V-벨트 A형 단면 (유효길이 40인치)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.616330",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:08.988190",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-005-500G",
-      "item_name": "D-(+)-포도당 무수물 ACS Reagent 500 g - J.T.Baker",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: J.T.Baker / 제조사 품번: 1916-01 / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: ACS Reagent / 순도(Assay): 99.5% 이상 / 색상: 백색 또는 거의 백색 / 물리적 형태: 자유 유동성 결정 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 일반 생화학 완충액 및 배지 보충제 제조 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 ACS Reagent 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 약전 시험에는 무수물·일수화물 구분 및 약전 등급 확인 / 보관 조건: 개봉일과 유효기간을 표시하고 건조 장소에 보관 / 안전자료: 저울 작업 시 국소배기 사용, 입고 로트별 CoA 보관 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-05",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BLT-V-B45",
+      "item_name": "표준 V-벨트 B형 B-45",
+      "description": "중부하 구동용 랩형 V-벨트 B형 단면 (유효길이 45인치)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.648881",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:10.121194",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-006-500G",
-      "item_name": "D-(+)-포도당 무수물 puriss. p.a., ACS 500 g - Honeywell Fluka",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Honeywell Fluka / 제조사 품번: 49139-500G / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: puriss. p.a., ACS / 순도(Assay): 99.5% 이상 / 색상: 백색 / 물리적 형태: 결정성 고체 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/PE Bottle / 기준 재고 단위: Bottle / 용도: 고순도 탄수화물 분석용 기준 시료 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 puriss. p.a., ACS 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 고정밀 분석에는 인증표준물질 사용 필요 여부 검토 / 보관 조건: 분석표준 전용 구역에서 오염되지 않게 밀폐 보관 / 안전자료: SDS의 노출방지·응급조치 항목과 Lot별 CoA 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-06",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BRG-6004-2RS",
+      "item_name": "고무실드 볼베어링 6004-2RS",
+      "description": "양면 접촉식 고무 실드 베어링 방진/방수 (내경 20mm x 외경 42mm x 두께 12mm)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.681526",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:11.208086",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-007-500G",
-      "item_name": "D-(+)-포도당 무수물 GC grade 500 g - Sigma-Aldrich",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Sigma-Aldrich / 제조사 품번: G8270-500G / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: GC grade / 순도(Assay): 99.5% 이상 / 색상: 백색 결정 / 물리적 형태: 결정 또는 분말 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: GC 분석 전 유도체화용 포도당 표준물질 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 GC grade 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: GC 정량에는 해당 분석법의 적합성 및 수분 함량 확인 / 보관 조건: 유도체화 시약과 분리하고 저습도 조건에서 보관 / 안전자료: 취급 전 최신 SDS와 분석성적서의 불순물 항목 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-07",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BRG-6005-2RS",
+      "item_name": "고무실드 볼베어링 6005-2RS",
+      "description": "양면 접촉식 고무 실드 베어링 방진/방수 (내경 25mm x 외경 47mm x 두께 12mm)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.729943",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:12.021541",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-008-500G",
-      "item_name": "D-(+)-포도당 무수물 BioXtra 500 g - Sigma-Aldrich",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Sigma-Aldrich / 제조사 품번: G7528-500G / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: BioXtra / 순도(Assay): 99.5% 이상 / 색상: 무색~백색 / 물리적 형태: 미세 결정성 분말 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 단백질 안정화 및 생명과학용 배지 제조 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 BioXtra 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 단백질 실험에는 protease·nuclease 오염 기준 확인 / 보관 조건: 생명과학 전용 도구를 사용하고 용기를 즉시 밀봉 / 안전자료: 구매 승인 전 제조사 SDS 개정일과 Lot 시험성적 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-08",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BRG-6204ZZ",
+      "item_name": "심구볼베어링 6204ZZ",
+      "description": "양면 강판 실드 심구볼베어링 (내경 20mm x 외경 47mm x 두께 14mm)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.778639",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:12.828062",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-009-500G",
-      "item_name": "D-(+)-포도당 무수물 ACS reagent 500 g - Supelco univAR",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Supelco univAR / 제조사 품번: SAAR2676020-500G / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: ACS reagent / 순도(Assay): 99.5% 이상 / 색상: 백색~무색 / 물리적 형태: 건조 결정성 고체 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 범용 분석실의 당 표준액과 품질관리 시료 제조 / 대체 허용 기준: 동일 CAS 50-99-7, 분석 목적에 적합한 ACS reagent 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 일반 ACS와 BioXtra 사이의 생명과학 적합성 차이 확인 / 보관 조건: 상온 시약장에 로트별로 구분하여 보관 / 안전자료: 분진 흡입을 피하고 보안경·실험용 장갑 착용, SDS 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-09",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BRG-6205ZZ",
+      "item_name": "심구볼베어링 6205ZZ",
+      "description": "양면 강판 실드 심구볼베어링 (내경 25mm x 외경 52mm x 두께 15mm)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.812848",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:13.797961",
+      "enabled": true
     },
     {
-      "item_code": "REA-GLU-010-1KG",
-      "item_name": "D-(+)-포도당 무수물 ACS reagent 1 kg - Sigma-Aldrich",
-      "description": "품명: D-(+)-포도당 무수물(D-(+)-Glucose anhydrous) / 제조사: Sigma-Aldrich / 제조사 품번: G5767-1KG / CAS No.: 50-99-7 / 화학식: C6H12O6 / 분자량: 180.16 g/mol / 등급: ACS reagent / 순도(Assay): 99.5% 이상 / 색상: 백색 또는 거의 백색 / 물리적 형태: 자유 유동성 결정 / pH: 5.0~7.0 (수용액) / 녹는점: 약 146~150℃ / 끓는점: 해당 없음(가열 시 분해) / 포장 단위: 1 kg/Poly Bottle / 기준 재고 단위: Bottle / 용도: 대량 발효배지 및 공정개발용 탄소원 / 대체 허용 기준: 동일 CAS 50-99-7, ACS reagent 동급 이상, 99.5% 이상, 1 kg 포장 또는 500 g×2 수량 환산 / 대체 제한: 1 kg 포장은 개봉 후 흡습과 사용기한 관리가 가능한 경우만 대체 / 보관 조건: 대용량 원용기는 소분 작업 후 즉시 밀폐 보관 / 안전자료: 저울 작업 시 국소배기 사용, 입고 로트별 CoA 보관 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-GLU-10",
-      "item_group": "시약 - 당류",
-      "stock_uom": "Bottle",
+      "item_code": "BRG-UC204",
+      "item_name": "플랜지 유닛 인서트 베어링 UC204",
+      "description": "필로우 블록 / 플랜지 하우징용 구면 인서트 베어링 (축경 20mm)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.846862",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:14.774235",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-001-500G",
-      "item_name": "염화칼륨 ACS reagent 500 g - Sigma-Aldrich",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Sigma-Aldrich / 제조사 품번: P3911-500G / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: ACS reagent / 순도(Assay): 99.0~100.5% / 색상: 백색 / 물리적 형태: 결정성 고체 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 칼륨 표준용액 및 이온선택성 전극 교정액 조제 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 ACS reagent 상당 등급, 99.0~100.5%, 500 g 포장 / 대체 제한: 전극 충전액에는 제조사별 권장 농도와 불순물 규격 확인 / 보관 조건: 밀폐 용기에 넣어 상온·건조 조건으로 보관 / 안전자료: SDS의 노출방지·응급조치 항목과 Lot별 CoA 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-01",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "CHN-RS40-1R",
+      "item_name": "표준 롤러체인 RS40 (1롤/3m)",
+      "description": "탄소강 정밀 구동용 표준 롤러체인 RS40 (피치 12.7mm / 1롤 단위 3.048m / 240링크)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.176079",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:23.415387",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-002-500G",
-      "item_name": "염화칼륨 Certified ACS 500 g - Fisher Chemical",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Fisher Chemical / 제조사 품번: P217-500 / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: Certified ACS / 순도(Assay): 99.0% 이상 / 색상: 백색 결정 / 물리적 형태: 결정 또는 분말 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: PBS·Tris 계열 완충액의 이온강도 조절 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 Certified ACS 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 생물학 실험에는 미생물·엔도톡신 요구조건 별도 확인 / 보관 조건: 완충액 제조 구역의 건조 시약장에 보관 / 안전자료: 취급 전 최신 SDS와 분석성적서의 불순물 항목 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-02",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "CHN-RS40-CL",
+      "item_name": "RS40 체인 연결 링크 (10개입)",
+      "description": "RS40 롤러체인 연결용 조인트 링크 클립형 (10EA/Pack)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.207576",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:21.984971",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-003-500G",
-      "item_name": "염화칼륨 ACS/ISO/Reag. Ph Eur 500 g - Merck EMSURE",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Merck EMSURE / 제조사 품번: 1049360500 / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: ACS/ISO/Reag. Ph Eur / 순도(Assay): 99.5% 이상 / 색상: 무색~백색 / 물리적 형태: 미세 결정성 분말 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/PE Bottle / 기준 재고 단위: Bottle / 용도: 화염광도법과 원자흡광 분석용 칼륨 표준액 제조 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 ACS/ISO/Reag. Ph Eur 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 기기 교정용은 표준물질 소급성 요구 시 CRM 사용 / 보관 조건: 표준액 제조용 전용 스패튤러와 함께 오염 없이 보관 / 안전자료: 구매 승인 전 제조사 SDS 개정일과 Lot 시험성적 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-03",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "CHN-RS40-OL",
+      "item_name": "RS40 체인 오프셋 링크 (5개입)",
+      "description": "RS40 롤러체인 홀수 링크 조절용 반링크(오프셋) (5EA/Pack)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.239681",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:22.605803",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-004-500G",
-      "item_name": "염화칼륨 ACS 500 g - Thermo Scientific Chemicals",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Thermo Scientific Chemicals / 제조사 품번: A13736.36 / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: ACS / 순도(Assay): 99.0% 이상 / 색상: 백색~무색 / 물리적 형태: 건조 결정성 고체 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/Plastic Bottle / 기준 재고 단위: Bottle / 용도: 전기화학 실험용 기준 전해질 및 염다리 용액 조제 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 ACS 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 염다리 사용 시 은이온과의 침전 가능성을 사전 검토 / 보관 조건: 산 및 강산화제에서 분리해 환기되는 장소에 보관 / 안전자료: 분진 흡입을 피하고 보안경·실험용 장갑 착용, SDS 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-04",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "CHN-RS50-1R",
+      "item_name": "표준 롤러체인 RS50 (1롤/3m)",
+      "description": "탄소강 정밀 구동용 표준 롤러체인 RS50 (피치 15.875mm / 1롤 단위 3.048m / 192링크)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.281007",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:23.202761",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-005-500G",
-      "item_name": "염화칼륨 ACS Reagent 500 g - J.T.Baker",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: J.T.Baker / 제조사 품번: 3040-01 / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: ACS Reagent / 순도(Assay): 99.0% 이상 / 색상: 백색 또는 거의 백색 / 물리적 형태: 자유 유동성 결정 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 분석용 완충액과 일반 실험실 전해질 제조 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 ACS Reagent 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 약전 분석에서는 Ph. Eur·USP 등 요구 등급 확인 / 보관 조건: 개봉 후 습기 유입을 막고 로트별로 구분 보관 / 안전자료: 저울 작업 시 국소배기 사용, 입고 로트별 CoA 보관 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-05",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "CHN-RS50-CL",
+      "item_name": "RS50 체인 연결 링크 (10개입)",
+      "description": "RS50 롤러체인 연결용 조인트 링크 클립형 (10EA/Pack)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.322093",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:24.876023",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-006-500G",
-      "item_name": "염화칼륨 puriss. p.a., ACS 500 g - Honeywell Fluka",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Honeywell Fluka / 제조사 품번: 60130-500G / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: puriss. p.a., ACS / 순도(Assay): 99.5% 이상 / 색상: 백색 / 물리적 형태: 결정성 고체 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/PE Bottle / 기준 재고 단위: Bottle / 용도: 염화물 적정 및 무기이온 정성분석 보조시약 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 puriss. p.a., ACS 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 정밀 염화물 분석에는 브로마이드 불순물 규격 확인 / 보관 조건: 할로겐 분석용 시약과 교차오염되지 않게 분리 보관 / 안전자료: SDS의 노출방지·응급조치 항목과 Lot별 CoA 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-06",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "FST-HEX-M06020",
+      "item_name": "고장력 렌치볼트 SCM435 M6x20 (100개입)",
+      "description": "기계 조립용 육각구멍붙이 렌치볼트 10.9급 고장력 볼트 (M6 x 20mm / 100EA/Box)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.355882",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:24.317422",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-007-500G",
-      "item_name": "염화칼륨 Redi-Dri, ACS reagent 500 g - Sigma-Aldrich",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Sigma-Aldrich / 제조사 품번: 746436-500G / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: Redi-Dri, ACS reagent / 순도(Assay): 99.0% 이상 / 색상: 백색 결정 / 물리적 형태: 결정 또는 분말 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/Bottle / 기준 재고 단위: Bottle / 용도: 수분 영향을 줄인 무수 조건 전해질 제조 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 Redi-Dri, ACS reagent 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 무수 반응에는 건조 제품만 허용하고 개봉 이력 확인 / 보관 조건: 저습도 캐비닛에서 개봉 시간을 최소화해 보관 / 안전자료: 취급 전 최신 SDS와 분석성적서의 불순물 항목 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-07",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "FST-HEX-M08025",
+      "item_name": "고장력 렌치볼트 SCM435 M8x25 (100개입)",
+      "description": "기계 조립용 육각구멍붙이 렌치볼트 10.9급 고장력 볼트 (M8 x 25mm / 100EA/Box)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.388299",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:24.904848",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-008-500G",
-      "item_name": "염화칼륨 ReagentPlus 500 g - Sigma-Aldrich",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Sigma-Aldrich / 제조사 품번: P4504-500G / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: ReagentPlus / 순도(Assay): 99.0% 이상 / 색상: 무색~백색 / 물리적 형태: 미세 결정성 분말 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 일반 합성·정제 공정의 칼륨염 공급원 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 ReagentPlus 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 합성용 대체 시 금속 불순물이 반응에 미치는 영향 검토 / 보관 조건: 일반 무기염류 구역에서 용기를 밀봉해 보관 / 안전자료: 구매 승인 전 제조사 SDS 개정일과 Lot 시험성적 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-08",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "FST-HEX-M10030",
+      "item_name": "고장력 렌치볼트 SCM435 M10x30 (50개입)",
+      "description": "기계 조립용 육각구멍붙이 렌치볼트 10.9급 고장력 볼트 (M10 x 30mm / 50EA/Box)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.420861",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:25.606458",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-009-500G",
-      "item_name": "염화칼륨 BioXtra 500 g - Sigma-Aldrich",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Sigma-Aldrich / 제조사 품번: P9333-500G / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: BioXtra / 순도(Assay): 99.0% 이상 / 색상: 백색~무색 / 물리적 형태: 건조 결정성 고체 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 단백질 정제와 생화학 완충액 조제 / 대체 허용 기준: 동일 CAS 7447-40-7, 분석 목적에 적합한 BioXtra 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: BioXtra는 일반 ACS와 용도별 적합성 기준을 구분 / 보관 조건: 생화학 전용 구역에서 미생물 오염을 방지해 보관 / 안전자료: 분진 흡입을 피하고 보안경·실험용 장갑 착용, SDS 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-09",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "FST-LCK-M08",
+      "item_name": "나일론 풀림방지 락너트 SUS304 M8 (100개입)",
+      "description": "진동 방지용 나일론 인서트 스테인리스 락너트 (M8 규격 / 100EA/Box)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.453624",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:27.082135",
+      "enabled": true
     },
     {
-      "item_code": "REA-KCL-010-1KG",
-      "item_name": "염화칼륨 ACS reagent 1 kg - Sigma-Aldrich",
-      "description": "품명: 염화칼륨(Potassium Chloride) / 제조사: Sigma-Aldrich / 제조사 품번: P3911-1KG / CAS No.: 7447-40-7 / 화학식: KCl / 분자량: 74.55 g/mol / 등급: ACS reagent / 순도(Assay): 99.0~100.5% / 색상: 백색 또는 거의 백색 / 물리적 형태: 자유 유동성 결정 / pH: 5.5~8.0 / 녹는점: 약 770℃ / 끓는점: 1420℃ / 포장 단위: 1 kg/Poly Bottle / 기준 재고 단위: Bottle / 용도: 대량 배지 및 공정용 전해질 배합 / 대체 허용 기준: 동일 CAS 7447-40-7, ACS reagent 동급 이상, 99.0~100.5%, 1 kg 포장 또는 500 g×2 수량 환산 / 대체 제한: 1 kg 제품은 보관공간과 사용기한 검토 후 대체 / 보관 조건: 소분 용기에 로트와 개봉일을 기록하여 실온 보관 / 안전자료: 저울 작업 시 국소배기 사용, 입고 로트별 CoA 보관 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-KCL-10",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "FST-WSH-NL08",
+      "item_name": "노드락(Nord-Lock) 풀림방지 와셔 NL8 (50쌍)",
+      "description": "쐐기 잠금 방식 고진동 설비용 풀림방지 2중 와셔 (M8 볼트용 NL8 / 50Pairs/Box)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.486385",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:26.659836",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-001-500G",
-      "item_name": "염화나트륨 Certified ACS 500 g - Fisher Chemical",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Fisher Chemical / 제조사 품번: S271-500 / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: Certified ACS / 순도(Assay): 99.0% 이상 / 색상: 백색 / 물리적 형태: 결정성 고체 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 염소이온 표준용액 조제 및 적정 분석 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 Certified ACS 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 중금속 규격이 별도로 지정된 시험에는 CoA 확인 후 사용 / 보관 조건: 흡습 방지를 위해 사용 직후 뚜껑을 닫고 건조한 실온 보관 / 안전자료: SDS의 노출방지·응급조치 항목과 Lot별 CoA 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-01",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "PNE-JSC-0802",
+      "item_name": "스피드컨트롤러 밸브 JSC 08-02",
+      "description": "실린더 속도제어용 미터아웃 유량조절 밸브 (튜브 외경 Ø8 / 나사산 R 1/4)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:03.838617",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:29.642818",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-002-500G",
-      "item_name": "염화나트륨 ACS reagent 500 g - Sigma-Aldrich",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Sigma-Aldrich / 제조사 품번: S9888-500G / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: ACS reagent / 순도(Assay): 99.0% 이상 / 색상: 백색 결정 / 물리적 형태: 결정 또는 분말 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 생리식염 농도 모사와 일반 완충액 제조 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 ACS reagent 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 세포배양·주사용 용도에는 무균성 및 엔도톡신 기준 별도 확인 / 보관 조건: 산·산화제와 분리하여 밀폐 상태로 15~25℃ 보관 / 안전자료: 취급 전 최신 SDS와 분석성적서의 불순물 항목 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-02",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "PNE-POC-0601",
+      "item_name": "원터치 스트레이트 피팅 POC 06-01",
+      "description": "공압용 수나사형 스트레이트 원터치 피팅 (튜브 외경 Ø6 / 나사산 R 1/8)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:03.878247",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:30.346026",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-003-500G",
-      "item_name": "염화나트륨 ACS/ISO/Reag. Ph Eur 500 g - Merck EMSURE",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Merck EMSURE / 제조사 품번: 1064040500 / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: ACS/ISO/Reag. Ph Eur / 순도(Assay): 99.5% 이상 / 색상: 무색~백색 / 물리적 형태: 미세 결정성 분말 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/PE Bottle / 기준 재고 단위: Bottle / 용도: 수질 분석용 이온강도 조절제 및 표준시약 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 ACS/ISO/Reag. Ph Eur 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: ISO 또는 약전 시험에서는 해당 공인 규격 충족 여부 확인 / 보관 조건: 직사광선을 피하고 통풍되는 시약장에 보관 / 안전자료: 구매 승인 전 제조사 SDS 개정일과 Lot 시험성적 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-03",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "PNE-POC-0802",
+      "item_name": "원터치 스트레이트 피팅 POC 08-02",
+      "description": "공압용 수나사형 스트레이트 원터치 피팅 (튜브 외경 Ø8 / 나사산 R 1/4)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:03.911617",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:33.245494",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-004-500G",
-      "item_name": "염화나트륨 ACS 500 g - Thermo Scientific Chemicals",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Thermo Scientific Chemicals / 제조사 품번: 012314.36 / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: ACS / 순도(Assay): 99.0% 이상 / 색상: 백색~무색 / 물리적 형태: 건조 결정성 고체 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/Plastic Bottle / 기준 재고 단위: Bottle / 용도: 침전반응·용해도 비교 실험과 교육용 분석 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 ACS 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 교육용으로는 대체 가능하나 정량 분석 시 assay 보정 필요 / 보관 조건: 개봉일을 표시하고 수분 유입이 적은 장소에 보관 / 안전자료: 분진 흡입을 피하고 보안경·실험용 장갑 착용, SDS 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-04",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "PNE-POL-0601",
+      "item_name": "원터치 엘보 피팅 POL 06-01",
+      "description": "공압용 90도 회전형 엘보 원터치 피팅 (튜브 외경 Ø6 / 나사산 R 1/8)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:03.945668",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:32.048680",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-005-500G",
-      "item_name": "염화나트륨 ACS reagent 500 g - Thermo Scientific Chemicals",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Thermo Scientific Chemicals / 제조사 품번: 424295000 / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: ACS reagent / 순도(Assay): 99% 이상 / 색상: 백색 또는 거의 백색 / 물리적 형태: 자유 유동성 결정 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/Amber Glass Bottle / 기준 재고 단위: Bottle / 용도: 전도도 교정용 염 용액 및 분석용 바탕용액 조제 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 ACS reagent 상당 등급, 99% 이상, 500 g 포장 / 대체 제한: 유리병 포장이 요구되는 장기 보관 시험은 포장재 확인 / 보관 조건: 갈색 유리병 포장을 유지하고 건조실에 보관 / 안전자료: 저울 작업 시 국소배기 사용, 입고 로트별 CoA 보관 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-05",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "PNE-POL-0802",
+      "item_name": "원터치 엘보 피팅 POL 08-02",
+      "description": "공압용 90도 회전형 엘보 원터치 피팅 (튜브 외경 Ø8 / 나사산 R 1/4)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:03.978764",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:32.765562",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-006-500G",
-      "item_name": "염화나트륨 ACS Reagent 500 g - J.T.Baker",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: J.T.Baker / 제조사 품번: 3624-01 / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: ACS Reagent / 순도(Assay): 99.0% 이상 / 색상: 백색 / 물리적 형태: 결정성 고체 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/Poly Bottle / 기준 재고 단위: Bottle / 용도: 은적정법을 이용한 할로겐화물 분석 보조시약 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 ACS Reagent 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 침전 적정에서는 브로마이드·요오드 불순물 허용치 확인 / 보관 조건: 할로겐계 시약 구역에서 용기 오염 없이 밀봉 보관 / 안전자료: SDS의 노출방지·응급조치 항목과 Lot별 CoA 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-06",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "SEAL-FKM-P20",
+      "item_name": "불소고무(FKM) O-링 P-20 (10개입)",
+      "description": "고온/내화학성 바이톤 O-Ring (운동용/고정용 규격 P-20 / 10EA/Pack)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.012550",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:33.279617",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-007-500G",
-      "item_name": "염화나트륨 puriss. p.a., ACS/ISO 500 g - Honeywell Fluka",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Honeywell Fluka / 제조사 품번: 31434-500G-R / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: puriss. p.a., ACS/ISO / 순도(Assay): 99.5% 이상 / 색상: 백색 결정 / 물리적 형태: 결정 또는 분말 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/PE Bottle / 기준 재고 단위: Bottle / 용도: 무기염 정성분석 및 분석기기 전처리 용액 제조 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 puriss. p.a., ACS/ISO 상당 등급, 99.5% 이상, 500 g 포장 / 대체 제한: 미량금속 분석에는 trace-metal grade 제품을 우선 적용 / 보관 조건: 미량분석용 도구와 분리하고 청결한 건조 장소에 보관 / 안전자료: 취급 전 최신 SDS와 분석성적서의 불순물 항목 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-07",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "SEAL-SIL-G35",
+      "item_name": "실리콘 O-링 G-35 (10개입)",
+      "description": "내열/내한 실리콘 실링 O-Ring (고정용 규격 G-35 / 10EA/Pack)",
+      "item_group": "기계부품",
+      "stock_uom": "Box",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.046157",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:34.031733",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-008-500G",
-      "item_name": "염화나트륨 Redi-Dri, ACS reagent 500 g - Sigma-Aldrich",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Sigma-Aldrich / 제조사 품번: 746398-500G / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: Redi-Dri, ACS reagent / 순도(Assay): 99.0% 이상 / 색상: 무색~백색 / 물리적 형태: 미세 결정성 분말 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/Bottle / 기준 재고 단위: Bottle / 용도: 수분에 민감한 합성 반응용 건조 염 공급원 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 Redi-Dri, ACS reagent 상당 등급, 99.0% 이상, 500 g 포장 / 대체 제한: 수분 민감 반응에는 건조도와 수분 함량 규격 확인 / 보관 조건: 데시케이터 또는 저습도 캐비닛에 밀폐 보관 / 안전자료: 구매 승인 전 제조사 SDS 개정일과 Lot 시험성적 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-08",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "SEAL-TC-254508",
+      "item_name": "오일씰 TC 25-45-8",
+      "description": "NBR 고무 회전축 밀봉 오일씰 스프링 내장형 (내경 25mm x 외경 45mm x 폭 8mm)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.079461",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:34.761333",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-009-500G",
-      "item_name": "염화나트륨 ACS Ultrapure 500 g - Thermo Scientific Chemicals",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Thermo Scientific Chemicals / 제조사 품번: J21618.36 / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: ACS Ultrapure / 순도(Assay): 99% 이상 / 색상: 백색~무색 / 물리적 형태: 건조 결정성 고체 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 500 g/Plastic Bottle / 기준 재고 단위: Bottle / 용도: 핵산 침전 및 분자생물학 완충액 조제 / 대체 허용 기준: 동일 CAS 7647-14-5, 분석 목적에 적합한 ACS Ultrapure 상당 등급, 99% 이상, 500 g 포장 / 대체 제한: 생명과학 실험에는 nuclease·endotoxin 기준 제품 우선 / 보관 조건: 생명과학 전용 시약장에 교차오염 없이 보관 / 안전자료: 분진 흡입을 피하고 보안경·실험용 장갑 착용, SDS 확인 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-09",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "SEAL-TC-305010",
+      "item_name": "오일씰 TC 30-50-10",
+      "description": "NBR 고무 회전축 밀봉 오일씰 스프링 내장형 (내경 30mm x 외경 50mm x 폭 10mm)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.111892",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:35.592699",
+      "enabled": true
     },
     {
-      "item_code": "REA-NACL-010-1KG",
-      "item_name": "염화나트륨 ReagentPlus 1 kg - Sigma-Aldrich",
-      "description": "품명: 염화나트륨(Sodium Chloride) / 제조사: Sigma-Aldrich / 제조사 품번: S9625-1KG / CAS No.: 7647-14-5 / 화학식: NaCl / 분자량: 58.44 g/mol / 등급: ReagentPlus / 순도(Assay): 99.5% 이상 / 색상: 백색 또는 거의 백색 / 물리적 형태: 자유 유동성 결정 / pH: 5.0~8.0 / 녹는점: 약 801℃ / 끓는점: 1461℃ / 포장 단위: 1 kg/Poly Bottle / 기준 재고 단위: Bottle / 용도: 대용량 일반 세척액과 염 농도 조절용 원료 / 대체 허용 기준: 동일 CAS 7647-14-5, ReagentPlus 동급 이상, 99.5% 이상, 1 kg 포장 또는 500 g×2 수량 환산 / 대체 제한: 1 kg 포장은 500 g 요청을 수량 환산한 경우에만 대체 / 보관 조건: 대용량 용기는 소분 후 원용기를 즉시 밀폐하여 보관 / 안전자료: 저울 작업 시 국소배기 사용, 입고 로트별 CoA 보관 / 데이터 구분: 대체품 추천 성능 검증용 더미데이터-NACL-10",
-      "item_group": "시약 - 무기염류",
-      "stock_uom": "Bottle",
+      "item_code": "SEAL-TC-355511",
+      "item_name": "오일씰 TC 35-55-11",
+      "description": "NBR 고무 회전축 밀봉 오일씰 스프링 내장형 (내경 35mm x 외경 55mm x 폭 11mm)",
+      "item_group": "기계부품",
+      "stock_uom": "Nos",
       "is_stock_item": 1,
       "include_item_in_manufacturing": 1,
       "disabled": 0,
-      "modified": "2026-08-25 14:42:04.143922",
-      "enabled": true,
-      "erpnext_import_enabled": false
+      "modified": "2026-08-26 15:40:36.487398",
+      "enabled": true
     }
   ],
   "erpnext_evaluation_export": {
@@ -1460,14 +1362,12 @@
     "doctype": "Item",
     "item_groups": [
       "사무용품",
-      "시약 - 당류",
-      "시약 - 무기염류"
+      "기계부품"
     ],
-    "exported_at": "2026-08-26T00:38:37+00:00",
+    "exported_at": "2026-08-26T06:56:10+00:00",
     "group_counts": {
       "사무용품": 40,
-      "시약 - 당류": 10,
-      "시약 - 무기염류": 20
+      "기계부품": 30
     }
   }
 }

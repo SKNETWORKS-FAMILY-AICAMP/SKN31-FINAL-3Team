@@ -27,7 +27,7 @@ class ERPNextAPIError(Exception):
     pass
 
 
-def erp_get(doctype, filters=None, fields=None):
+def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None):
     """ERPNext에서 문서 목록 조회"""
     import json
     params = {}
@@ -35,6 +35,10 @@ def erp_get(doctype, filters=None, fields=None):
         params["filters"] = json.dumps(filters)
     if fields:
         params["fields"] = json.dumps(fields)
+    if order_by:
+        params["order_by"] = order_by
+    if limit is not None:
+        params["limit_page_length"] = int(limit)
 
     res = requests.get(f"{SITE_URL}/api/resource/{doctype}", headers=HEADERS, params=params)
     if res.status_code != 200:

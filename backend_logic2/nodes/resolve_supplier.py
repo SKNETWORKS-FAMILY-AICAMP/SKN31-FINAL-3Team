@@ -256,6 +256,28 @@ def _vendor_search_queries(item_name, item_group=None):
         ]
         return list(dict.fromkeys(query for query in queries if query.strip()))
 
+    if normalized_group == "기계부품":
+        family_rules = (
+            (("벨트",), "산업용 벨트"),
+            (("베어링",), "산업용 베어링"),
+            (("체인",), "산업용 체인"),
+            (("볼트", "너트", "와셔"), "산업용 체결부품"),
+            (("피팅", "밸브"), "공압 부품"),
+            (("O-링", "오링", "오일씰", "씰"), "산업용 씰링 부품"),
+        )
+        family = "산업용 기계부품"
+        for keywords, label in family_rules:
+            if any(keyword in cleaned for keyword in keywords):
+                family = label
+                break
+        queries = [
+            f"{base} 판매",
+            f"{base} 대리점",
+            f"{family} 유통",
+            "기계부품 전문업체",
+        ]
+        return list(dict.fromkeys(query for query in queries if query.strip()))
+
     family_rules = (
         (("소화기", "소방", "방염"), "소방용품"),
         (("장갑",), "작업용 장갑"),
