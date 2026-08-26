@@ -2,102 +2,141 @@
   {
     "item_code": "BLT-TMG-5M-500",
     "item_name": "타이밍벨트 HTD 5M-500-15",
-    "name": "",
+    "name": "한국미스미",
     "relevance": 3,
-    "evidence": "",
+    "evidence": "한국미스미 판매 페이지에서 게이츠(UNITTA GATES) 파워그립 HTD 5M 타입의 정확 형번 500-5M-15를 확인함. 출처: https://kr.misumi-ec.com/vona2/detail/221004925027/?HissuCode=500-5M-15",
     "reviewer": "",
-    "domains": [],
-    "aliases": []
+    "domains": [
+      "kr.misumi-ec.com"
+    ],
+    "aliases": [
+      "MISUMI Korea",
+      "미스미"
+    ]
   },
   {
     "item_code": "BLT-TMG-5M-500",
     "item_name": "타이밍벨트 HTD 5M-500-15",
-    "name": "",
+    "name": "무원코리아",
     "relevance": 2,
-    "evidence": "",
+    "evidence": "무원코리아 판매 목록에서 동일 치수 표기인 Contitech 500 5M 15 제품과 주문 가능 수량을 확인함. 다만 원본 품목에 기재된 HTD 브랜드와 제조사가 동일하다는 근거는 없어 relevance 2로 분류함. 출처: https://muwonkorea.com/sale?page=17&part_category3=000400030001&perpage=40&sort=lprice",
     "reviewer": "",
-    "domains": [],
+    "domains": [
+      "muwonkorea.com"
+    ],
     "aliases": []
   },
   {
     "item_code": "BRG-6004-2RS",
     "item_name": "고무실드 볼베어링 6004-2RS",
-    "name": "",
+    "name": "한국미스미",
     "relevance": 3,
-    "evidence": "",
+    "evidence": "한국미스미 판매 페이지에서 정확 형번 6004-2RS, 고무 실형, 내경 20 mm, 외경 42 mm, 폭 12 mm를 확인함. 출처: https://kr.misumi-ec.com/vona2/detail/221301228089/?HissuCode=6004-2RS",
     "reviewer": "",
-    "domains": [],
-    "aliases": []
+    "domains": [
+      "kr.misumi-ec.com"
+    ],
+    "aliases": [
+      "MISUMI Korea",
+      "미스미"
+    ]
   },
   {
     "item_code": "BRG-6004-2RS",
     "item_name": "고무실드 볼베어링 6004-2RS",
-    "name": "",
+    "name": "나비엠알오",
     "relevance": 2,
-    "evidence": "",
+    "evidence": "나비엠알오에서 KOYO 깊은홈 볼베어링 모델 60042RS를 판매하며, 2RS 양측 고무 실드 계열임을 확인함. 표기 방식이 원본의 6004-2RS와 다르므로 relevance 2로 분류함. 출처: https://www.navimro.com/g/372834/",
     "reviewer": "",
-    "domains": [],
+    "domains": [
+      "navimro.com"
+    ],
+    "aliases": [
+      "NAVI MRO"
+    ]
+  },
+  {
+    "item_code": "CHN-RS40-1R",
+    "item_name": "표준 롤러체인 RS40 (1롤/3m)",
+    "name": "베어링웍스",
+    "relevance": 3,
+    "evidence": "베어링웍스 판매 페이지에서 동보체인 1열 DBC40(RS40) 표준 롤러체인과 3m(10피트) 판매 단위를 직접 확인함. 출처: https://bearingworks.co.kr/577/?idx=13223",
+    "reviewer": "",
+    "domains": [
+      "bearingworks.co.kr"
+    ],
     "aliases": []
   },
   {
     "item_code": "CHN-RS40-1R",
     "item_name": "표준 롤러체인 RS40 (1롤/3m)",
-    "name": "",
-    "relevance": 3,
-    "evidence": "",
-    "reviewer": "",
-    "domains": [],
-    "aliases": []
-  },
-  {
-    "item_code": "CHN-RS40-1R",
-    "item_name": "표준 롤러체인 RS40 (1롤/3m)",
-    "name": "",
+    "name": "7909",
     "relevance": 2,
-    "evidence": "",
+    "evidence": "7909 판매 페이지에서 무쏘 MSC40-1열, RS40-1, 길이 3m 제품을 확인함. 규격과 길이는 일치하지만 원본의 제조사 정보가 없어 동일 제조사 여부를 확인할 수 없으므로 relevance 2로 분류함. 출처: https://7909.co.kr/product/무쏘-체인-msc40-1열-rs40-1-msc40-rs40-3m/6100/",
     "reviewer": "",
-    "domains": [],
+    "domains": [
+      "7909.co.kr"
+    ],
     "aliases": []
   },
   {
     "item_code": "FST-HEX-M08025",
     "item_name": "고장력 렌치볼트 SCM435 M8x25 (100개입)",
-    "name": "",
+    "name": "대한볼트",
     "relevance": 3,
-    "evidence": "",
+    "evidence": "https://dhbolt.co.kr/sub/product_list/prd_01.html",
     "reviewer": "",
-    "domains": [],
-    "aliases": []
+    "domains": [
+      "https://dhbolt.co.kr"
+    ],
+    "aliases": [
+      "DAEHANBOLT",
+      "대한볼트"
+    ]
   },
   {
     "item_code": "FST-HEX-M08025",
     "item_name": "고장력 렌치볼트 SCM435 M8x25 (100개입)",
-    "name": "",
-    "relevance": 2,
-    "evidence": "",
-    "reviewer": "",
-    "domains": [],
-    "aliases": []
-  },
-  {
-    "item_code": "PNE-POC-0802",
-    "item_name": "원터치 스트레이트 피팅 POC 08-02",
-    "name": "",
+    "name": "대한볼트",
     "relevance": 3,
-    "evidence": "",
+    "evidence": "한국미스미 판매 페이지에서 대한볼트의 SCM435 육각소켓 렌치볼트 정확 규격 M8×25(HSHCS-SCM-M8-25L)을 확인함. 다만 검색 결과만으로 100개 포장 단위는 확인되지 않음. 출처: https://kr.misumi-ec.com/vona2/detail/221005552945/?HissuCode=HSHCS-SCM-M8-25L",
     "reviewer": "",
-    "domains": [],
-    "aliases": []
+    "domains": [
+      "kr.misumi-ec.com"
+    ],
+    "aliases": [
+      "MISUMI Korea",
+      "미스미"
+    ]
   },
   {
     "item_code": "PNE-POC-0802",
     "item_name": "원터치 스트레이트 피팅 POC 08-02",
-    "name": "",
-    "relevance": 2,
-    "evidence": "",
+    "name": "한국미스미",
+    "relevance": 3,
+    "evidence": "한국미스미 판매 페이지에서 CDC 원터치 스트레이트 피팅의 정확 형번 POC-08-02와 10개입 판매 단위를 확인함. 출처: https://kr.misumi-ec.com/vona2/detail/221005207199/?HissuCode=POC-08-02",
     "reviewer": "",
-    "domains": [],
-    "aliases": []
+    "domains": [
+      "kr.misumi-ec.com"
+    ],
+    "aliases": [
+      "MISUMI Korea",
+      "미스미"
+    ]
+  },
+  {
+    "item_code": "PNE-POC-0802",
+    "item_name": "원터치 스트레이트 피팅 POC 08-02",
+    "name": "씨디씨뉴매틱",
+    "relevance": 2,
+    "evidence": "CDC 공식 제품 페이지와 제품 카탈로그에서 POC 원터치 피팅 계열 및 정확 형번 POC 08-02를 확인함. 제조사 제품 정보는 확인되지만 해당 공식 페이지에서 직접 판매 조건은 확인되지 않아 relevance 2로 분류함. 출처: https://cdcpneumatics.com/open_content/product/view.php?pm_no=1",
+    "reviewer": "",
+    "domains": [
+      "cdcpneumatics.com"
+    ],
+    "aliases": [
+      "CDC Pneumatics",
+      "CDC"
+    ]
   }
 ]
-
