@@ -165,59 +165,84 @@ def _extract_email_from_verified_page(company_name, page_text):
         return None
 
 
+def _process_single_record(record):
+    """
+    조달내역 한 건을 상세정보(전화,홈페이지,이메일)까지 채워서 반환.
+    (병렬실행용 — 다른 record들과 완전히 독립적인 작업)
+    반환: (record_dict 또는 None)
+    """
+    corp_nm = record.get("corpNm")
+    bizno = record.get("cntrctCorpBizno")
+    if not bizno:
+        return None
+
+    print(f"  '{corp_nm}'({bizno}) 검증된 연락처 조회 중...")
+    basic_info = get_corp_basic_info(bizno)
+
+    if not basic_info:
+        print(f"    -> 기본정보 없음, 스킵")
+        return None
+
+    phone = basic_info.get("telNo")
+    homepage = basic_info.get("hmpgAdrs")
+    address = basic_info.get("adrs")
+    print(f"  '{corp_nm}' -> 전화: {phone} | 홈페이지: {homepage}")
+
+    email = None
+    if homepage:
+        page_text = _fetch_page_text(homepage)
+        email = _extract_email_from_verified_page(corp_nm, page_text)
+        print(f"  '{corp_nm}' -> 이메일: {email}")
+
+    return {
+        "name": corp_nm,
+        "business_no": bizno,
+        "phone": phone,
+        "homepage": homepage,
+        "address": address,
+        "email": email,
+        "procurement_record": {
+            "item": record.get("prdctClsfcNoNm"),
+            "spec": record.get("prdctIdntNoNm"),
+            "date": record.get("dlvrReqRcptDate"),
+            "buyer": record.get("dminsttNm"),
+        },
+    }
+
+
 def find_verified_suppliers(item_name, max_results=3, days_back=30):
-    """1단계->2단계->3단계 전체 파이프라인 실행"""
+    """
+    1단계->2단계->3단계 전체 파이프라인 실행.
+    ⚠️ 2,3단계(회사별 상세조회+이메일추출)는 서로 독립적이라 병렬로 돌림
+    (호출 수는 그대로, 체감속도만 개선).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     print(f"\n[1단계] '{item_name}' 실제 납품기록 조회 중... (최근 {days_back}일)")
     history = search_procurement_history(item_name, num_rows=max_results, days_back=days_back)
     print(f"  -> {len(history)}건 발견")
 
-    results = []
     seen_bizno = set()
-
+    unique_records = []
     for record in history:
-        corp_nm = record.get("corpNm")
         bizno = record.get("cntrctCorpBizno")
         if not bizno or bizno in seen_bizno:
             continue
         seen_bizno.add(bizno)
+        unique_records.append(record)
 
-        print(f"\n[2단계] '{corp_nm}'({bizno}) 검증된 연락처 조회 중...")
-        basic_info = get_corp_basic_info(bizno)
+    print(f"\n[2,3단계] {len(unique_records)}개 업체 상세정보 병렬 조회 중...")
+    results = []
+    with ThreadPoolExecutor(max_workers=min(len(unique_records), 8) or 1) as executor:
+        futures = [executor.submit(_process_single_record, record) for record in unique_records]
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                results.append(result)
+            if len(results) >= max_results:
+                break
 
-        if not basic_info:
-            print(f"  -> 기본정보 없음, 스킵")
-            continue
-
-        phone = basic_info.get("telNo")
-        homepage = basic_info.get("hmpgAdrs")
-        address = basic_info.get("adrs")
-        print(f"  -> 전화: {phone} | 홈페이지: {homepage}")
-
-        email = None
-        if homepage:
-            print(f"[3단계] 검증된 홈페이지에서 이메일 추출 중...")
-            page_text = _fetch_page_text(homepage)
-            email = _extract_email_from_verified_page(corp_nm, page_text)
-            print(f"  -> 이메일: {email}")
-
-        results.append({
-            "name": corp_nm,
-            "business_no": bizno,
-            "phone": phone,
-            "homepage": homepage,
-            "address": address,
-            "email": email,
-            "procurement_record": {
-                "item": record.get("prdctClsfcNoNm"),
-                "spec": record.get("prdctIdntNoNm"),
-                "date": record.get("dlvrReqRcptDate"),
-                "buyer": record.get("dminsttNm"),
-            },
-        })
-
-        if len(results) >= max_results:
-            break
-
+    return results[:max_results]
     return results
 
 
