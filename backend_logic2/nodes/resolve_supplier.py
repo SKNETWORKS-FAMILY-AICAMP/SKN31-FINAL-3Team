@@ -232,10 +232,30 @@ def _search_naver_local(query, display=5, raise_on_error=False):
     return items
 
 
-def _vendor_search_queries(item_name):
+def _vendor_search_queries(item_name, item_group=None):
     """세부 규격명과 업종명을 함께 사용해 Local 검색 recall을 확보."""
     cleaned = _clean_search_term(item_name)
     base = re.sub(r"\s*\([^)]*\)", "", cleaned).strip()
+
+    normalized_group = str(item_group or "").strip()
+    if normalized_group == "사무용품":
+        queries = [
+            f"{base} 판매",
+            f"{base} 납품",
+            "사무용품 도매",
+            "오피스용품 납품",
+        ]
+        return list(dict.fromkeys(query for query in queries if query.strip()))
+
+    if normalized_group.startswith("시약"):
+        queries = [
+            f"{base} 판매",
+            f"{base} 시약",
+            "실험실 시약 납품",
+            "연구용 시약 유통",
+        ]
+        return list(dict.fromkeys(query for query in queries if query.strip()))
+
     family_rules = (
         (("소화기", "소방", "방염"), "소방용품"),
         (("장갑",), "작업용 장갑"),
@@ -355,11 +375,16 @@ def enrich_contact_info(vendor):
     return vendor
 
 
-def search_new_vendor_candidates(item_name, max_results=15, raise_on_error=False):
+def search_new_vendor_candidates(
+    item_name,
+    max_results=15,
+    raise_on_error=False,
+    item_group=None,
+):
     """Naver Local에서 실제 업체·기관 엔터티만 새 벤더 후보로 수집."""
     candidates = []
     seen = set()
-    queries = _vendor_search_queries(item_name)
+    queries = _vendor_search_queries(item_name, item_group=item_group)
     errors = []
 
     for query in queries:
@@ -408,25 +433,75 @@ def search_new_vendor_candidates(item_name, max_results=15, raise_on_error=False
 
 
 def collect_vendor_candidates_for_evaluation(
-    item_name,
-    rag_limit=20,
-    naver_limit=20,
-    limit_categories=5,
+    item=None,
+    limit_per_source=20,
+    source_limits=None,
+    category_limit=5,
+    **legacy_options,
 ):
-    """연락처 보강/AI 필터 전에 RAG와 Naver 원시 후보를 각각 수집.
+    """평가기가 의존하는 안정적인 원시 후보 수집 인터페이스.
 
-    검색기 자체의 품질을 평가할 때 이메일 유무나 LLM 관련성 판정을 섞으면
-    원인을 구분할 수 없으므로, 평가 코드는 이 함수를 사용한다.
+    내부 검색 API가 바뀌더라도 반환 계약(``sources``와 ``errors``)만 유지하면
+    evaluation 코드는 수정하지 않아도 된다. ``sources``의 키는 동적이므로
+    Naver를 다른 검색기로 교체할 때 새 source 이름을 그대로 사용할 수 있다.
     """
-    return {
-        "item_name": item_name,
-        "clean_query": _clean_search_term(item_name),
-        "rag": rag_search_vendors(
+    # 이전 호출 형식(item_name, rag_limit=..., ...)도 당분간 호환한다.
+    if isinstance(item, str):
+        item = {"item_name": item}
+    item = dict(item or {})
+    item_name = item.get("item_name") or legacy_options.get("item_name") or ""
+    item_code = item.get("item_code")
+    item_group = item.get("item_group")
+    if source_limits is not None and not isinstance(source_limits, dict):
+        # 구형 위치 인자 호출: (item_name, rag_limit, naver_limit, limit_categories)
+        source_limits = {"rag": limit_per_source, "naver": source_limits}
+    source_limits = dict(source_limits or {})
+    rag_limit = int(source_limits.get("rag", legacy_options.get("rag_limit", limit_per_source)))
+    naver_limit = int(source_limits.get("naver", legacy_options.get("naver_limit", limit_per_source)))
+    category_limit = int(legacy_options.get("limit_categories", category_limit))
+
+    sources = {}
+    errors = {}
+
+    if item_code:
+        try:
+            sources["existing"] = [
+                {
+                    "name": name,
+                    "source": "existing",
+                    "retrieval_rank": rank,
+                }
+                for rank, name in enumerate(get_existing_suppliers(item_code), start=1)
+            ]
+        except Exception as error:
+            errors["existing"] = str(error)
+
+    try:
+        sources["rag"] = rag_search_vendors(
             item_name,
-            limit_categories=limit_categories,
+            limit_categories=category_limit,
             limit_vendors=rag_limit,
-        ),
-        "naver": search_new_vendor_candidates(item_name, max_results=naver_limit),
+        )
+    except Exception as error:
+        errors["rag"] = str(error)
+        sources["rag"] = []
+
+    try:
+        sources["naver"] = search_new_vendor_candidates(
+            item_name,
+            max_results=naver_limit,
+            raise_on_error=True,
+            item_group=item_group,
+        )
+    except Exception as error:
+        errors["naver"] = str(error)
+        sources["naver"] = []
+
+    return {
+        "contract_version": 1,
+        "sources": sources,
+        "errors": errors,
+        "metadata": {"clean_query": _clean_search_term(item_name)},
     }
 
 

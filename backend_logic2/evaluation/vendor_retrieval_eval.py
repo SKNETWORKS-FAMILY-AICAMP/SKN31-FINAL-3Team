@@ -1,4 +1,4 @@
-"""RAG/Naver 공급사 검색의 후보 수집, Gold 작성, 오프라인 평가 CLI.
+"""공급사 검색기의 후보 수집, Gold 작성, 오프라인 평가 CLI.
 
 외부 API/DB를 호출하는 것은 ``collect`` 명령뿐이다. 이후 라벨링과 평가는
 저장된 retrieval snapshot을 사용하므로 같은 결과를 재현할 수 있다.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import importlib
 import json
 import math
 import re
@@ -28,6 +29,7 @@ DEFAULT_LABELS = EVALUATION_DIR / "vendor_retrieval_labels.json"
 DEFAULT_GOLD = EVALUATION_DIR / "vendor_retrieval_gold.json"
 DEFAULT_REPORT = EVALUATION_DIR / "vendor_retrieval_report.json"
 DEFAULT_K_VALUES = (1, 3, 5)
+DEFAULT_COLLECTOR = "resolve_supplier:collect_vendor_candidates_for_evaluation"
 
 DOCUMENT_RESULT_PATTERN = re.compile(
     r"(?:\.(?:pdf|hwp|hwpx|xls|xlsx|csv|doc|docx|ppt|pptx|zip)(?:$|[\s?#])"
@@ -257,34 +259,61 @@ def reciprocal_rank_fusion(result_lists: list[list[dict]], rrf_k: int = 60) -> l
     return ranked
 
 
+def _load_collector(spec: str):
+    """``module:function`` 형식의 평가 후보 수집기를 동적으로 로드한다."""
+    if str(NODES_DIR) not in sys.path:
+        sys.path.insert(0, str(NODES_DIR))
+    try:
+        module_name, function_name = spec.split(":", 1)
+    except ValueError as error:
+        raise ValueError("collector는 module:function 형식이어야 합니다.") from error
+    collector = getattr(importlib.import_module(module_name), function_name, None)
+    if not callable(collector):
+        raise ValueError(f"호출 가능한 collector를 찾을 수 없습니다: {spec}")
+    return collector
+
+
+def _item_sources(item: dict) -> dict[str, list]:
+    """schema v3 sources와 기존 v2 rag/naver/existing 구조를 모두 읽는다."""
+    if isinstance(item.get("sources"), dict):
+        return {
+            str(name): list(candidates or [])
+            for name, candidates in item["sources"].items()
+        }
+    return {
+        name: list(item.get(name) or [])
+        for name in ("existing", "rag", "naver")
+        if name in item
+    }
+
+
 def collect_candidates(
     queries_path: Path,
     output_path: Path,
     rag_k: int,
     naver_k: int,
     category_k: int,
+    collector_spec: str = DEFAULT_COLLECTOR,
+    source_k: int | None = None,
 ) -> dict:
-    if str(NODES_DIR) not in sys.path:
-        sys.path.insert(0, str(NODES_DIR))
-    from resolve_supplier import (  # pylint: disable=import-outside-toplevel
-        get_existing_suppliers,
-        rag_search_vendors,
-        search_new_vendor_candidates,
-    )
+    collector = _load_collector(collector_spec)
 
     query_data = _read_json(queries_path)
     selected_item_codes = set(
         (query_data.get("evaluation_selection") or {}).get("item_codes") or []
     )
     snapshot = {
-        "schema_version": 2,
+        "schema_version": 3,
         "created_at": _now_iso(),
         "settings": {
             "rag_k": rag_k,
             "naver_k": naver_k,
+            "source_k": source_k or max(rag_k, naver_k),
             "category_k": category_k,
             "selected_item_codes": sorted(selected_item_codes),
-            "naver_retrieval_method": "local_business_entity_search",
+            "collector": collector_spec,
+            "collector_contract_version": 1,
+            "source_names": [],
         },
         "items": [],
     }
@@ -300,45 +329,46 @@ def collect_candidates(
         result = {
             "item_code": item_code,
             "item_name": item_name,
-            "rag": [],
-            "naver": [],
-            "existing": [],
+            "item_group": item.get("item_group"),
+            "sources": {},
             "errors": {},
+            "metadata": {},
         }
 
         try:
-            result["rag"] = rag_search_vendors(
-                item_name,
-                limit_categories=category_k,
-                limit_vendors=rag_k,
+            collected = collector(
+                item=item,
+                limit_per_source=source_k or max(rag_k, naver_k),
+                source_limits={"rag": rag_k, "naver": naver_k},
+                category_limit=category_k,
             )
-        except Exception as error:  # 한 검색기 실패가 다른 검색기 평가를 막지 않음
-            result["errors"]["rag"] = str(error)
-
-        try:
-            result["naver"] = search_new_vendor_candidates(
-                item_name,
-                max_results=naver_k,
-                raise_on_error=True,
-            )
+            if not isinstance(collected, dict) or not isinstance(collected.get("sources"), dict):
+                raise ValueError("collector는 sources 객체를 포함한 dict를 반환해야 합니다.")
+            normalized_sources = {}
+            for source, candidates in collected["sources"].items():
+                source_name = str(source)
+                normalized_candidates = []
+                for rank, candidate in enumerate(candidates or [], start=1):
+                    if not isinstance(candidate, dict):
+                        raise ValueError(f"{source_name} 후보는 dict여야 합니다.")
+                    normalized = dict(candidate)
+                    normalized.setdefault("source", source_name)
+                    normalized.setdefault("retrieval_rank", rank)
+                    normalized_candidates.append(normalized)
+                normalized_sources[source_name] = normalized_candidates
+            result["sources"] = normalized_sources
+            result["errors"] = dict(collected.get("errors") or {})
+            result["metadata"] = dict(collected.get("metadata") or {})
         except Exception as error:
-            result["errors"]["naver"] = str(error)
-
-        if item_code:
-            try:
-                result["existing"] = [
-                    {
-                        "name": name,
-                        "source": "existing",
-                        "retrieval_rank": rank,
-                    }
-                    for rank, name in enumerate(get_existing_suppliers(item_code), start=1)
-                ]
-            except Exception as error:
-                result["errors"]["existing"] = str(error)
+            result["errors"]["collector"] = str(error)
 
         snapshot["items"].append(result)
 
+    snapshot["settings"]["source_names"] = sorted({
+        source
+        for item in snapshot["items"]
+        for source in _item_sources(item)
+    })
     _write_json(output_path, snapshot)
     return snapshot
 
@@ -366,8 +396,9 @@ def build_label_sheet(
         if selected_item_codes and item.get("item_code") not in selected_item_codes:
             continue
         grouped: dict[str, dict] = {}
-        for source in ("existing", "rag", "naver"):
-            for candidate in item.get(source) or []:
+        sources = _item_sources(item)
+        for source in sorted(sources, key=lambda name: (name != "existing", name)):
+            for candidate in sources[source]:
                 rank = int(candidate.get("retrieval_rank") or 0)
                 if source != "existing" and rank > depth:
                     continue
@@ -394,11 +425,35 @@ def build_label_sheet(
                 })
 
         previous_candidates = previous_by_item.get(item.get("item_code"), {})
+        # 검색 snapshot을 다시 만들어도 사람이 독립적으로 추가한 정답 업체는
+        # 검색 결과에 없다는 이유로 라벨 시트에서 제거하면 안 된다.
+        for identity, previous_candidate in previous_candidates.items():
+            human_sources = [
+                source
+                for source in previous_candidate.get("observed_sources") or []
+                if source.get("source") == "human_reference"
+            ]
+            if not human_sources:
+                continue
+            if identity not in grouped:
+                grouped[identity] = dict(previous_candidate)
+                grouped[identity]["observed_sources"] = list(
+                    previous_candidate.get("observed_sources") or []
+                )
+                continue
+            known_sources = grouped[identity]["observed_sources"]
+            for source in human_sources:
+                if source not in known_sources:
+                    known_sources.append(source)
+
         for identity, candidate in grouped.items():
             previous_candidate = previous_candidates.get(identity)
             if not previous_candidate:
                 continue
-            for field in ("relevance", "evidence", "verified_by", "verified_at", "aliases"):
+            for field in (
+                "relevance", "evidence", "verified_by", "verified_at", "aliases",
+                "domains", "business_no", "vendor_id",
+            ):
                 if field in previous_candidate:
                     candidate[field] = previous_candidate[field]
 
@@ -427,6 +482,175 @@ def build_label_sheet(
     }
     _write_json(output_path, labels)
     return labels
+
+
+def add_human_reference(
+    labels_path: Path,
+    item_code: str,
+    vendor_name: str,
+    relevance: int,
+    evidence: str,
+    reviewer: str,
+    business_no: str | None = None,
+    domains: list[str] | None = None,
+    aliases: list[str] | None = None,
+    source_url: str | None = None,
+) -> dict:
+    """검색 결과와 독립적으로 확인한 정답 업체를 라벨 시트에 추가한다."""
+    labels = _read_json(labels_path)
+    _add_human_reference_to_labels(
+        labels,
+        item_code,
+        vendor_name,
+        relevance,
+        evidence,
+        reviewer,
+        business_no=business_no,
+        domains=domains,
+        aliases=aliases,
+        source_url=source_url,
+    )
+    _write_json(labels_path, labels)
+    return labels
+
+
+def _add_human_reference_to_labels(
+    labels: dict,
+    item_code: str,
+    vendor_name: str,
+    relevance: int,
+    evidence: str,
+    reviewer: str,
+    business_no: str | None = None,
+    domains: list[str] | None = None,
+    aliases: list[str] | None = None,
+    source_url: str | None = None,
+) -> None:
+    if relevance not in {1, 2, 3}:
+        raise ValueError("사람이 추가하는 정답 업체의 relevance는 1, 2, 3 중 하나여야 합니다.")
+    if not vendor_name.strip():
+        raise ValueError("업체명은 비워 둘 수 없습니다.")
+    if not evidence.strip():
+        raise ValueError("독립 정답 업체에는 확인 근거가 필요합니다.")
+
+    item = next(
+        (
+            entry
+            for entry in labels.get("items") or []
+            if entry.get("item_code") == item_code
+        ),
+        None,
+    )
+    if item is None:
+        raise ValueError(f"라벨 시트에 item_code가 없습니다: {item_code}")
+
+    normalized_domains = list(dict.fromkeys(
+        normalized
+        for value in domains or []
+        if (normalized := normalize_domain(value))
+    ))
+    normalized_aliases = list(dict.fromkeys(
+        value.strip() for value in aliases or [] if value.strip()
+    ))
+    reference = {
+        "candidate_name": vendor_name.strip(),
+        "vendor_id": None,
+        "business_no": str(business_no).strip() if business_no else None,
+        "domains": normalized_domains,
+        "aliases": normalized_aliases,
+        "observed_sources": [{
+            "source": "human_reference",
+            "rank": None,
+            "url": source_url or (f"https://{normalized_domains[0]}" if normalized_domains else None),
+        }],
+        "relevance": relevance,
+        "evidence": evidence.strip(),
+        "verified_by": reviewer.strip() or "human",
+        "verified_at": _now_iso(),
+    }
+    identity = label_candidate_identity(reference)
+    candidates = item.setdefault("candidates", [])
+    existing = next(
+        (candidate for candidate in candidates if label_candidate_identity(candidate) == identity),
+        None,
+    )
+    if existing is None:
+        candidates.append(reference)
+    else:
+        existing.update({
+            "relevance": relevance,
+            "evidence": reference["evidence"],
+            "verified_by": reference["verified_by"],
+            "verified_at": reference["verified_at"],
+        })
+        if business_no and not existing.get("business_no"):
+            existing["business_no"] = reference["business_no"]
+        existing["domains"] = list(dict.fromkeys(
+            [*(existing.get("domains") or []), *normalized_domains]
+        ))
+        existing["aliases"] = list(dict.fromkeys(
+            [*(existing.get("aliases") or []), *normalized_aliases]
+        ))
+        observed_sources = existing.setdefault("observed_sources", [])
+        if not any(source.get("source") == "human_reference" for source in observed_sources):
+            observed_sources.extend(reference["observed_sources"])
+
+    item["labeling_status"] = (
+        "complete"
+        if candidates and all(isinstance(candidate.get("relevance"), int) for candidate in candidates)
+        else "pending"
+    )
+
+
+def import_human_references(
+    labels_path: Path,
+    references_path: Path,
+    reviewer: str = "human",
+) -> tuple[dict, int, int]:
+    """JSON 목록의 독립 정답을 검증한 뒤 라벨 시트에 일괄 반영한다."""
+    raw = _read_json(references_path)
+    records = raw.get("references") if isinstance(raw, dict) else raw
+    if not isinstance(records, list):
+        raise ValueError("references JSON은 배열 또는 references 배열을 가진 객체여야 합니다.")
+
+    labels = _read_json(labels_path)
+    imported = 0
+    skipped = 0
+    for index, record in enumerate(records, start=1):
+        if not isinstance(record, dict):
+            raise ValueError(f"references[{index}]는 객체여야 합니다.")
+        vendor_name = str(record.get("name") or record.get("vendor_name") or "").strip()
+        # 배포된 작업용 템플릿의 빈 행은 아직 사람이 작성하지 않은 항목이다.
+        if not vendor_name:
+            skipped += 1
+            continue
+        try:
+            relevance = int(record.get("relevance"))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"references[{index}].relevance는 1~3 정수여야 합니다.") from error
+        domains = record.get("domains") or []
+        aliases = record.get("aliases") or []
+        if not isinstance(domains, list) or not isinstance(aliases, list):
+            raise ValueError(f"references[{index}].domains와 aliases는 배열이어야 합니다.")
+        try:
+            _add_human_reference_to_labels(
+                labels,
+                str(record.get("item_code") or "").strip(),
+                vendor_name,
+                relevance,
+                str(record.get("evidence") or ""),
+                str(record.get("reviewer") or reviewer),
+                business_no=record.get("business_no"),
+                domains=domains,
+                aliases=aliases,
+                source_url=record.get("source_url"),
+            )
+        except ValueError as error:
+            raise ValueError(f"references[{index}] 오류: {error}") from error
+        imported += 1
+
+    _write_json(labels_path, labels)
+    return labels, imported, skipped
 
 
 def label_interactively(labels_path: Path, item_code: str | None, reviewer: str) -> dict:
@@ -551,7 +775,7 @@ def build_gold(labels_path: Path, output_path: Path) -> dict:
         "created_at": _now_iso(),
         "source_labels": str(labels_path),
         "source_snapshot_created_at": source_snapshot_created_at,
-        "gold_scope": "라벨링 깊이 안에서 RAG·Naver 후보를 합친 pooled judgments",
+        "gold_scope": "검색 후보 pooled judgments와 사람이 독립 확인한 human_reference 정답",
         "relevance_scale": {"0": "무관", "1": "검토 가능", "2": "적합", "3": "매우 적합"},
         "items": gold_items,
     }
@@ -587,6 +811,8 @@ def evaluate(snapshot_path: Path, gold_path: Path, output_path: Path, k_values: 
     total_relevant = 0
     total_qualified = 0
     total_independent_references = 0
+    items_without_independent_references = []
+    evaluated_source_names = set()
 
     for item in snapshot.get("items") or []:
         gold_item = gold_by_code.get(item.get("item_code"))
@@ -608,13 +834,16 @@ def evaluate(snapshot_path: Path, gold_path: Path, output_path: Path, k_values: 
             for vendor in gold_vendors
         )
         total_independent_references += independent_references
+        if independent_references == 0:
+            items_without_independent_references.append(item.get("item_code"))
         result_lists = {
-            "rag": item.get("rag") or [],
-            "naver": item.get("naver") or [],
+            source: candidates
+            for source, candidates in _item_sources(item).items()
+            if source != "existing"
         }
-        result_lists["hybrid"] = reciprocal_rank_fusion(
-            [result_lists["rag"], result_lists["naver"]]
-        )
+        if len(result_lists) >= 2:
+            result_lists["hybrid"] = reciprocal_rank_fusion(list(result_lists.values()))
+        evaluated_source_names.update(result_lists)
         item_result = {
             "item_code": item.get("item_code"),
             "item_name": item.get("item_name"),
@@ -654,7 +883,7 @@ def evaluate(snapshot_path: Path, gold_path: Path, output_path: Path, k_values: 
         raise ValueError("snapshot과 Gold 사이에 item_code가 일치하는 품목이 없습니다.")
 
     aggregate = {}
-    for source in ("rag", "naver", "hybrid"):
+    for source in sorted(evaluated_source_names):
         aggregate[source] = {}
         for k in k_values:
             aggregate[source][str(k)] = {
@@ -682,15 +911,20 @@ def evaluate(snapshot_path: Path, gold_path: Path, output_path: Path, k_values: 
             "relevant_vendor_count": total_relevant,
             "qualified_vendor_count": total_qualified,
             "independent_reference_count": total_independent_references,
+            "items_without_independent_references": items_without_independent_references,
             "pool_bias_warning": (
-                "독립적인 human_reference/existing 정답이 없습니다. 같은 검색 결과를 "
-                "라벨링한 Gold이므로 검색기 성능이 과대평가될 수 있습니다."
-                if total_independent_references == 0 else None
+                "일부 평가 품목에 독립적인 human_reference/existing 정답이 없습니다. "
+                "해당 품목은 같은 검색 결과를 라벨링한 Gold이므로 검색기 성능이 "
+                "과대평가될 수 있습니다."
+                if items_without_independent_references else None
             ),
         },
         "methodology": {
             "gold_scope": gold.get("gold_scope", "pooled judgments"),
-            "recall_interpretation": "전체 시장 recall이 아니라 라벨된 후보 풀 내부의 pool_recall",
+            "recall_interpretation": (
+                "전체 시장 recall이 아니라 검색 후보와 독립 확인 업체로 구성한 "
+                "Gold 집합 내부의 pool_recall"
+            ),
             "qualified_threshold": "relevance >= 2",
             "unjudged_policy": "precision/nDCG에서는 비정답으로 계산하고 judged_rate를 함께 보고",
             "hybrid_policy": "문서 다운로드 후보를 제외한 뒤 RRF 결합",
@@ -729,7 +963,17 @@ def parse_args() -> argparse.Namespace:
     collect_parser.add_argument("--output", type=Path, default=DEFAULT_SNAPSHOT)
     collect_parser.add_argument("--rag-k", type=int, default=20)
     collect_parser.add_argument("--naver-k", type=int, default=20)
+    collect_parser.add_argument(
+        "--source-k",
+        type=int,
+        help="검색 source 공통 후보 수. 미지정 시 rag-k/naver-k 중 큰 값",
+    )
     collect_parser.add_argument("--category-k", type=int, default=5)
+    collect_parser.add_argument(
+        "--collector",
+        default=DEFAULT_COLLECTOR,
+        help="평가 후보 수집 함수(module:function)",
+    )
 
     labels_parser = subparsers.add_parser("make-label-sheet", help="사람 검토용 JSON 생성")
     labels_parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
@@ -741,6 +985,29 @@ def parse_args() -> argparse.Namespace:
     label_parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
     label_parser.add_argument("--item-code", help="특정 품목만 라벨링")
     label_parser.add_argument("--reviewer", default="human", help="검토자 식별값")
+
+    reference_parser = subparsers.add_parser(
+        "add-reference",
+        help="검색 결과 밖에서 사람이 확인한 정답 업체 추가",
+    )
+    reference_parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
+    reference_parser.add_argument("--item-code", required=True)
+    reference_parser.add_argument("--vendor-name", "--name", dest="vendor_name", required=True)
+    reference_parser.add_argument("--relevance", required=True, type=int, choices=(1, 2, 3))
+    reference_parser.add_argument("--evidence", required=True, help="카탈로그·계약 이력 등 확인 근거")
+    reference_parser.add_argument("--reviewer", default="human", help="검토자 식별값")
+    reference_parser.add_argument("--business-no")
+    reference_parser.add_argument("--domain", action="append", default=[])
+    reference_parser.add_argument("--alias", action="append", default=[])
+    reference_parser.add_argument("--source-url", help="근거를 확인한 URL")
+
+    import_parser = subparsers.add_parser(
+        "import-references",
+        help="JSON 파일에서 human_reference 일괄 추가",
+    )
+    import_parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
+    import_parser.add_argument("--file", type=Path, required=True)
+    import_parser.add_argument("--reviewer", default="human", help="기본 검토자 식별값")
 
     gold_parser = subparsers.add_parser("build-gold", help="완료된 라벨을 Gold JSON으로 변환")
     gold_parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
@@ -758,7 +1025,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     if args.command == "collect":
-        snapshot = collect_candidates(args.queries, args.output, args.rag_k, args.naver_k, args.category_k)
+        snapshot = collect_candidates(
+            args.queries,
+            args.output,
+            args.rag_k,
+            args.naver_k,
+            args.category_k,
+            collector_spec=args.collector,
+            source_k=args.source_k,
+        )
         print(f"수집 완료: {len(snapshot['items'])}개 품목 → {args.output}")
     elif args.command == "make-label-sheet":
         query_data = _read_json(args.queries)
@@ -778,6 +1053,35 @@ def main() -> None:
             item.get("labeling_status") == "complete" for item in labels.get("items") or []
         )
         print(f"라벨 저장 완료: complete {complete_count}/{len(labels.get('items') or [])}")
+    elif args.command == "add-reference":
+        labels = add_human_reference(
+            args.labels,
+            args.item_code,
+            args.vendor_name,
+            args.relevance,
+            args.evidence,
+            args.reviewer,
+            business_no=args.business_no,
+            domains=args.domain,
+            aliases=args.alias,
+            source_url=args.source_url,
+        )
+        item = next(
+            entry for entry in labels.get("items") or []
+            if entry.get("item_code") == args.item_code
+        )
+        reference_count = sum(
+            any(source.get("source") == "human_reference" for source in candidate.get("observed_sources") or [])
+            for candidate in item.get("candidates") or []
+        )
+        print(f"독립 정답 업체 저장: {args.item_code} human_reference {reference_count}개")
+    elif args.command == "import-references":
+        _, imported, skipped = import_human_references(
+            args.labels,
+            args.file,
+            args.reviewer,
+        )
+        print(f"독립 정답 업체 일괄 저장: {imported}개, 미작성 템플릿 건너뜀: {skipped}개")
     elif args.command == "build-gold":
         gold = build_gold(args.labels, args.output)
         print(f"Gold 생성: {len(gold['items'])}개 품목 → {args.output}")
