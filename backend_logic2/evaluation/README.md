@@ -10,21 +10,20 @@
 
 `vendor_retrieval_queries.json`에 품목을 추가한다. 실제 수집 대상은
 `evaluation_selection.item_codes`에 적힌 pilot 품목이며, 현재 기본값은 품목군별
-대표 품목을 안전용품 5개, 사무용품 5개, 시약 5개로 구성한 총 15개다. 전체 품목을
-한꺼번에 라벨링하지 말고 pilot 결과를 확인한 뒤 목록을 단계적으로 넓힌다.
+대표 품목을 안전용품 5개, 사무용품 5개, 기계부품 5개로 구성한 총 15개다. 전체
+품목을 한꺼번에 라벨링하지 말고 pilot 결과를 확인한 뒤 목록을 단계적으로 넓힌다.
 
-#### 1.1. ERPNext 사무용품·시약 평가 데이터 갱신
+#### 1.1. ERPNext 사무용품·기계부품 평가 데이터 갱신
 
 `vendor_retrieval_queries.json`에는 안전용품 36개와 ERPNext에서 조회한
-사무용품·시약 70개가 함께 들어 있다. 사무용품·시약 70개는 이미 ERPNext에
+사무용품 40개·기계부품 30개가 함께 들어 있다. 이 70개는 이미 ERPNext에
 등록된 품목이며, 이 폴더에서는 공급사 검색 평가 대상으로만 사용한다.
 
-다음 명령은 ERPNext Item에서 아래 세 품목군을 다시 조회해
+다음 명령은 ERPNext Item에서 아래 두 품목군을 다시 조회해
 기본 `vendor_retrieval_queries.json`에 병합한다.
 
 - `사무용품`: 40개
-- `시약 - 당류`: 10개
-- `시약 - 무기염류`: 20개
+- `기계부품`: 30개
 
 ```powershell
 python backend_logic2/evaluation/build_erpnext_evaluation_queries.py
@@ -32,13 +31,13 @@ python backend_logic2/evaluation/build_erpnext_evaluation_queries.py
 
 병합된 파일의 `items`에는 기존 안전용품 36개와 조회된 70개가 모두 들어간다. 기본
 `evaluation_selection.item_codes`는 API 호출 및 초기 라벨링 부담을 줄이기 위해
-안전용품·사무용품·시약의 대표 품목을 각각 5개씩 총 15개 선택한다.
+안전용품·사무용품·기계부품의 대표 품목을 각각 5개씩 총 15개 선택한다.
 
 ```text
 안전용품: SAF-HLM-001, SAF-GLV-001, SAF-GOG-001, SAF-EXT-001, SAF-MSK-001
 사무용품: OFC-BRD-001, OFC-CLP-001, OFC-ERS-011, OFC-PAP-001, OFC-PEN-001
-시약: REA-GLU-001-500G, REA-GLU-002-500G, REA-GLU-010-1KG,
-      REA-KCL-001-500G, REA-NACL-001-500G
+기계부품: BLT-TMG-5M-500, BRG-6004-2RS, CHN-RS40-1R,
+          FST-HEX-M08025, PNE-POC-0802
 ```
 
 전체 활성 품목을 평가 대상으로 생성하려면 다음처럼 실행한다. 106개 전체에 대해
@@ -49,24 +48,17 @@ python backend_logic2/evaluation/build_erpnext_evaluation_queries.py --all
 ```
 
 특정 품목군만 다시 가져오려면 `--groups` 뒤에 정확한 ERP 품목군명을 지정한다.
-기본 세 품목군 외의 그룹을 지정하면 기존 `evaluation_selection`은 보존된다.
+기본 두 품목군 외의 그룹을 지정하면 기존 `evaluation_selection`은 보존된다.
 새 대표 품목도 추가하려면 `--pilot-codes CODE-1 CODE-2`를 함께 지정한다.
 
 ```powershell
 python backend_logic2/evaluation/build_erpnext_evaluation_queries.py `
-  --groups "사무용품" "시약 - 당류" "시약 - 무기염류"
-```
-
-ERP 연결 없이 이전 추출 JSON을 다시 병합해야 하면 다음 옵션을 사용할 수 있다.
-
-```powershell
-python backend_logic2/evaluation/build_erpnext_evaluation_queries.py `
-  --source-json backend_logic2/evaluation/vendor_retrieval_queries_office_reagents.json
+  --groups "사무용품" "기계부품"
 ```
 
 평가 수집기는 JSON의 `item_group`을 검색 모듈에 전달한다. 사무용품은
-사무용품 도매·납품 쿼리, 두 시약군은 실험실·연구용 시약 쿼리를 사용하므로
-안전용품 기본 검색어와 섞이지 않는다.
+사무용품 도매·납품 쿼리, 기계부품은 부품 종류별 판매·대리점·유통 쿼리를
+사용하므로 안전용품 기본 검색어와 섞이지 않는다.
 
 #### 1.2. 검색 API 교체와 collector 계약
 
@@ -198,7 +190,7 @@ python backend_logic2/evaluation/vendor_retrieval_eval.py add-reference `
 
 - `references_safety.json`: 안전용품 5개, 10행
 - `references_office.json`: 사무용품 5개, 10행
-- `references_reagents.json`: 시약 5개, 10행
+- `references_mechanical_parts.json`: 기계부품 5개, 10행
 
 각 품목에는 `relevance: 3`과 `relevance: 2` 행이 하나씩 있다. 두 행에 서로 다른
 정답 업체명과 근거를 작성한다.
@@ -211,7 +203,7 @@ python backend_logic2/evaluation/vendor_retrieval_eval.py import-references `
   --file backend_logic2/evaluation/references_office.json`
   --reviewer "홍길동"
 python backend_logic2/evaluation/vendor_retrieval_eval.py import-references `
-  --file backend_logic2/evaluation/references_reagents.json `
+  --file backend_logic2/evaluation/references_mechanical_parts.json `
   --reviewer "홍길동"
 ```
 

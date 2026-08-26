@@ -456,7 +456,50 @@ class EvaluationQueryMergeTest(unittest.TestCase):
             self.assertEqual(len(merged["items"]), 2)
             self.assertEqual(merged["evaluation_selection"]["item_codes"], ["OLD-001"])
             new_item = next(item for item in merged["items"] if item["item_code"] == "NEW-001")
-            self.assertFalse(new_item["erpnext_import_enabled"])
+            self.assertTrue(new_item["enabled"])
+            self.assertNotIn("erpnext_import_enabled", new_item)
+
+    def test_replaces_retired_evaluation_group_and_selection(self):
+        existing = {
+            "schema_version": 2,
+            "evaluation_selection": {
+                "item_codes": ["SAFE-001", "OLD-REA-001"],
+                "label_depth": 5,
+            },
+            "items": [
+                {"item_code": "SAFE-001", "item_name": "안전 품목", "item_group": "안전용품"},
+                {"item_code": "OLD-REA-001", "item_name": "이전 시약", "item_group": "시약"},
+            ],
+        }
+        source = {
+            "items": [{
+                "item_code": "MCH-001",
+                "item_name": "기계 품목",
+                "item_group": "기계부품",
+                "disabled": 0,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "queries.json"
+            source_path = Path(directory) / "source.json"
+            output_path.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+            source_path.write_text(json.dumps(source, ensure_ascii=False), encoding="utf-8")
+
+            merged = export_queries(
+                output_path,
+                groups=("기계부품",),
+                pilot_codes=("MCH-001",),
+                source_path=source_path,
+                remove_groups=("시약",),
+            )
+            self.assertEqual(
+                merged["evaluation_selection"]["item_codes"],
+                ["SAFE-001", "MCH-001"],
+            )
+            self.assertEqual(
+                {item["item_code"] for item in merged["items"]},
+                {"SAFE-001", "MCH-001"},
+            )
 
 
 class EvaluationDatasetTest(unittest.TestCase):
@@ -465,11 +508,11 @@ class EvaluationDatasetTest(unittest.TestCase):
         queries = json.loads(
             (base_dir / "vendor_retrieval_queries.json").read_text(encoding="utf-8")
         )
-        reference_files = (
-            "references_safety.json",
-            "references_office.json",
-            "references_reagents.json",
-        )
+        reference_files = {
+            "references_safety.json": "안전용품",
+            "references_office.json": "사무용품",
+            "references_mechanical_parts.json": "기계부품",
+        }
         references = [
             record
             for file_name in reference_files
@@ -486,6 +529,20 @@ class EvaluationDatasetTest(unittest.TestCase):
         self.assertTrue(selected_codes.issubset(reference_codes))
         self.assertEqual(len(selected_codes), 15)
         self.assertEqual(len(references), 30)
+        selected_group_counts = {
+            group: sum(
+                item["item_code"] in selected_codes and item["item_group"] == group
+                for item in queries["items"]
+            )
+            for group in reference_files.values()
+        }
+        self.assertEqual(
+            selected_group_counts,
+            {"안전용품": 5, "사무용품": 5, "기계부품": 5},
+        )
+        query_name_by_code = {
+            item["item_code"]: item["item_name"] for item in queries["items"]
+        }
         for item_code in selected_codes:
             item_templates = [
                 record for record in references
@@ -496,6 +553,10 @@ class EvaluationDatasetTest(unittest.TestCase):
                 {record["relevance"] for record in item_templates},
                 {2, 3},
             )
+            self.assertTrue(all(
+                record["item_name"] == query_name_by_code[item_code]
+                for record in item_templates
+            ))
 
 
 if __name__ == "__main__":
