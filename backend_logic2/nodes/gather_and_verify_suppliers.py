@@ -46,7 +46,6 @@ from dotenv import load_dotenv
 
 from tools.public_data_api_search import find_verified_suppliers
 from tools.naver_contact_enrichment import enrich_contact_by_company_name
-from tools.factory_registry_search import get_factory_by_company_name, factory_to_candidate
 
 load_dotenv()
 
@@ -204,48 +203,6 @@ def tavily_search_vendors(item_name, max_results_per_query=10):
                     print(f"      - '{name}': 연락처 확보 실패, 제외")
 
     return candidates
-
-
-
-def _enrich_contact(vendor, item_name):
-    """
-    이메일이 없는 후보에 연락처 보강. 순서:
-    a) 공장등록정보(회사명 검색) 먼저 시도 - 정부검증된 전화/홈페이지 확보
-    b) 그래도 이메일 없으면 네이버로 최종 시도
-    """
-    if vendor.get("email"):
-        return vendor
-
-    name = vendor["name"]
-
-    if os.environ.get("DATA_GO_KR_SERVICE_KEY"):
-        print(f"    '{name}' 이메일 없음, 공장등록정보 확인 중...")
-        try:
-            factory_matches = get_factory_by_company_name(name, num_rows=5)
-        except Exception as e:
-            print(f"      -> 공장등록정보 조회 실패: {e}")
-            factory_matches = []
-
-        if factory_matches:
-            with_phone = [f for f in factory_matches if f.get("cmpnyTelno")]
-            best = with_phone[0] if with_phone else factory_matches[0]
-            fc = factory_to_candidate(best)
-            if not vendor.get("phone") and fc.get("phone"):
-                vendor = {**vendor, "phone": fc["phone"]}
-            if not vendor.get("site_url") and fc.get("site_url"):
-                vendor = {**vendor, "site_url": fc["site_url"]}
-                print(f"      -> 검증된 홈페이지 확보: {fc['site_url']}")
-
-    print(f"    네이버 기반 이메일 추출 시도 중...")
-    enriched = enrich_contact_by_company_name(dict(vendor), item_name=item_name)
-
-    if enriched.get("email"):
-        print(f"      -> 이메일 확보: {enriched['email']}")
-    else:
-        print(f"      -> 이메일 추출 실패")
-
-    return enriched
-
 
 def _normalize_url(url):
     """
