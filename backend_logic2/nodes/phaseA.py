@@ -1,7 +1,8 @@
 """
 nodes/run_intake_pipeline.py — 진입점 A: MR 처리 시작
 
-순서: 재고중복확인 → 대체품추천 → 비딩판단 → 공급사확보 → RFQ발송
+순서: 이상수치판단 → 승인/반려 또는 대체품추천 → 승인/반려 → 비딩판단
+      → 공급사확보 → RFQ발송
 각 단계에서 "여기서 끝날 수 있는" 조건을 확인하고, 끝까지 가면 RFQ
 발송까지 완료함. (견적 도착은 며칠 걸리므로, 그 이후는 진입점 B에서
 별도로 확인 — RFQ명을 꼭 기록해두세요)
@@ -20,6 +21,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from find_substitute import find_substitutes_for_mr
+from anomaly_detection import detect_material_request_anomalies
+from approval_review import review_material_request
+from mr_assignment import assign_material_request
 from decide_bidding import decide_bidding
 from resolve_supplier import resolve_suppliers_for_mr, resolve_suppliers_for_item
 from register_candidate_suppliers import register_candidate_suppliers
@@ -27,33 +31,55 @@ from send_rfq import create_and_send_rfq
 from erp_client import erp_get_one
 
 
-def run_intake_pipeline(mr_name: str):
+def run_intake_pipeline(
+    mr_name: str,
+    review_decision: str | None = None,
+    rejection_reason: str | None = None,
+):
     print(f"\n{'#'*60}")
     print(f"# MR '{mr_name}' 처리 시작")
     print(f"{'#'*60}")
 
-    # ── 1단계: 동일품목 재고 + 대체품 확인 (통합) ──
-    print("\n[1단계] 대체 가능한 재고 확인 중... (이름만 다른 같은 물건 + 진짜 대체품 둘 다 포함)")
-    sub_results = find_substitutes_for_mr(mr_name)
+    # ── 1단계: 이상 수치 판단 ──
+    print("\n[1단계] 요청 수량·일자 이상 여부 판단 중...")
+    anomaly_result = detect_material_request_anomalies(mr_name)
 
-    has_substitute = any(info["substitutes"] for info in (sub_results or {}).values())
-    if has_substitute:
-        for item_code, info in sub_results.items():
-            if info["substitutes"]:
-                print(f"\n  [{item_code}] 대체 가능 품목:")
-                for s in info["substitutes"]:
-                    fulfill = "전량충족" if s["fulfills_full_qty"] else f"부분충족({s['actual_qty']}개만)"
-                    print(f"    - {s['item_name']} ({s['item_code']}) | {fulfill} | 최근단가: "
-                          f"{s['last_rate'] or '이력없음'}")
-                    print(f"      설명: {s.get('description') or '(설명 없음)'}")
+    if anomaly_result["has_anomaly"]:
+        review = review_material_request(
+            mr_name,
+            anomaly_result=anomaly_result,
+            decision=review_decision,
+            rejection_reason=rejection_reason,
+        )
+        if review["decision"] == "rejected":
+            print("\n→ 이상 수치 검토 결과 반려되어 구매 프로세스를 종료합니다.")
+            return {"status": "rejected", "review": review}
+        sub_results = {}
+    else:
+        # ── 2단계: 대체품 확인 ──
+        print("\n[2단계] 대체 가능한 재고 확인 중...")
+        sub_results = find_substitutes_for_mr(mr_name)
+        review = review_material_request(
+            mr_name,
+            anomaly_result=anomaly_result,
+            substitute_results=sub_results,
+            decision=review_decision,
+            rejection_reason=rejection_reason,
+        )
+        if review["decision"] == "rejected":
+            print("\n→ 대체품 검토 결과 반려되어 구매 프로세스를 종료합니다.")
+            return {
+                "status": "rejected",
+                "review": review,
+                "substitutes": sub_results,
+            }
 
-        proceed = input("\n대체 가능한 재고가 있어 보입니다. 그래도 원래 품목 구매를 진행할까요? (y/n): ").strip().lower()
-        if proceed != "y":
-            print("\n→ 대체 재고로 처리 가능 판단, 구매 프로세스 종료.")
-            return None
+    # ── 3단계: MR 업무 분담 (카테고리/Role Profile 매칭) ──
+    print("\n[3단계] MR 업무 분담 및 담당자 자동 배정 중...")
+    assignment_info = assign_material_request(mr_name)
 
-    # ── 2단계: 비딩 필요 여부 판단 ──
-    print("\n[2단계] 비딩 필요 여부 판단 중...")
+    # ── 4단계: 비딩 필요 여부 판단 ──
+    print("\n[4단계] 비딩 필요 여부 판단 중...")
     bidding_results = decide_bidding(mr_name)
 
     bidding_items = []
@@ -70,7 +96,7 @@ def run_intake_pipeline(mr_name: str):
         return None
 
     # ── 4단계: 공급사 확보 ──
-    print("\n[3단계] 공급사 확보 중...")
+    print("\n[4단계] 공급사 확보 중...")
     supplier_results = resolve_suppliers_for_mr(mr_name)
 
     final_supplier_names = []
@@ -113,7 +139,7 @@ def run_intake_pipeline(mr_name: str):
         return None
 
     # ── 5단계: RFQ 생성 + 발송 ──
-    print(f"\n[4단계] RFQ 발송 대상 공급사: {', '.join(final_supplier_names)}")
+    print(f"\n[5단계] RFQ 발송 대상 공급사: {', '.join(final_supplier_names)}")
     confirm = input(f"\n위 {len(final_supplier_names)}개 공급사에게 RFQ를 발송할까요? (y/n): ").strip().lower()
     if confirm != "y":
         print("\n→ 사용자가 취소했습니다. RFQ 발송 안 함.")
