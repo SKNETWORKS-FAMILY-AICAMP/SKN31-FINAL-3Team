@@ -23,6 +23,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from find_substitute import find_substitutes_for_mr
 from anomaly_detection import detect_material_request_anomalies
 from approval_review import review_material_request
+from mr_assignment import assign_material_request
 from decide_bidding import decide_bidding
 from resolve_supplier import resolve_suppliers_for_mr, resolve_suppliers_for_item
 from register_candidate_suppliers import register_candidate_suppliers
@@ -73,8 +74,12 @@ def run_intake_pipeline(
                 "substitutes": sub_results,
             }
 
-    # ── 3단계: 비딩 필요 여부 판단 ──
-    print("\n[3단계] 비딩 필요 여부 판단 중...")
+    # ── 3단계: MR 업무 분담 (카테고리/Role Profile 매칭) ──
+    print("\n[3단계] MR 업무 분담 및 담당자 자동 배정 중...")
+    assignment_info = assign_material_request(mr_name)
+
+    # ── 4단계: 비딩 필요 여부 판단 ──
+    print("\n[4단계] 비딩 필요 여부 판단 중...")
     bidding_results = decide_bidding(mr_name)
 
     bidding_items = []
