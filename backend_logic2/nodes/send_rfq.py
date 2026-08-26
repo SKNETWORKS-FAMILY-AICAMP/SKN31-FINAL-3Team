@@ -33,35 +33,33 @@ def create_rfq(mr_name: str, supplier_names: list, message: str = DEFAULT_MESSAG
     """
     MR을 RFQ 문서로 변환 (Draft 생성 + Submit까지).
 
-    message 안의 {{ portal_link }}, {{ update_password_link }}는 ERPNext가
-    실제 발송 시점에 진짜 링크로 자동 치환해줌 — 텍스트 그대로 넣어둬야
-    치환이 일어남 (그냥 두면 아무것도 안 붙는 걸 이미 확인함).
+    ERPNext의 표준 매퍼(make_request_for_quotation)를 호출하여
+    MR의 모든 데이터(커스텀 필드 포함)를 누락 없이 RFQ로 복사해옵니다.
     """
-    mr = erp_get_one("Material Request", mr_name)
-    if not mr:
+    try:
+        mapping_res = requests.post(
+            f"{SITE_URL}/api/method/erpnext.buying.doctype.material_request.material_request.make_request_for_quotation",
+            headers=HEADERS,
+            json={"source_name": mr_name}
+        )
+        if mapping_res.status_code != 200:
+            print(f"[create_rfq] MR 매핑 실패: {mapping_res.text}")
+            return None
+            
+        mapped_rfq = mapping_res.json().get("message")
+        if not mapped_rfq:
+            print(f"[create_rfq] 매핑된 데이터를 받아오지 못했습니다.")
+            return None
+            
+    except Exception as e:
+        print(f"[create_rfq] API 호출 에러: {e}")
         return None
 
-    items_payload = [
-        {
-            "item_code": item["item_code"],
-            "item_name": item.get("item_name", ""),  # 필수값이었음 — 없으면 RFQ 생성 자체가 에러남
-            "qty": item["qty"],
-            "schedule_date": item["schedule_date"],
-            "warehouse": item["warehouse"],
-            "uom": item.get("uom", "Nos"),
-            "conversion_factor": item.get("conversion_factor", 1),
-            "material_request": mr_name,
-            "material_request_item": item["name"],
-        }
-        for item in mr["items"]
-    ]
-
-    # .env에 TEST_RECIPIENT_OVERRIDE 설정되어 있으면, 실제 벤더 이메일 대신
-    # 이 주소로 강제 교체함 — 내용·발송은 진짜로 일어나되(진짜 메일 도착,
-    # 버튼도 진짜로 작동), 실제 회사한테는 절대 안 나가게 하는 안전장치.
+    # 2. 공급사(Supplier) 목록 구성 (기존 안전장치 로직 유지)
+    # .env에 TEST_RECIPIENT_OVERRIDE 설정되어 있으면, 실제 벤더 이메일 대신 강제 교체
     test_override = os.getenv("TEST_RECIPIENT_OVERRIDE")
-
     suppliers_payload = []
+    
     for s in supplier_names:
         row = {"supplier": s}
         supplier_doc = erp_get_one("Supplier", s)
@@ -71,22 +69,27 @@ def create_rfq(mr_name: str, supplier_names: list, message: str = DEFAULT_MESSAG
             email = supplier_doc.get("email_id")
             if email:
                 row["email_id"] = test_override or email
+                
         if test_override and "email_id" not in row:
             row["email_id"] = test_override
+            
         suppliers_payload.append(row)
 
-    payload = {
-        "transaction_date": mr["transaction_date"],
-        "schedule_date": mr["items"][0]["schedule_date"],  # 헤더 레벨 필드 — UI로 만들면
-        # 자동으로 채워지는데 API로는 명시 안 하면 빈 채로 남아서 문제였을 가능성 있음
-        "message_for_supplier": message,
-        "items": items_payload,
-        "suppliers": suppliers_payload,
-    }
+    # 3. 매핑된 RFQ 데이터에 공급사 및 메시지 정보 추가 덮어쓰기
+    mapped_rfq["suppliers"] = suppliers_payload
+    mapped_rfq["message_for_supplier"] = message
+    
+    # 헤더 레벨의 schedule_date가 매핑으로 안 넘어왔을 경우를 대비한 2차 안전장치
+    if not mapped_rfq.get("schedule_date") and mapped_rfq.get("items"):
+        mapped_rfq["schedule_date"] = mapped_rfq["items"][0].get("schedule_date")
 
-    rfq = erp_post("Request for Quotation", payload)
+    # 4. ERPNext에 완성된 RFQ 문서 실제 생성 (Draft)
+    rfq = erp_post("Request for Quotation", mapped_rfq)
+    
+    # 5. 제출 (Submit)
     if rfq:
         erp_submit("Request for Quotation", rfq["name"])
+        
     return rfq
 
 
