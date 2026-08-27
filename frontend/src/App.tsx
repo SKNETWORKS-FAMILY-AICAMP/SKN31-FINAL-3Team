@@ -73,6 +73,37 @@ export function App() {
     showToast(`${rejectingItem.mrNo} 건이 반려되었습니다.`);
   };
 
+  const handleApproveItem = (id: string) => {
+    setItems((prev) =>
+      prev.map((i) => (i.id === id ? { ...i, status: '승인' } : i))
+    );
+    showToast('아이템 코드 승인이 완료되었습니다.');
+  };
+
+  const handleRejectItem = (id: string, reason: string) => {
+    setItems((prev) =>
+      prev.map((i) => (i.id === id ? { ...i, status: '반려', rejectReason: reason } : i))
+    );
+    showToast('아이템 코드 등록이 반려되었습니다.');
+  };
+
+  const handleExtendDeadline = (groupId: string, newDate: string, newTime: string) => {
+    setVendorGroups((prev) =>
+      prev.map((g) =>
+        g.id === groupId
+          ? {
+              ...g,
+              deadlineDate: newDate,
+              deadlineTime: newTime,
+              deadlineDDay: Math.max(1, Math.ceil((new Date(newDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))),
+              isExtended: true,
+            }
+          : g
+      )
+    );
+    showToast(`마감시간이 ${newDate} ${newTime}까지 연장되었습니다. 미회신 업체에 메일이 재발송되었습니다. 📧`);
+  };
+
   const handleOpenSpecByItemCode = (itemCode: string) => {
     const found = items.find((i) => i.itemCode === itemCode);
     if (found) {
@@ -96,7 +127,7 @@ export function App() {
         isFixedAsset: false,
         attributes: { heatResistant: true, highPressure: true, isoCertified: true, waterproof: false, customizable: false },
         registeredDate: '2025-01-01',
-        status: '정상',
+        status: '승인대기',
       });
     }
   };
@@ -196,7 +227,7 @@ export function App() {
         pendingCount={pendingCount}
       />
 
-      {/* Main Content Area - Takes full width */}
+      {/* Main Content Area */}
       <div className="main-wrapper">
         {/* Header */}
         <Header
@@ -226,6 +257,8 @@ export function App() {
                 items={items}
                 onOpenSpecModal={setActiveSpecItem}
                 onAddItem={handleAddItem}
+                onApproveItem={handleApproveItem}
+                onRejectItem={handleRejectItem}
               />
             )}
 
@@ -248,6 +281,7 @@ export function App() {
                 vendorGroups={vendorGroups}
                 onSelectSupplier={handleSelectSupplier}
                 onOpenSpecModalByItemCode={handleOpenSpecByItemCode}
+                onExtendDeadline={handleExtendDeadline}
               />
             )}
 

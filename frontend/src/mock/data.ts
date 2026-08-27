@@ -25,7 +25,7 @@ export const initialItems: Item[] = [
       customizable: true,
     },
     registeredDate: '2025-01-10',
-    status: '정상',
+    status: '승인대기',
   },
   {
     id: 'ITEM-002',
@@ -51,7 +51,7 @@ export const initialItems: Item[] = [
       customizable: false,
     },
     registeredDate: '2025-01-12',
-    status: '정상',
+    status: '승인',
   },
   {
     id: 'ITEM-003',
@@ -77,7 +77,7 @@ export const initialItems: Item[] = [
       customizable: false,
     },
     registeredDate: '2025-01-14',
-    status: '정상',
+    status: '승인대기',
   },
   {
     id: 'ITEM-004',
@@ -103,7 +103,8 @@ export const initialItems: Item[] = [
       customizable: true,
     },
     registeredDate: '2025-01-15',
-    status: '정상',
+    status: '반려',
+    rejectReason: '기존 창고 B구역 동일 품목 재고 5개 보유 중. 신규 코드 생성 전 재고 활용 필수.',
   },
 ];
 
@@ -225,6 +226,9 @@ export const initialVendorGroups: VendorSelectionGroup[] = [
     quantity: 50,
     unit: 'EA',
     targetDueDate: '2025-01-28',
+    deadlineDate: '2025-01-22',
+    deadlineTime: '18:00',
+    deadlineDDay: 2,
     prSent: true,
     prNo: 'PR-2025-0891',
     selectedSupplierId: 'SUP-01',
@@ -282,6 +286,9 @@ export const initialVendorGroups: VendorSelectionGroup[] = [
     quantity: 20,
     unit: 'EA',
     targetDueDate: '2025-01-25',
+    deadlineDate: '2025-01-20',
+    deadlineTime: '17:00',
+    deadlineDDay: 1,
     prSent: false,
     quotations: [
       {
@@ -323,7 +330,7 @@ export const initialVendorGroups: VendorSelectionGroup[] = [
         resAttachments: [],
         aiRank: 3,
         aiScore: 0,
-        aiReason: '미회신 상태 (독촉 재발송 완료)',
+        aiReason: '미회신 상태 (독촉 재발송 준비 중)',
         isSelected: false,
       },
     ],

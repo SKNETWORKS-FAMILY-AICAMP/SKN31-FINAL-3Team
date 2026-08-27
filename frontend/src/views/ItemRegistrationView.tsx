@@ -7,23 +7,30 @@ import {
   CheckCircle2, 
   XCircle, 
   Plus, 
-  X
+  X,
+  CheckCircle
 } from 'lucide-react';
+import { RejectReasonModal } from '../components/RejectReasonModal';
 
 interface ItemRegistrationViewProps {
   items: Item[];
   onOpenSpecModal: (item: Item) => void;
   onAddItem: (item: Item) => void;
+  onApproveItem: (id: string) => void;
+  onRejectItem: (id: string, reason: string) => void;
 }
 
 export const ItemRegistrationView: React.FC<ItemRegistrationViewProps> = ({
   items,
   onOpenSpecModal,
   onAddItem,
+  onApproveItem,
+  onRejectItem,
 }) => {
   // 3-1) 아이템코드 별 오름차순/내림차순 정렬 상태
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
+  const [rejectingItem, setRejectingItem] = useState<{ id: string; itemCode: string } | null>(null);
 
   // New Item Form state
   const [newItemCode, setNewItemCode] = useState(`ITEM-00${items.length + 1}`);
@@ -75,7 +82,7 @@ export const ItemRegistrationView: React.FC<ItemRegistrationViewProps> = ({
         customizable: false,
       },
       registeredDate: new Date().toISOString().split('T')[0],
-      status: '정상',
+      status: '승인대기',
     };
 
     onAddItem(created);
@@ -127,7 +134,8 @@ export const ItemRegistrationView: React.FC<ItemRegistrationViewProps> = ({
               <th>Is Fixed Asset</th>
               {/* Item Attributes */}
               <th>Item Attributes 체크 항목</th>
-              <th>상태</th>
+              {/* 승인 / 반려 단계 */}
+              <th>단계 (승인 / 반려)</th>
             </tr>
           </thead>
           <tbody>
@@ -191,14 +199,57 @@ export const ItemRegistrationView: React.FC<ItemRegistrationViewProps> = ({
                     )}
                   </div>
                 </td>
+                {/* 승인 / 반려 행 & 사유 */}
                 <td>
-                  <span className="badge badge-green">{item.status}</span>
+                  {item.status === '승인' && (
+                    <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <CheckCircle size={13} /> 승인 완료
+                    </span>
+                  )}
+                  {item.status === '반려' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span className="badge badge-red" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                        <XCircle size={13} /> 반려됨
+                      </span>
+                      {item.rejectReason && (
+                        <span 
+                          style={{ fontSize: '11px', color: '#FCA5A5', maxWidth: '160px', wordBreak: 'break-all' }}
+                          title={`반려 사유: ${item.rejectReason}`}
+                        >
+                          사유: {item.rejectReason}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {item.status === '승인대기' && (
+                    <div className="action-btn-group">
+                      <button className="btn-sm btn-approve" onClick={() => onApproveItem(item.id)}>
+                        승인
+                      </button>
+                      <button className="btn-sm btn-reject" onClick={() => setRejectingItem({ id: item.id, itemCode: item.itemCode })}>
+                        반려
+                      </button>
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* Item Reject Reason Modal */}
+      {rejectingItem && (
+        <RejectReasonModal
+          title="아이템 등록 반려"
+          itemNo={rejectingItem.itemCode}
+          onConfirm={(reason) => {
+            onRejectItem(rejectingItem.id, reason);
+            setRejectingItem(null);
+          }}
+          onClose={() => setRejectingItem(null)}
+        />
+      )}
 
       {/* Add New Item Modal */}
       {showAddModal && (

@@ -74,10 +74,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="kpi-sub">AI 자동 처리 진행 중 2건</div>
         </div>
 
-        {/* Card 3: 견적 비교 대기 */}
+        {/* Card 3: 협력사 미선정 건 */}
         <div className="kpi-card">
           <div className="kpi-top">
-            <span className="kpi-title">견적 비교 대기</span>
+            <span className="kpi-title">협력사 미선정 건</span>
             <div className="kpi-icon warning">
               <Scale size={18} />
             </div>

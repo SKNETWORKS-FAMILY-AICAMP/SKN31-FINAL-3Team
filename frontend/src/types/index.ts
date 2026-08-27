@@ -24,7 +24,8 @@ export interface Item {
     customizable: boolean;
   };
   registeredDate: string;
-  status: '정상' | '검토중' | '단종';
+  status: '승인' | '승인대기' | '반려';
+  rejectReason?: string;
 }
 
 export interface MaterialRequest {
@@ -80,6 +81,10 @@ export interface VendorSelectionGroup {
   quantity: number;
   unit: string;
   targetDueDate: string;
+  deadlineDate: string; // YYYY-MM-DD
+  deadlineTime: string; // HH:mm
+  deadlineDDay: number;
+  isExtended?: boolean;
   quotations: SupplierQuotation[];
   selectedSupplierId?: string;
   prSent: boolean;
