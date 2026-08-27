@@ -103,6 +103,40 @@ def erp_submit(doctype, name, max_retries=3):
         raise ERPNextAPIError(f"SUBMIT {doctype}/{name}: {res.status_code} - {res.text[:500]}")
 
 
+def erp_call(method, payload=None):
+    """Frappe의 whitelisted method를 호출하고 반환값을 꺼낸다."""
+    res = requests.post(
+        f"{SITE_URL}/api/method/{method}",
+        headers=HEADERS,
+        json=payload or {},
+    )
+    if res.status_code != 200:
+        raise ERPNextAPIError(f"CALL {method}: {res.status_code} - {res.text[:500]}")
+    return res.json().get("message")
+
+
+def erp_discard_draft(doctype, name):
+    """명시적으로 반려된 Draft 문서만 ERPNext의 표준 Discard로 폐기한다.
+
+    Submit된 문서나 이미 폐기된 문서가 잘못 처리되지 않도록 현재
+    ``docstatus``를 먼저 검증한다. 실제 호출은 사용자가 승인 검토 단계에서
+    반려를 선택했을 때만 ``approval_review``에서 수행한다.
+    """
+    document = erp_get_one(doctype, name)
+    if document is None:
+        raise ERPNextAPIError(f"DISCARD {doctype}/{name}: 문서를 찾을 수 없습니다.")
+    if document.get("docstatus") != 0:
+        raise ERPNextAPIError(
+            f"DISCARD {doctype}/{name}: Draft(docstatus=0)만 폐기할 수 있습니다. "
+            f"현재 docstatus={document.get('docstatus')}"
+        )
+
+    return erp_call(
+        "frappe.desk.form.save.discard",
+        {"doctype": doctype, "name": name},
+    )
+
+
 def erp_send_email(doctype, name, recipients, subject, content):
     """
     문서를 이메일로 발송 (RFQ, PO 등).
