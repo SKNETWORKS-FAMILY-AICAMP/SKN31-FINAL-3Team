@@ -32,9 +32,11 @@ def get_or_create_jwt_secret() -> str:
     return secret
 
 # 백엔드 로직 연동용 임포트 (예시)
-from backend_logic.erp_client import get_stock_level, ERPNextAPIError
+from backend_logic2.erp_client import get_stock_level, ERPNextAPIError,router as purchase_router
 
 app = FastAPI(title="SKN31 Purchasing Agent API")
+
+app.include_router(purchase_router)
 
 # 1. CORS 설정 (프론트엔드 개발 환경 허용)
 origins = [
@@ -284,3 +286,6 @@ if __name__ == "__main__":
     import uvicorn
     # 기본적으로 8000 포트에서 실행
     uvicorn.run("main:app", host="0.0.0.1", port=8000, reload=True)
+
+
+app.include_router(purchase_router)
