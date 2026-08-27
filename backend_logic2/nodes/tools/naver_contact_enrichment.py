@@ -98,9 +98,14 @@ def _find_official_site(company_name, item_name=None):
     """
     공식 홈페이지 후보들(채용사이트 등 제외)을 다 모은 다음, title+
     description을 AI로 비교해서 제일 그럴듯한 것 하나를 선택.
+    ⚠️ item_name이 있으면 검색어 자체에 같이 넣음 - 동명이인 회사(이름은
+    같은데 완전히 다른 업종)가 섞여 들어오는 걸 검색 단계에서부터 줄이기
+    위함. (item_name 없으면 예전처럼 회사명만으로 검색)
     """
+    query = f"{company_name} {item_name} 공식 홈페이지" if item_name else f"{company_name} 공식 홈페이지"
+
     candidates = []
-    for item in _search_naver_web(f"{company_name} 공식 홈페이지"):
+    for item in _search_naver_web(query):
         link = item.get("link", "")
         if any(domain in link for domain in _EXCLUDED_CONTACT_DOMAINS):
             continue
@@ -260,8 +265,9 @@ def enrich_contact_by_company_name(vendor, item_name=None):
     # 메인페이지에서 이메일을 못 찾았으면, "{회사명} 연락처"로 한 번 더 시도
     # (연락처가 별도 페이지에 있는 경우가 많아서)
     if not extracted.get("email") and not vendor.get("site_url"):
-        print(f"    '{name}' 메인페이지에서 연락처 못 찾음, '{name} 연락처'로 재시도...")
-        contact_results = _search_naver_web(f"{name} 연락처")
+        retry_query = f"{name} {item_name} 연락처" if item_name else f"{name} 연락처"
+        print(f"    '{name}' 메인페이지에서 연락처 못 찾음, '{retry_query}'로 재시도...")
+        contact_results = _search_naver_web(retry_query)
         for item in contact_results:
             link = item.get("link", "")
             if any(domain in link for domain in _EXCLUDED_CONTACT_DOMAINS):
