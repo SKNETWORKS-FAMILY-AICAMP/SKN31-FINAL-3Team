@@ -23,7 +23,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from find_substitute import find_substitutes_for_mr
 from anomaly_detection import detect_material_request_anomalies
 from approval_review import review_material_request
-from mr_assignment import assign_material_request
 from decide_bidding import decide_bidding
 from resolve_supplier import resolve_suppliers_for_mr, resolve_suppliers_for_item
 from register_candidate_suppliers import register_candidate_suppliers
