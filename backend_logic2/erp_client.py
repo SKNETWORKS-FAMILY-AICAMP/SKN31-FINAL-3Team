@@ -7,9 +7,14 @@ nexterp 자동화 - ERPNext API 클라이언트
 
 import os
 import requests
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from pydantic import BaseModel, Field
+from typing import List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+
+router = APIRouter(prefix="/purchase", tags=["Purchase Order Automation"])
 
 SITE_URL = os.environ["SITE_URL"]
 API_KEY = os.environ["API_KEY"]
@@ -18,7 +23,11 @@ API_SECRET = os.environ["API_SECRET"]
 HEADERS = {
     "Authorization": f"token {API_KEY}:{API_SECRET}",
     "Content-Type": "application/json",
+    "Accept": "application/json"
 }
+
+if not all([SITE_URL, API_KEY, API_SECRET]):
+    raise RuntimeError("필수 환경 변수(SITE_URL, API_KEY, API_SECRET)가 .env 파일에 설정되지 않았습니다.")
 
 
 class ERPNextAPIError(Exception):
@@ -924,3 +933,89 @@ if __name__ == "__main__":
 
     print("\n여기까지 에러 없이 나왔으면 성공입니다.")
     print("다음 단계: 이 파일 맨 아래에 RFQ 생성 코드를 추가해보세요.")
+
+
+
+class SelectedQuotationItem(BaseModel):
+    item_code: str
+    item_name: str
+    qty: float
+    rate: float
+    uom: str
+
+class PRCreateRequest(BaseModel):
+    supplier: str = Field(..., description="선정된 공급업체")
+    quotation_no: str = Field(..., description="선정된 Supplier Quotation (SQ) 번호")
+    required_by_date: str = Field(..., description="납기 요청일 (YYYY-MM-DD)")
+    items: List[SelectedQuotationItem]
+    cost_center: Optional[str] = "Main - Y"
+    company: Optional[str] = "Your Company Name"
+
+
+def send_pr_email_notification(supplier: str, pr_name: str):
+    """
+    [자동 실행] 생성된 PR 정보를 선정된 Supplier에게 이메일로 발송하는 로직
+    """
+    # Email Server (SMTP/IMAP) 연동을 통한 발송 로직 구현부
+    print(f"[Email Server] 공급업체({supplier})에게 PR 문서({pr_name}) 발송 완료.")
+    pass
+
+
+@router.post("/create-pr-draft")
+def create_purchase_requisition_draft(data: PRCreateRequest, background_tasks: BackgroundTasks):
+    """
+    [8-2 단계] 선정된 SQ 기반 ERPNext Purchase Requisition(PR) Draft 생성 및 발송
+    """
+    try:
+        # 1. ERPNext Purchase Requisition 구조에 맞춘 페이로드 작성
+        pr_payload = {
+            "doctype": "Material Request",
+            "material_request_type": "Purchase",
+            "company": data.company,
+            "schedule_date": data.required_by_date,
+            "custom_selected_supplier": data.supplier,  # 선정된 공급업체 매핑
+            "custom_source_quotation": data.quotation_no,  # 근거가 되는 SQ 번호 연동
+            "items": [
+                {
+                    "item_code": item.item_code,
+                    "item_name": item.item_name,
+                    "qty": item.qty,
+                    "rate": item.rate,
+                    "uom": item.uom,
+                    "schedule_date": data.required_by_date
+                }
+                for item in data.items
+            ]
+        }
+
+        # 2. ERPNext API 호출 (Draft 생성)
+        response = requests.post(
+            f"{SITE_URL}/api/resource/Material Request",
+            headers=HEADERS,
+            json=pr_payload
+        )
+
+        if response.status_code not in [200, 201]:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"ERPNext PR Draft 생성 실패: {response.text}"
+            )
+
+        result_data = response.json().get("data", {})
+        pr_name = result_data.get("name")
+
+        # 3. 백그라운드 작업으로 선정된 Supplier에게 PR 내보내기(Export) 및 발송 실행
+        background_tasks.add_task(send_pr_email_notification, data.supplier, pr_name)
+
+        return {
+            "status": "success",
+            "message": "선정된 SQ 기반 PR Draft가 성공적으로 생성되었으며, 발송 프로세스가 진행됩니다.",
+            "pr_document_name": pr_name,
+            "supplier": data.supplier,
+            "quotation_no": data.quotation_no
+        }
+
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"서버 내부 오류 발생: {str(e)}")

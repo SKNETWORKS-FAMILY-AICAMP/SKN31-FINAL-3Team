@@ -226,3 +226,4 @@ __marimo__/
 !backend_logic2/evaluation/erpnext_item_import_safety.csv
 !backend_logic2/evaluation/erpnext_item_alternative_import.csv
 !backend_logic2/evaluation/erpnext_stock_reconciliation_safety.csv
+backend_logic2/test.http
