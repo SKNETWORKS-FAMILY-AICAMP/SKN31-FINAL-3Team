@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>bidding flow | 중간 프로젝트 발표</title>
+  <meta name="description" content="AI Agent 기반 구매·발주 프로세스 자동화 플랫폼 bidding flow 중간 발표" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="deck" id="deck">
+    <header class="topbar">
+      <a class="brand" href="#slide-1" aria-label="첫 슬라이드로 이동">
+        <span class="brand-mark">B</span>
+        <span><strong>bidding flow</strong><small>AI Procurement Platform</small></span>
+      </a>
+      <div class="topbar-center">
+        <span class="live-dot"></span>
+        SKN31 FINAL · 3TEAM · MID REVIEW
+      </div>
+      <div class="counter"><strong id="currentNo">01</strong><span>/ 12</span></div>
+    </header>
+
+    <nav class="rail" aria-label="슬라이드 목록">
+      <div class="rail-line"></div>
+      <a class="rail-dot active" href="#slide-1" data-slide="1"><span>01</span><b>소개</b></a>
+      <a class="rail-dot" href="#slide-2" data-slide="2"><span>02</span><b>문제</b></a>
+      <a class="rail-dot" href="#slide-3" data-slide="3"><span>03</span><b>목표</b></a>
+      <a class="rail-dot" href="#slide-4" data-slide="4"><span>04</span><b>사용자</b></a>
+      <a class="rail-dot" href="#slide-5" data-slide="5"><span>05</span><b>프로세스</b></a>
+      <a class="rail-dot" href="#slide-6" data-slide="6"><span>06</span><b>승인</b></a>
+      <a class="rail-dot" href="#slide-7" data-slide="7"><span>07</span><b>기능</b></a>
+      <a class="rail-dot" href="#slide-8" data-slide="8"><span>08</span><b>구조</b></a>
+      <a class="rail-dot" href="#slide-9" data-slide="9"><span>09</span><b>현황</b></a>
+      <a class="rail-dot" href="#slide-10" data-slide="10"><span>10</span><b>검증</b></a>
+      <a class="rail-dot" href="#slide-11" data-slide="11"><span>11</span><b>개선</b></a>
+      <a class="rail-dot" href="#slide-12" data-slide="12"><span>12</span><b>일정</b></a>
+    </nav>
+
+    <main class="slides">
+      <section class="slide hero-slide" id="slide-1" data-title="프로젝트 소개">
+        <div class="slide-grid"></div>
+        <div class="eyebrow"><span>01</span> PROJECT INTRODUCTION</div>
+        <div class="hero-copy">
+          <p class="hero-label">AI AGENT × ERPNext × HUMAN APPROVAL</p>
+          <h1>구매의 판단은 더 선명하게,<br><em>프로세스는 더 자동으로.</em></h1>
+          <p class="lead">요청 부서의 MR 접수부터 공급사 견적 비교와 PO 발행까지,<br>끊어진 구매 업무를 하나의 상태 흐름으로 연결하는 AI 구매·발주 플랫폼</p>
+          <div class="hero-tags"><span>Material Request</span><i>→</i><span>RFQ</span><i>→</i><span>Quotation</span><i>→</i><span>Purchase Order</span></div>
+        </div>
+        <div class="orbit" aria-hidden="true">
+          <div class="orbit-core"><small>AI PROCUREMENT</small><strong>bidding<br>flow</strong><span>ORCHESTRATION</span></div>
+          <div class="orbit-ring ring-a"></div><div class="orbit-ring ring-b"></div>
+          <div class="orbit-node node-a">MR</div><div class="orbit-node node-b">RFQ</div>
+          <div class="orbit-node node-c">SQ</div><div class="orbit-node node-d">PO</div>
+        </div>
+        <div class="team-strip">
+          <div class="team-name"><small>TEAM & PLATFORM</small><strong>bidding flow</strong></div>
+          <div><small>WORKFLOW · AI</small><strong>박동관</strong></div>
+          <div><small>BACKEND · API</small><strong>김동민</strong></div>
+          <div><small>FRONTEND · UX</small><strong>김세희</strong></div>
+          <div><small>ERPNext · E2E</small><strong>김효민</strong></div>
+          <div><small>SUPPLIER · EVAL</small><strong>이영창</strong></div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-2" data-title="추진 배경과 문제 정의">
+        <div class="eyebrow"><span>02</span> WHY THIS PROJECT</div>
+        <header class="slide-title problem-title"><span class="focus-label">PROBLEM DEFINITION</span><h2>구매 업무의 진짜 문제는<br><em>“다음 단계를 사람이 계속 찾아야 한다”</em>는 것입니다.</h2><p>ERP, 이메일, 엑셀, 담당자의 경험 사이에서 정보·상태·책임이 끊어집니다.</p></header>
+        <div class="problem-layout">
+          <div class="problem-list">
+            <article class="problem-card"><b>01</b><div><h3>프로세스가 도구별로 끊겨 있습니다</h3><p>MR 확인 → 공급사 검색 → RFQ 작성 → 이메일 → 견적 비교를 사람이 직접 이어 붙여야 합니다.</p></div><strong>업무 단절</strong></article>
+            <article class="problem-card"><b>02</b><div><h3>기다림과 예외를 사람이 추적합니다</h3><p>미회신, 견적 누락, 유효기간, 이상 단가를 놓치지 않도록 담당자가 반복 확인해야 합니다.</p></div><strong>추적 비용</strong></article>
+            <article class="problem-card"><b>03</b><div><h3>핵심 판단의 근거가 흩어져 있습니다</h3><p>이상 수량, 대체품, 구매·입찰, 공급사 선정이 개인 경험에 의존해 판단 편차가 발생합니다.</p></div><strong>판단 편차</strong></article>
+          </div>
+          <div class="impact-panel benchmark-panel">
+            <p class="panel-kicker">GLOBAL INDUSTRY BENCHMARK</p><h3>수동 RFQ의 기다림은<br><em>‘불편’이 아니라 리드타임</em>입니다.</h3>
+            <div class="benchmark-main"><div><small>MANUAL</small><strong>3–4일</strong><span>이메일 기반 제조업 RFQ</span></div><i>→</i><div><small>BEST-IN-CLASS</small><strong>2–4시간</strong><span>자동화 도구 활용 팀</span></div></div>
+            <div class="benchmark-sub"><strong>60일</strong><span>소싱 이벤트 전체 사이클 중앙값<br><small>니즈 발생 → 계약 체결</small></span></div>
+            <blockquote><span>bidding flow의 자동화 구간</span><br>공급사 탐색 · RFQ 작성/발송 · 회신 추적 · 견적 구조화/비교</blockquote>
+            <p class="benchmark-source">해외 벤치마크 기준 · 자체 실측 아님<br><a href="https://www.auravms.com/blogs/rfq-process-in-manufacturing-competitive-supplier-quotes" target="_blank">AuraVMS</a> · <a href="https://www.elisaindustriq.com/resources/blog/why-are-manual-rfq-processes-inefficient-in-procurement" target="_blank">Elisa Industriq (APQC 인용)</a></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-3" data-title="프로젝트 목표">
+        <div class="eyebrow"><span>03</span> OUR SOLUTION</div>
+        <header class="slide-title solution-title"><span class="focus-label solution">OUR ANSWER</span><h2>문서 자동화가 아니라,<br><em>구매의 예외까지 끝내는 실행 흐름</em>을 만듭니다.</h2><p>AI·Rule·ERPNext API가 다음 행동을 실행하고, 승인과 최종 선택은 사람이 통제합니다.</p></header>
+        <div class="goal-wheel">
+          <div class="goal-center"><small>OUR SOLUTION</small><strong>MR → PO<br>One Flow</strong><span>상태 기반 구매 오케스트레이션</span></div>
+          <article class="goal-item goal-1"><b>01</b><h3>ERP에서 실제 실행</h3><p>화면의 추천에 그치지 않고 ERPNext 문서·코멘트·이메일까지 연결</p></article>
+          <article class="goal-item goal-2"><b>02</b><h3>기다렸다가 다시 실행</h3><p>견적과 거래 확정 회신을 기다려 중단하고, 이벤트가 오면 이어서 진행</p></article>
+          <article class="goal-item goal-3"><b>03</b><h3>구매 예외를 루프로 처리</h3><p>규격 부족, 미회신, RFQ 보완, 거래 거절을 다음 조치로 자동 연결</p></article>
+          <article class="goal-item goal-4"><b>04</b><h3>사람의 책임을 보존</h3><p>ITEM·MR·구매/입찰·최종 견적·PO 단계에 명확한 승인 지점</p></article>
+        </div>
+        <div class="outcome-row"><div><strong>DIFF 01</strong><span>ERP-native 실행</span></div><div><strong>DIFF 02</strong><span>Pause & Resume</span></div><div><strong>DIFF 03</strong><span>Exception Loop</span></div><div><strong>DIFF 04</strong><span>Human Control</span></div></div>
+      </section>
+
+      <section class="slide" id="slide-4" data-title="핵심 사용자와 역할">
+        <div class="eyebrow"><span>04</span> PEOPLE & RESPONSIBILITY</div>
+        <header class="slide-title"><h2>하나의 프로세스, <em>네 개의 관점</em></h2><p>각 사용자는 필요한 정보와 결정만 전달받습니다.</p></header>
+        <div class="persona-map">
+          <article class="persona requester"><div class="persona-icon">REQ</div><small>REQUESTER</small><h3>요청 부서</h3><ul><li>신규 ITEM 등록</li><li>MR 작성 및 긴급 요청</li><li>반려 사유·대체품 확인</li></ul><span class="touchpoint">INPUT</span></article>
+          <article class="persona buyer"><div class="persona-icon">BUY</div><small>PROCESS OWNER</small><h3>구매 담당자</h3><ul><li>ITEM·MR 승인/반려</li><li>구매·입찰 판단</li><li>견적 검토 및 최종 선택</li></ul><span class="touchpoint">CONTROL</span></article>
+          <article class="persona approver"><div class="persona-icon">APR</div><small>DECISION MAKER</small><h3>결재권자</h3><ul><li>최종 Quotation 결재</li><li>예외·고액 구매 검토</li><li>PO 진행 승인</li></ul><span class="touchpoint">APPROVE</span></article>
+          <article class="persona supplier"><div class="persona-icon">SUP</div><small>EXTERNAL PARTNER</small><h3>협력사</h3><ul><li>RFQ 수신 및 질의</li><li>Quotation 제출</li><li>거래 확정 회신</li></ul><span class="touchpoint">RESPOND</span></article>
+          <div class="persona-flow"><span>요청</span><i>→</i><span>검토·조율</span><i>→</i><span>결재</span><i>→</i><span>외부 응답</span></div>
+        </div>
+      </section>
+
+      <section class="slide process-slide" id="slide-5" data-title="전체 구매 프로세스">
+        <div class="eyebrow"><span>05</span> END-TO-END PROCESS</div>
+        <header class="slide-title compact"><h2>요청 접수부터 발주까지, <em>하나의 상태 흐름</em></h2><p>외부 회신을 기다릴 때는 안전하게 멈추고, 이벤트가 도착하면 다시 이어갑니다.</p></header>
+        <div class="process-lane">
+          <article><span>01</span><i class="icon-doc"></i><h3>ITEM</h3><p>규격 보완·대체품<br>승인·반려</p></article>
+          <article><span>02</span><i class="icon-check"></i><h3>MR</h3><p>이상치·수량·납기<br>대체품 검토</p></article>
+          <article><span>03</span><i class="icon-route"></i><h3>ROUTE</h3><p>담당자 배정<br>긴급/납기 정렬</p></article>
+          <article><span>04</span><i class="icon-scale"></i><h3>DECIDE</h3><p>바로 구매<br>vs 입찰</p></article>
+          <article><span>05</span><i class="icon-mail"></i><h3>RFQ</h3><p>다단계 공급사 탐색<br>작성·발송</p></article>
+          <article class="wait-stage"><span>06</span><i class="icon-pause"></i><h3>WAIT</h3><p>견적 회신<br>대기·재확인</p></article>
+          <article><span>07</span><i class="icon-rank"></i><h3>COMPARE</h3><p>외부 견적 구조화<br>Top-K 선정</p></article>
+          <article><span>08</span><i class="icon-cart"></i><h3>PO</h3><p>PR·거래 확정<br>PO 발송</p></article>
+        </div>
+        <div class="process-legend"><span class="auto">자동 실행</span><span class="human">사람 판단</span><span class="pause">외부 이벤트 대기</span><p><b>핵심 설계:</b> 단계별 결과와 승인 상태를 저장해, 중단 이후에도 동일한 문맥에서 재개</p></div>
+      </section>
+
+      <section class="slide" id="slide-6" data-title="자동화 및 사람 승인 범위">
+        <div class="eyebrow"><span>06</span> HUMAN IN THE LOOP</div>
+        <header class="slide-title"><h2>AI는 <em>준비하고 제안</em>하며,<br>사람은 <em>책임지고 결정</em>합니다.</h2></header>
+        <div class="decision-matrix">
+          <div class="matrix-head"><span></span><strong>AUTOMATION ZONE</strong><strong>APPROVAL GATE</strong></div>
+          <div class="matrix-row"><b>ITEM</b><p>대체품·부족 규격 코멘트, DB 기반 재검증, 최대 5회 보완</p><p>요청부서 선택 후 구매팀이 등록 승인·반려</p></div>
+          <div class="matrix-row"><b>MR</b><p>거래 이력 이상치 경고, 재고 기반 대체품 최대 5개 추천</p><p>구매 담당자가 MR 승인·반려 및 사유 입력</p></div>
+          <div class="matrix-row"><b>RFQ</b><p>나라장터→거래이력→Web 탐색, RFQ 작성·이메일 발송</p><p>회사 정책에 따른 구매/입찰 경로 확정</p></div>
+          <div class="matrix-row"><b>SQ</b><p>외부 견적 추출, 누락·유효기간·이상 단가 검토, Top-K</p><p>최종 Quotation 선택 및 상부 결재</p></div>
+          <div class="matrix-row"><b>PO</b><p>PO Draft·PR 발송, 미회신 재확인, 차순위 업체 재진행</p><p>거래 확정 회신 후 PO 발송 승인</p></div>
+        </div>
+        <div class="rule"><span>CONTROL PRINCIPLE</span><strong>AI는 검토 근거와 다음 행동을 준비하고, 구매 책임이 발생하는 결정은 사람이 승인합니다.</strong></div>
+      </section>
+
+      <section class="slide" id="slide-7" data-title="핵심 기능">
+        <div class="eyebrow"><span>07</span> CORE CAPABILITIES</div>
+        <header class="slide-title compact"><h2>구매 업무에서 실제로 반복되는<br><em>검토·탐색·대기·예외 처리</em>를 자동화</h2></header>
+        <div class="feature-grid feature-grid-six">
+          <article><b>01</b><span class="feature-symbol">↻</span><h3>ITEM 규격 보완 루프</h3><p>AI가 대체품과 부족 규격을 ERPNext 코멘트로 안내합니다. 요청 내용은 DB에 저장해 재요청 시 다시 검증하며, 최대 5회 후 구매팀 승인으로 전환합니다.</p><em>AI + DB + ERP COMMENT</em></article>
+          <article><b>02</b><span class="feature-symbol">≈</span><h3>MR 선제 검토</h3><p>기존 거래 이력의 이상 수량을 경고하고, 동일 Item Group·핵심어·재고를 통과한 대체품을 규격 유사도 순으로 최대 5개 제안합니다.</p><em>RULE + AI</em></article>
+          <article><b>03</b><span class="feature-symbol">⇄</span><h3>업무 배정과 구매 경로</h3><p>회사 카탈로그 기준으로 담당자를 배정·이관하고, 긴급 요청과 납기일로 정렬합니다. 회사별 정책을 반영해 구매와 입찰을 사람이 확정합니다.</p><em>POLICY + HUMAN GATE</em></article>
+          <article><b>04</b><span class="feature-symbol">◎</span><h3>다단계 Supplier 탐색</h3><p>나라장터 기업 → 최근 30일 거래 → Tavily Web Search 순으로 후보를 찾고, Naver API로 연락처를 보강해 ERPNext Supplier에 저장합니다.</p><em>FUNNEL SEARCH</em></article>
+          <article><b>05</b><span class="feature-symbol">Ⅱ</span><h3>견적 대기와 재개</h3><p>RFQ 발송 후 흐름을 중단하고 회신을 기다립니다. 미회신 시 재확인하며, RFQ 내용 보완 요청이 오면 수정·발송 단계로 되돌아갑니다.</p><em>PAUSE · RESUME · RETRY</em></article>
+          <article><b>06</b><span class="feature-symbol">≡</span><h3>비정형 견적과 Top-K</h3><p>이메일·파일 견적을 Hugging Face LLM으로 추출해 ERPNext에 등록하고, 누락·유효기간·이상 단가를 검토한 뒤 단가·납기로 Top-K를 제안합니다.</p><em>DOCUMENT AI + RANKING</em></article>
+        </div>
+        <div class="feature-callout"><b>bidding flow의 차별점</b><span>추천 화면에서 끝나지 않고, ERP 기록·외부 회신·예외 재처리까지 다음 업무를 실제로 이어갑니다.</span></div>
+      </section>
+
+      <section class="slide architecture-slide" id="slide-8" data-title="시스템 구조">
+        <div class="eyebrow"><span>08</span> SYSTEM ARCHITECTURE</div>
+        <header class="slide-title compact"><h2>새 ERP를 만드는 대신,<br><em>기존 ERPNext를 실행 가능한 AI 흐름으로 확장</em></h2></header>
+        <div class="flow-architecture">
+          <div class="flow-legend"><span class="sync-line">동기 API 요청/응답</span><span class="async-line">비동기 이벤트</span></div>
+          <div class="flow-node users-node"><small>ACTORS</small><strong>요청부서 · 구매담당자 · 결재권자</strong></div>
+          <div class="flow-arrow arrow-1 down sync"><i></i><b>조회 · 승인 · 반려</b></div>
+          <div class="flow-node ui-node"><small>EXPERIENCE</small><strong>bidding flow Web</strong><p>Chatbot · Dashboard · ITEM · MR · Vendor · PO</p></div>
+          <div class="flow-arrow arrow-2 down sync"><i></i><b>REST API</b></div>
+          <div class="flow-node api-node"><small>APPLICATION</small><strong>FastAPI</strong><p>인증 · 구매 API · ERP Gateway</p></div>
+          <div class="flow-arrow arrow-3 down sync"><i></i><b>State + Command</b></div>
+          <div class="flow-node agent-node"><small>ORCHESTRATION</small><strong>LangGraph · Rule · AI Agent</strong><p>ITEM 보완 · 이상치 · 대체품 · RFQ · Top-K · Pause/Resume</p></div>
+          <div class="flow-systems">
+            <article class="erp-system"><small>SYSTEM OF RECORD</small><strong>ERPNext API</strong><p>Item · MR · Stock · RFQ · SQ · PO</p><span class="system-arrow sync">↕ 동기 문서 처리</span></article>
+            <article class="db-system"><small>STATE & KNOWLEDGE</small><strong>Checkpoint DB</strong><p>보완 이력 · 승인 상태 · 재개 지점</p><span class="system-arrow sync">↕ 상태 저장</span></article>
+            <article class="ext-system"><small>EXTERNAL</small><strong>나라장터 · Tavily · Naver</strong><p>공급사·거래·연락처 탐색</p><span class="system-arrow sync">↕ 검색 API</span></article>
+            <article class="mail-system"><small>ASYNC CHANNEL</small><strong>Supplier · Email · File</strong><p>RFQ 발송 · 견적 · 거래 확정</p><span class="system-arrow async">↻ 회신 시 재개</span></article>
+          </div>
+          <div class="async-return"><span>RFQ 발송</span><i>→ WAIT →</i><span>Quotation/확정 회신</span><i>→ RESUME</i></div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-9" data-title="현재 구현 현황">
+        <div class="eyebrow"><span>09</span> IMPLEMENTATION STATUS</div>
+        <header class="slide-title compact"><h2>핵심 골격은 구현,<br><em>운영 자동화 루프를 연결 중</em></h2><p>아래 진행률은 저장소 코드 자산 기준의 자체 추정이며 운영 배포 완성도를 의미하지 않습니다.</p></header>
+        <div class="status-layout">
+          <div class="status-list">
+            <article><div><b>Frontend Experience</b><span>Dashboard · ITEM · MR · Vendor · PO</span></div><i style="--p:85%"></i><strong>85%</strong></article>
+            <article><div><b>ERPNext API Client</b><span>Item / MR / Stock / RFQ / SQ / PO</span></div><i style="--p:80%"></i><strong>80%</strong></article>
+            <article><div><b>Core Intelligence Nodes</b><span>이상치 · 대체품 · 입찰 · 공급사 · 견적</span></div><i style="--p:75%"></i><strong>75%</strong></article>
+            <article><div><b>Evaluation & E2E</b><span>공급사 검색 평가 · Mock/Real 테스트</span></div><i style="--p:65%"></i><strong>65%</strong></article>
+            <article class="progressing"><div><b>Async Event Loop</b><span>메일 수신 · 재알림 · checkpoint/resume <em>→ Phase 2</em></span></div><i style="--p:40%"></i><strong>40%</strong></article>
+            <article class="progressing"><div><b>Main Chatbot</b><span>업무 현황 · 구매 정보 조회 보조 <em>→ Phase 2</em></span></div><i style="--p:25%"></i><strong>25%</strong></article>
+          </div>
+          <div class="ui-preview actual-preview">
+            <figure><img src="./actual-dashboard.png" alt="실제 실행한 bidding flow React 대시보드 화면" /><figcaption><span>ACTUAL RUNNING SCREEN</span> React 프로덕션 빌드 성공 · Mock 데이터 기반 UI</figcaption></figure>
+            <div class="preview-tags"><span>실제 구현 화면</span><b>MR 4단계 추적</b><b>긴급 업무</b><b>승인 상태</b></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-10" data-title="핵심 구현 결과 및 검증">
+        <div class="eyebrow"><span>10</span> RESULT & VALIDATION</div>
+        <header class="slide-title compact"><h2>동작하는 흐름과 <em>측정 가능한 평가 기반</em>을 확보</h2></header>
+        <div class="metric-row"><article><small>PILOT ITEMS</small><strong>4</strong><span>공급사 검색 평가 품목</span></article><article><small>HYBRID nDCG@5</small><strong>0.91</strong><span>상위 결과 순위 품질</span></article><article><small>PRECISION@5</small><strong>0.85</strong><span>상위 5개 적합 공급사 비율</span></article><article><small>TOP-1 HIT</small><strong>1.00</strong><span>첫 결과 적중률</span></article></div>
+        <div class="validation-grid">
+          <article><span class="validation-no">A</span><h3>Mock E2E</h3><p>재고 부족 → MR → 구매 경로 → RFQ → 견적 비교 → PO → 입고/매입 초안의 최소 시나리오를 테스트 코드로 연결</p><div class="code-line"><i></i><i></i><i></i><i></i><i></i><i></i></div></article>
+          <article><span class="validation-no">B</span><h3>Real ERPNext</h3><p>실제 서버 연결, MR/RFQ 생성 및 공급사 발송 경로를 확인하는 E2E 스크립트 구성</p><div class="result-badge">API PATH VERIFIED</div></article>
+          <article class="caution"><span class="validation-no">!</span><h3>평가 한계</h3><p>현재 Gold는 pooled judgment 기반입니다. 독립 human reference가 없어 시장 전체 성능으로 일반화하지 않습니다.</p><div class="result-badge">DIRECTIONAL ONLY</div></article>
+        </div>
+        <p class="source-note">Source · backend_logic2/evaluation/vendor_retrieval_report.json (macro average, pilot 4 items)</p>
+      </section>
+
+      <section class="slide" id="slide-11" data-title="문제점과 개선 계획">
+        <div class="eyebrow"><span>11</span> RISKS & RESPONSE</div>
+        <header class="slide-title compact"><h2>지금 드러난 한계를 <em>운영 설계 과제</em>로 전환</h2></header>
+        <div class="risk-table">
+          <div class="risk-head"><span>현재 문제</span><span>영향</span><span>개선 방향</span></div>
+          <article><div><b>외부 이메일은 비동기 이벤트</b><p>견적이 며칠 뒤 도착하거나 끝내 오지 않을 수 있음</p></div><strong class="risk-high">HIGH</strong><div><b>Checkpoint + Scheduler</b><p>상태 저장, 마감 기준 재개, 주기적 재확인</p></div></article>
+          <article><div><b>견적 양식이 제각각</b><p>표준 필드 비교와 필수값 검증이 어려움</p></div><strong class="risk-high">HIGH</strong><div><b>LLM Structured Extraction</b><p>텍스트 변환, schema 검증, 낮은 신뢰도 수동 검토</p></div></article>
+          <article><div><b>회사별 구매 기준 상이</b><p>고정 규칙만으로 정책 변화 대응이 어려움</p></div><strong class="risk-mid">MED</strong><div><b>Policy Configuration</b><p>별도 입력 폼, 버전 관리, 결정 근거 기록</p></div></article>
+          <article><div><b>평가 표본과 Gold 제한</b><p>파일럿 성과가 실제 시장 성능을 대표하지 않음</p></div><strong class="risk-mid">MED</strong><div><b>Independent Evaluation</b><p>품목 확대, 독립 평가자, 실패 사례 회귀 테스트</p></div></article>
+          <article><div><b>Frontend 일부 mock 상태</b><p>실데이터·승인 상태와 화면 불일치 가능</p></div><strong class="risk-mid">MED</strong><div><b>API Integration Contract</b><p>상태 모델 통일, 오류/재시도 UX, 통합 테스트</p></div></article>
+        </div>
+      </section>
+
+      <section class="slide finale" id="slide-12" data-title="향후 일정 및 최종 목표">
+        <div class="eyebrow"><span>12</span> ROADMAP TO FINAL</div>
+        <header class="slide-title compact"><h2>남은 기간의 목표는<br><em>“운영 가능한 폐루프”</em> 완성</h2></header>
+        <div class="roadmap">
+          <article><span>PHASE 01</span><time>NOW</time><h3>Core Integration</h3><ul><li>Frontend ↔ FastAPI 실데이터 연결</li><li>승인·반려 상태 영속화</li><li>MR → RFQ 기본 경로 안정화</li></ul><i></i></article>
+          <article><span>PHASE 02</span><time>NEXT</time><h3>Async Workflow</h3><ul><li>메일 수신·미회신 Scheduler</li><li>LangGraph checkpoint/resume</li><li>RFQ 보완·차순위 재진행</li></ul><i></i></article>
+          <article><span>PHASE 03</span><time>FINAL</time><h3>Quality & Demo</h3><ul><li>비정형 견적 파싱 검증</li><li>규칙 설정 UI·감사 로그</li><li>E2E 시연·업무 지표 정리</li></ul><i></i></article>
+        </div>
+        <div class="final-scenario"><small>FINAL DEMO SCENARIO</small><div><span>긴급 MR 접수</span><i>→</i><span>이상치·대체품</span><i>→</i><span>RFQ 자동 발송</span><i>→</i><span>견적 회신·비교</span><i>→</i><span>사람 최종 승인</span><i>→</i><span>PO Draft</span></div></div>
+        <footer class="closing"><p><b>AI가 답만 하는 구매가 아니라, 다음 업무를 끝까지 이어주는 구매.</b> 이것이 bidding flow의 의미입니다.</p><strong>Q & A</strong></footer>
+      </section>
+    </main>
+
+    <div class="controls" aria-label="슬라이드 이동">
+      <button id="prevBtn" type="button" aria-label="이전 슬라이드">←</button>
+      <div class="progress"><i id="progressBar"></i></div>
+      <button id="nextBtn" type="button" aria-label="다음 슬라이드">→</button>
+      <button id="fullBtn" type="button" aria-label="전체 화면">⛶</button>
+    </div>
+    <div class="keyboard-hint">← → 이동 · F 전체화면 · Home 처음 · End 마지막</div>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>
