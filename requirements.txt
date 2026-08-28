@@ -2,11 +2,12 @@ fastapi
 uvicorn
 requests
 PyJWT
+cryptography
 pydantic
 jinja2
 python-dotenv
 openai
-psycopg[binary]
+psycopg[binary,pool]
 sentence-transformers
 tokenizers>=0.22,<0.23
 langchain-openai
