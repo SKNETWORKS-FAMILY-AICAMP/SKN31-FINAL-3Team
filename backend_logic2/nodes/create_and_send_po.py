@@ -18,7 +18,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # erp_client.py에서 실제 구현되어 있는 함수들을 임포트
 from erp_client import erp_post, erp_submit, erp_send_email, ERPNextAPIError, erp_get
-from get_supplier_quotations import get_supplier_quotations
+try:
+    from .quotation_filter.get_supplier_quotations import get_supplier_quotations
+except ImportError:  # nodes 폴더에서 직접 실행할 때
+    from quotation_filter.get_supplier_quotations import get_supplier_quotations
 
 # ERP 도메인은 환경마다 달라질 수 있으므로 하드코딩하지 않고 환경변수로 관리
 ERP_DOMAIN = os.getenv("ERP_DOMAIN", "http://13.209.103.102:8080")
