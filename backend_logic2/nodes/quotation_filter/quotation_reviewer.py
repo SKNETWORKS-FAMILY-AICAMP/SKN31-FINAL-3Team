@@ -168,7 +168,7 @@ def load_rfq_requirements_from_erp(
             "quantity": row.get("qty"),
             "required_delivery_date": row.get("schedule_date") or rfq.get("schedule_date"),
             "specifications": extract_specifications(row.get("description")),
-            "numeric_tolerance_percent": 0,
+            "numeric_tolerance_percent": 0,   #오차범위
         })
     return RFQRequirements.model_validate({
         "rfq_name": rfq.get("name") or rfq_name,
@@ -396,7 +396,7 @@ def review_quotation(
                         continue
                     spec_ok = False
                     evidence.append(f"규격 '{key}' 누락 (RFQ={expected})")
-                    issues.append(_issue("MISSING_SPECIFICATION", IssueSeverity.ERROR, f"items.{index}.specifications.{key}", "필수 규격이 누락되었습니다.", evidence[-1]))
+                    issues.append(_issue("MISSING_SPECIFICATION", IssueSeverity.ERROR, f"items.{index}.specificatio ns.{key}", "필수 규격이 누락되었습니다.", evidence[-1]))
                     continue
                 matched, match_evidence = _spec_matches(item.specifications[key], expected, required.numeric_tolerance_percent)
                 spec_ok = spec_ok and matched

@@ -19,7 +19,8 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import html
-from erp_client import erp_get_one, erp_post, ERPNextAPIError
+import requests
+from erp_client import erp_get_one, erp_post, ERPNextAPIError, SITE_URL, HEADERS
 
 
 def _sanitize_name(name: str, max_length: int = 140) -> str:
@@ -32,12 +33,16 @@ def _sanitize_name(name: str, max_length: int = 140) -> str:
     return cleaned[:max_length].strip()
 
 
-def supplier_exists(name: str) -> bool:
-    """이 이름의 Supplier가 ERPNext에 이미 있는지 확인"""
+def get_existing_supplier(name: str):
+    """이 이름의 기존 Supplier를 반환하고, 없으면 None을 반환한다."""
     try:
-        return erp_get_one("Supplier", name) is not None
+        return erp_get_one("Supplier", name)
     except ERPNextAPIError:
-        return False
+        return None
+
+
+def supplier_exists(name: str) -> bool:
+    return get_existing_supplier(name) is not None
 
 
 def register_candidate_suppliers(candidates: list) -> list:
@@ -57,8 +62,29 @@ def register_candidate_suppliers(candidates: list) -> list:
 
         name = _sanitize_name(raw_name)
 
-        if supplier_exists(name):
-            results.append({"name": name, "status": "already_exists"})
+        email = str(c.get("email") or "").strip()
+        if not email:
+            results.append({"name": name, "status": "failed", "reason": "이메일 없음"})
+            continue
+
+        existing = get_existing_supplier(name)
+        if existing:
+            if not existing.get("email_id"):
+                response = requests.put(
+                    f"{SITE_URL}/api/resource/Supplier/{name}",
+                    headers=HEADERS,
+                    json={"email_id": email},
+                )
+                if response.status_code != 200:
+                    results.append({
+                        "name": name,
+                        "status": "failed",
+                        "reason": f"기존 Supplier 이메일 갱신 실패: {response.text[:300]}",
+                    })
+                    continue
+                results.append({"name": name, "status": "updated"})
+            else:
+                results.append({"name": name, "status": "already_exists"})
             continue
 
         payload = {
@@ -67,8 +93,7 @@ def register_candidate_suppliers(candidates: list) -> list:
             "country": "Korea, Republic of",
             "supplier_type": "Company",
         }
-        if c.get("email"):
-            payload["email_id"] = c["email"]
+        payload["email_id"] = email
 
         try:
             created = erp_post("Supplier", payload)

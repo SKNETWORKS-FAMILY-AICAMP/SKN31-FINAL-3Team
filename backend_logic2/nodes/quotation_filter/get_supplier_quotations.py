@@ -135,6 +135,7 @@ def _normalize_item(detail: dict[str, Any], item: dict[str, Any]) -> dict[str, A
         "qty": item.get("qty"),
         "uom": item.get("uom"),
         "stock_uom": item.get("stock_uom"),
+        "conversion_factor": item.get("conversion_factor"),
         "rate": item.get("rate"),
         "amount": item.get("amount"),
         "net_rate": item.get("net_rate"),

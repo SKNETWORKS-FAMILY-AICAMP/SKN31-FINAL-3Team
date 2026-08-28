@@ -23,12 +23,12 @@ NAVER_CLIENT_SECRET, OPENAI_API_KEY
 실행: python supplier_search.py
 """
 
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
-
-from tools.narajangteo_search_based_tool import search_all_with_detail
-from tools.web_search_based_tool import normalize_item_name, tavily_search_vendors
+try:
+    from .tools.narajangteo_search_based_tool import search_all_with_detail
+    from .tools.web_search_based_tool import normalize_item_name, tavily_search_vendors
+except ImportError:  # nodes 폴더에서 직접 실행할 때
+    from tools.narajangteo_search_based_tool import search_all_with_detail
+    from tools.web_search_based_tool import normalize_item_name, tavily_search_vendors
 
 
 def supplier_search(item_name, target_count=10):

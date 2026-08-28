@@ -82,6 +82,22 @@ def _match_rfq_item(quotation_item: Any, rfq_items: list[dict[str, Any]]) -> dic
     matches = [row for row in rfq_items if wanted and wanted == _normalized_text(row.get("item_name"))]
     if len(matches) == 1:
         return matches[0]
+
+    # 소형 비전 모델이 표의 Sr 열("1", "2"...)을 item_code로 오인하는 경우가 있다.
+    # 실제 RFQ item_code가 품목명/설명 원문에 명시된 경우에만 복구한다.
+    evidence = _normalized_text(" ".join(filter(None, [
+        quotation_item.item_code,
+        quotation_item.item_name,
+        quotation_item.description,
+        quotation_item.raw_description,
+    ])))
+    code_matches = [
+        row for row in rfq_items
+        if _normalized_text(row.get("item_code"))
+        and _normalized_text(row.get("item_code")) in evidence
+    ]
+    if len(code_matches) == 1:
+        return code_matches[0]
     raise SupplierQuotationRegistrationError(
         f"견적 품목 '{quotation_item.item_code or quotation_item.item_name}'을 "
         "RFQ의 단일 품목과 연결할 수 없습니다."

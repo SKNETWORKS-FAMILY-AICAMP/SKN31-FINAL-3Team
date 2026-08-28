@@ -48,7 +48,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from dotenv import load_dotenv
 
-from naver_contact_enrichment import _fetch_page_text
+try:
+    from .naver_contact_enrichment import _fetch_page_text
+except ImportError:  # tools 폴더에서 직접 실행할 때
+    from naver_contact_enrichment import _fetch_page_text
 
 load_dotenv()
 
@@ -282,7 +285,10 @@ def search_all_with_detail(item_name, target_count=10, batch_size=5):
       그 조기종료는 못 씀 - latency 우선으로 결정됨(AI호출 비용은 약간
       늘 수 있음).
     """
-    from naver_contact_enrichment import _extract_contacts_batch
+    try:
+        from .naver_contact_enrichment import _extract_contacts_batch
+    except ImportError:  # tools 폴더에서 직접 실행할 때
+        from naver_contact_enrichment import _extract_contacts_batch
 
     candidates = search_all(item_name, target_count=target_count * 2)
 

@@ -36,6 +36,11 @@ class ERPNextAPIError(Exception):
     pass
 
 
+def is_test_mode() -> bool:
+    """Return the single TEST_MODE policy used by every mail-sending node."""
+    return os.getenv("TEST_MODE", "false").strip().lower() == "true"
+
+
 def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None):
     """ERPNext에서 문서 목록 조회"""
     import json
@@ -145,7 +150,7 @@ def erp_send_email(doctype, name, recipients, subject, content):
     없어서 그동안 실제 이메일이 나가버린 적도 있었고, 비밀번호 같은
     내용을 확인할 방법도 없었음. 이제 이걸로 둘 다 해결됨.
     """
-    if os.getenv("TEST_MODE", "false").lower() == "true":
+    if is_test_mode():
         print(f"\n[TEST_MODE] 실제 발송 생략 — {doctype}/{name}")
         print(f"  수신자: {recipients}")
         print(f"  제목: {subject}")

@@ -17,7 +17,7 @@ import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # erp_client.py에서 실제 구현되어 있는 함수들을 임포트
-from erp_client import erp_post, erp_submit, erp_send_email, ERPNextAPIError, erp_get
+from erp_client import erp_post, erp_submit, erp_send_email, ERPNextAPIError, erp_get, is_test_mode
 try:
     from .quotation_filter.get_supplier_quotations import get_supplier_quotations
 except ImportError:  # nodes 폴더에서 직접 실행할 때
@@ -30,40 +30,14 @@ ERP_DOMAIN = os.getenv("ERP_DOMAIN", "http://13.209.103.102:8080")
 ERP_PORTAL_PATH_TEMPLATE = os.getenv("ERP_PORTAL_PATH_TEMPLATE", "/orders/{po_name}")
 
 
-def _resolve_test_mode():
-    """
-    TEST_MODE 판정 기준을 erp_client와 통일한다.
-    erp_client.py가 자체적으로 TEST_MODE를 판정하는 함수/상수를 노출한다면
-    그것을 그대로 써야, 이 스크립트가 출력하는 안내 메시지와
-    실제 erp_send_email의 동작이 어긋나지 않는다.
-    """
-    try:
-        from erp_client import is_test_mode as _erp_is_test_mode  # type: ignore
-        return _erp_is_test_mode()
-    except ImportError:
-        pass
-    try:
-        from erp_client import TEST_MODE as _erp_test_mode_const  # type: ignore
-        if isinstance(_erp_test_mode_const, bool):
-            return _erp_test_mode_const
-        return str(_erp_test_mode_const).lower() != "false"
-    except ImportError:
-        pass
-    # erp_client에 판정 기준이 노출되어 있지 않은 경우의 폴백.
-    # 이 경우 실제 발송 차단 여부는 erp_send_email 내부 구현에 달려 있으므로
-    # 아래 값은 "안내 메시지"일 뿐 실제 동작과 다를 수 있다는 점을 명시한다.
-    print("[경고] erp_client에서 TEST_MODE 판정 기준을 가져오지 못해 로컬 환경변수로 대체합니다. "
-          "실제 발송 차단 여부는 erp_client 구현을 반드시 확인하세요.")
-    return os.getenv("TEST_MODE", "true").lower() != "false"
-
-
-def create_and_send_po(rfq_name, supplier_id):
+def create_and_send_po(rfq_name, supplier_id, *, send_email=True):
     print(f"\n=== [9번] PO(Purchase Order) 생성 및 발송 ===")
     print(f"RFQ: {rfq_name} / 선정된 공급사: {supplier_id}")
     
     # TEST_MODE 상태 안내 (erp_client와 동일한 기준 사용)
-    is_test_mode = _resolve_test_mode()
-    print(f"현재 환경: {'테스트 모드 (실제 메일 발송 차단됨)' if is_test_mode else '운영 모드 (실제 메일 발송됨)'}\n")
+    test_mode = is_test_mode()
+    print(f"현재 환경: {'테스트 모드 (실제 메일 발송 차단됨)' if test_mode else '운영 모드'}")
+    print(f"PO 이메일: {'발송 요청' if send_email else '발송 안 함'}\n")
     
     # 1. 견적 데이터 조회
     try:
@@ -103,17 +77,21 @@ def create_and_send_po(rfq_name, supplier_id):
     # 건너뛸 수밖에 없으므로, 이 경우 중복 방지가 보장되지 않는다는 점을 알린다.
     if quotation_name:
         try:
-            existing_po_items = erp_get(
-                "Purchase Order Item",
-                filters=[["supplier_quotation", "=", quotation_name]],
-                fields=["parent"]
+            existing_pos = erp_get(
+                "Purchase Order",
+                filters=[
+                    ["Purchase Order Item", "supplier_quotation", "=", quotation_name],
+                    ["docstatus", "!=", 2],
+                ],
+                fields=["name"],
+                limit=100,
             )
         except Exception as e:
             print(f"[경고] 기존 PO 중복 여부 확인 중 오류가 발생했습니다: {e}")
-            existing_po_items = []
+            existing_pos = []
 
-        if existing_po_items:
-            existing_po_names = sorted({row["parent"] for row in existing_po_items})
+        if existing_pos:
+            existing_po_names = sorted({row["name"] for row in existing_pos})
             print(f"[오류] 이 견적(Supplier Quotation: {quotation_name})에 대해 이미 PO가 존재합니다: {existing_po_names}")
             print("    중복 발주를 막기 위해 새 PO를 생성하지 않습니다.")
             sys.exit(1)
@@ -135,7 +113,10 @@ def create_and_send_po(rfq_name, supplier_id):
             "item_code": item["item_code"],
             "qty": item["qty"],
             "rate": item["rate"],
-            "schedule_date": item["schedule_date"]
+            "schedule_date": item["schedule_date"],
+            "uom": item.get("uom") or item.get("stock_uom"),
+            "stock_uom": item.get("stock_uom") or item.get("uom"),
+            "conversion_factor": item.get("conversion_factor") or 1,
         }
         # --- PO에 Supplier Quotation 연결 ---
         # 확인 필요: ERPNext 표준 필드명이 "supplier_quotation" /
@@ -184,6 +165,10 @@ def create_and_send_po(rfq_name, supplier_id):
     # 여기부터는 PO가 이미 ERP에 생성/확정된 상태.
     # 이후 이메일 단계가 실패하더라도 "PO 생성 실패"로 오인해 재실행하면
     # 중복 PO가 생성될 수 있으므로, 반드시 별도 블록으로 분리해 처리 상태를 명확히 안내한다.
+    if not send_email:
+        print(f"\n3. PO 이메일 발송 생략")
+        return {"name": po_name, "status": "submitted", "email_sent": False}
+
     print(f"\n3. 공급사({supplier_id})에게 이메일 발송 단계")
 
     recipient_email = None
@@ -212,7 +197,7 @@ def create_and_send_po(rfq_name, supplier_id):
         print(f"⚠️  PO({po_name})는 정상적으로 생성/확정되었지만, 공급사 이메일 주소를 확인할 수 없어 자동 발송을 건너뛰었습니다.")
         print(f"    ERP에서 '{supplier_id}' 공급사의 이메일 주소를 등록한 뒤 수동으로 발송해 주세요.")
         print("=============================================\n")
-        return
+        return {"name": po_name, "status": "submitted", "email_sent": False}
 
     portal_link = ERP_DOMAIN + ERP_PORTAL_PATH_TEMPLATE.format(po_name=po_name)
     subject = f"발주서(PO) 안내 - {po_name}"
@@ -231,11 +216,12 @@ def create_and_send_po(rfq_name, supplier_id):
         # 이메일만 실패했다는 사실을 명확히 알려준다.
         print(f"[오류] PO({po_name})는 생성/확정되었으나 이메일 발송에는 실패했습니다: {e}")
         print("    이메일만 별도로 재시도하거나 수동으로 발송해 주세요.")
-        return
+        return {"name": po_name, "status": "submitted", "email_sent": False, "email_error": str(e)}
 
     print("\n=============================================")
     print(f"✅ 최종 결과: {po_name} 생성 및 처리 완료")
     print("=============================================\n")
+    return {"name": po_name, "status": "submitted", "email_sent": not test_mode}
 
 
 if __name__ == "__main__":

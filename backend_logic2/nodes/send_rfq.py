@@ -29,30 +29,64 @@ DEFAULT_MESSAGE = (
 )
 
 
-def create_rfq(mr_name: str, supplier_names: list, message: str = DEFAULT_MESSAGE):
+def create_rfq(
+    mr_name: str,
+    supplier_names: list,
+    message: str = DEFAULT_MESSAGE,
+    *,
+    send_email: bool = True,
+    submit: bool = True,
+):
     """
     MR을 RFQ 문서로 변환 (Draft 생성 + Submit까지).
 
-    ERPNext의 표준 매퍼(make_request_for_quotation)를 호출하여
-    MR의 모든 데이터(커스텀 필드 포함)를 누락 없이 RFQ로 복사해옵니다.
+    공개 REST API로 MR을 조회하고 RFQ payload를 구성합니다.
+    ERPNext 버전에 따라 위치가 달라지는 내부 Python 매퍼 경로에는 의존하지 않습니다.
     """
     try:
-        mapping_res = requests.post(
-            f"{SITE_URL}/api/method/erpnext.buying.doctype.material_request.material_request.make_request_for_quotation",
-            headers=HEADERS,
-            json={"source_name": mr_name}
-        )
-        if mapping_res.status_code != 200:
-            print(f"[create_rfq] MR 매핑 실패: {mapping_res.text}")
+        mr = erp_get_one("Material Request", mr_name)
+        if not mr:
+            print(f"[create_rfq] Material Request를 찾을 수 없습니다: {mr_name}")
             return None
-            
-        mapped_rfq = mapping_res.json().get("message")
-        if not mapped_rfq:
-            print(f"[create_rfq] 매핑된 데이터를 받아오지 못했습니다.")
+        if int(mr.get("docstatus") or 0) != 1:
+            print(f"[create_rfq] Submit된 Material Request만 RFQ로 만들 수 있습니다: {mr_name}")
             return None
-            
+
+        items_payload = []
+        for row in mr.get("items", []):
+            item_code = row.get("item_code")
+            row_name = row.get("name")
+            if not item_code or not row_name:
+                print(f"[create_rfq] MR 품목에 item_code/name이 없습니다: {row}")
+                return None
+            items_payload.append({
+                "item_code": item_code,
+                "item_name": row.get("item_name"),
+                "description": row.get("description"),
+                "qty": row.get("qty"),
+                "stock_uom": row.get("stock_uom") or row.get("uom"),
+                "uom": row.get("uom") or row.get("stock_uom"),
+                "conversion_factor": row.get("conversion_factor") or 1,
+                "schedule_date": row.get("schedule_date") or mr.get("schedule_date"),
+                "warehouse": row.get("warehouse"),
+                "material_request": mr_name,
+                "material_request_item": row_name,
+                "project_name": row.get("project"),
+                "cost_center": row.get("cost_center"),
+            })
+        if not items_payload:
+            print(f"[create_rfq] RFQ로 변환할 MR 품목이 없습니다: {mr_name}")
+            return None
+
+        mapped_rfq = {
+            "company": mr.get("company"),
+            "transaction_date": mr.get("transaction_date"),
+            "schedule_date": mr.get("schedule_date"),
+            "subject": mr.get("title") or f"Request for Quotation for {mr_name}",
+            "items": items_payload,
+        }
     except Exception as e:
-        print(f"[create_rfq] API 호출 에러: {e}")
+        print(f"[create_rfq] MR 조회/변환 에러: {e}")
         return None
 
     # 2. 공급사(Supplier) 목록 구성 (기존 안전장치 로직 유지)
@@ -61,7 +95,8 @@ def create_rfq(mr_name: str, supplier_names: list, message: str = DEFAULT_MESSAG
     suppliers_payload = []
     
     for s in supplier_names:
-        row = {"supplier": s}
+        # ERPNext는 Submit 시 이 child-row 체크값을 보고 공급사 메일을 보낸다.
+        row = {"supplier": s, "send_email": 1 if send_email else 0}
         supplier_doc = erp_get_one("Supplier", s)
         if supplier_doc:
             if supplier_doc.get("supplier_primary_contact"):
@@ -86,8 +121,8 @@ def create_rfq(mr_name: str, supplier_names: list, message: str = DEFAULT_MESSAG
     # 4. ERPNext에 완성된 RFQ 문서 실제 생성 (Draft)
     rfq = erp_post("Request for Quotation", mapped_rfq)
     
-    # 5. 제출 (Submit)
-    if rfq:
+    # 5. 선택적으로 제출 (Draft-only이면 생성까지만 수행)
+    if rfq and submit:
         erp_submit("Request for Quotation", rfq["name"])
         
     return rfq
@@ -117,20 +152,36 @@ def send_rfq(rfq_name: str):
     return res.json().get("message")
 
 
-def create_and_send_rfq(mr_name: str, supplier_names: list):
+def create_and_send_rfq(
+    mr_name: str,
+    supplier_names: list,
+    *,
+    send_email: bool = True,
+    submit: bool = True,
+):
     """
     RFQ 생성 (+ Submit). 발송은 이 함수가 따로 안 함 — erp_submit()이
     Submit되는 순간 RFQ의 Suppliers 테이블에 있는 "Send Email" 체크박스가
     이미 자동으로 발송을 트리거함. send_rfq()를 여기서 또 부르면 같은
     이메일이 두 번 나가는 문제가 실제로 있었음(원인 확정됨).
     """
-    rfq = create_rfq(mr_name, supplier_names)
+    rfq = create_rfq(
+        mr_name,
+        supplier_names,
+        send_email=send_email,
+        submit=submit,
+    )
     if not rfq:
         print(f"[create_and_send_rfq] '{mr_name}' RFQ 생성 실패")
         return None
 
-    print(f"[create_and_send_rfq] RFQ 생성+발송 완료: {rfq['name']} "
-          f"(Submit 시 Suppliers의 'Send Email' 체크로 이미 자동 발송됨)")
+    if not submit:
+        print(f"[create_and_send_rfq] RFQ Draft 생성 완료: {rfq['name']} (Submit/메일 발송 안 함)")
+    elif not send_email:
+        print(f"[create_and_send_rfq] RFQ 생성+Submit 완료: {rfq['name']} (공급사 메일 발송 안 함)")
+    else:
+        print(f"[create_and_send_rfq] RFQ 생성+발송 완료: {rfq['name']} "
+              f"(Submit 시 Suppliers의 'Send Email' 체크로 이미 자동 발송됨)")
     return rfq
 
 
