@@ -8,8 +8,8 @@ compare_quotations.py — 견적 비교분석
 
 ⚠️ 여기는 "추천"까지만 함. 최종 공급사 선택은 사람이 하는 거라 여기서
    자동으로 확정(Submit 등)하지 않음 — 순위/추천 이유를 보여주기만 함.
-⚠️ 이 파일도 독립적으로 실행 가능. 의존하는 건 erp_client.py(간접) +
-   get_supplier_quotations.py(같은 폴더에 있어야 함) 뿐.
+⚠️ 이 파일도 독립적으로 실행 가능. ERP 조회는 quotation_filter 패키지의
+   get_supplier_quotations를 재사용한다.
 """
 
 import json
@@ -18,7 +18,10 @@ import sys
 
 from openai import OpenAI
 
-from get_supplier_quotations import get_supplier_quotations, ERPNextAPIError
+try:
+    from .quotation_filter.get_supplier_quotations import ERPNextAPIError, get_supplier_quotations
+except ImportError:  # nodes 폴더에서 직접 실행할 때
+    from quotation_filter.get_supplier_quotations import ERPNextAPIError, get_supplier_quotations
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
