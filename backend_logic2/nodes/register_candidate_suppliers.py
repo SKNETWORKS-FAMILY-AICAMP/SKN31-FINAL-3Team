@@ -103,25 +103,3 @@ def register_candidate_suppliers(candidates: list) -> list:
 
     return results
 
-
-if __name__ == "__main__":
-    # 실제 흐름 테스트: MR ID로 resolve_suppliers 결과를 가져와서 그대로 등록
-    from resolve_supplier import resolve_suppliers_for_mr
-
-    mr_name = input("Material Request ID 입력: ").strip()
-    resolved = resolve_suppliers_for_mr(mr_name)
-
-    for item_code, info in resolved.items():
-        print(f"\n{'='*50}")
-        print(f"[{item_code}] 출처: {info['source']}")
-        print("=" * 50)
-
-        if info["source"] == "existing":
-            print("  기존 승인공급사라 등록 불필요:")
-            for s in info["suppliers"]:
-                print(f"    - {s}")
-            continue
-
-        results = register_candidate_suppliers(info["suppliers"])
-        for r in results:
-            print(f"  - {r['name']}: {r['status']}" + (f" ({r.get('reason')})" if r.get("reason") else ""))

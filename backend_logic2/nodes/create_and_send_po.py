@@ -8,11 +8,21 @@ create_and_send_po.py — 9번 모듈: PO 생성 + 발송
   3. PO를 Submit 상태로 변경하여 확정 (erp_submit)
   4. 공급사에게 PO 이메일 발송 (erp_send_email) - TEST_MODE 자동 적용됨
 출력: 생성된 PO 이름, 처리 결과를 터미널에 출력
+
+⚠️ 수정(transaction_date 명시): 이전엔 po_payload에 transaction_date를
+   안 넣어서 ERPNext가 서버 오늘날짜로 자동 채웠음. 이러면 견적의 납기일
+   (schedule_date)이 오늘보다 과거인 경우 "Required By cannot be before
+   Date" 검증에 걸려서 PO 생성 자체가 실패함(실제로 발생 확인됨).
+   transaction_date를 오늘로 명시하고, 납기일이 그보다 과거인 품목이
+   있으면 조용히 넘기지 않고 사전에 사용자에게 알려서 확인받음
+   (날짜를 임의로 뒤로 미루는 건 견적조건을 몰래 바꾸는 셈이라, 자동
+   보정하지 않고 사람이 판단하게 함).
 """
 
 import sys
 import os
 import argparse
+from datetime import date
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -107,6 +117,30 @@ def create_and_send_po(rfq_name, supplier_id, *, send_email=True):
         print(f"[오류] 아래 품목에 납기일(schedule_date)이 없어 PO를 생성할 수 없습니다: {missing_date_items}")
         sys.exit(1)
 
+    # --- 전표일자(transaction_date) 명시 + 과거 납기일 사전 확인 ---
+    # 이전엔 transaction_date를 안 넣어서 ERPNext가 서버 오늘날짜로 채웠고,
+    # 그 결과 납기일이 오늘보다 과거인 품목이 있으면 "Required By cannot
+    # be before Date" 검증에 걸려 PO 생성 자체가 실패했음(실제 확인됨).
+    # 날짜를 임의로 뒤로 미루는 건 견적조건을 몰래 바꾸는 셈이라 자동으로
+    # 보정하지 않고, 발견되면 사람에게 사실을 알리고 확인을 받는다.
+    today = date.today().isoformat()
+    past_date_items = [
+        item for item in supplier_items
+        if str(item["schedule_date"]) < today
+    ]
+    if past_date_items:
+        print(f"\n[확인 필요] 아래 품목의 견적 납기일이 오늘({today})보다 과거입니다:")
+        for item in past_date_items:
+            print(f"  - {item['item_code']}: 견적 납기일 {item['schedule_date']}")
+        print("  견적이 오래되었거나 테스트 데이터일 수 있습니다.")
+        answer = input("  그래도 진행하시겠습니까? 진행 시 이 품목들의 납기일은 오늘로 자동 조정됩니다 (y/n): ").strip().lower()
+        if answer != "y":
+            print("사용자가 중단을 선택했습니다. PO를 생성하지 않습니다.")
+            sys.exit(1)
+        for item in past_date_items:
+            print(f"  -> {item['item_code']} 납기일을 {item['schedule_date']} -> {today}로 조정")
+            item["schedule_date"] = today
+
     po_items = []
     for item in supplier_items:
         po_item = {
@@ -130,6 +164,7 @@ def create_and_send_po(rfq_name, supplier_id, *, send_email=True):
 
     po_payload = {
         "supplier": supplier_id,
+        "transaction_date": today,
         "items": po_items,
         # 대표 납기일은 항목들 중 "가장 이른 날짜"로 정한다 (임의로 첫 항목을 쓰지 않는다.
         # 리스트 순서가 항상 날짜순이라는 보장이 없으므로).
