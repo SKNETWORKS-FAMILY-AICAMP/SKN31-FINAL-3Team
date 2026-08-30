@@ -23,10 +23,9 @@ nodes/request_new_item.py — 신규 품목 승인 관리 (터미널 기반)
 
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
-from erp_client import erp_get, erp_get_one, ERPNextAPIError, SITE_URL, HEADERS
+from backend_logic2.integrations.erp_client import erp_get, erp_get_one, ERPNextAPIError, SITE_URL, HEADERS
 
 
 def get_pending_item_requests():

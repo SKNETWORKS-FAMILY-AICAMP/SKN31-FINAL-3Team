@@ -36,7 +36,7 @@ try:
         load_json,
     )
 except ImportError:
-    from quotation_models import (
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
         IssueSeverity,
         ItemCompliance,
         Quotation,
@@ -79,7 +79,7 @@ def _erp_get_one() -> GetOne:
     backend_root = Path(__file__).resolve().parents[2]
     if str(backend_root) not in sys.path:
         sys.path.insert(0, str(backend_root))
-    from erp_client import erp_get_one
+    from backend_logic2.integrations.erp_client import erp_get_one
 
     return erp_get_one
 

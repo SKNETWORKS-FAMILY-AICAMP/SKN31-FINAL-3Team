@@ -51,7 +51,7 @@ from dotenv import load_dotenv
 try:
     from .naver_contact_enrichment import _fetch_page_text
 except ImportError:  # tools 폴더에서 직접 실행할 때
-    from naver_contact_enrichment import _fetch_page_text
+    from backend_logic2.nodes.supplier.tools.naver_contact_enrichment import _fetch_page_text
 
 load_dotenv()
 
@@ -288,7 +288,7 @@ def search_all_with_detail(item_name, target_count=10, batch_size=5):
     try:
         from .naver_contact_enrichment import _extract_contacts_batch
     except ImportError:  # tools 폴더에서 직접 실행할 때
-        from naver_contact_enrichment import _extract_contacts_batch
+        from backend_logic2.nodes.supplier.tools.naver_contact_enrichment import _extract_contacts_batch
 
     candidates = search_all(item_name, target_count=target_count * 2)
 

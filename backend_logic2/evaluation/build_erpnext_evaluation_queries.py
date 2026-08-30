@@ -14,7 +14,7 @@ BACKEND_LOGIC2_DIR = EVALUATION_DIR.parent
 if str(BACKEND_LOGIC2_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_LOGIC2_DIR))
 
-from erp_client import erp_get  # noqa: E402
+from backend_logic2.integrations.erp_client import erp_get  # noqa: E402
 
 
 DEFAULT_OUTPUT = EVALUATION_DIR / "vendor_retrieval_queries.json"

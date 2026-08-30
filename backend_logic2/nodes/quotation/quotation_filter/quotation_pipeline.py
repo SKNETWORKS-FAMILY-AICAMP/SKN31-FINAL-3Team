@@ -29,9 +29,9 @@ try:
     from .quotation_registrar import register_supplier_quotation
     from .quotation_reviewer import load_rfq_requirements, review_quotation
 except ImportError:
-    from get_supplier_quotations import get_reviewable_quotations
-    from quotation_extractor import QuotationParser, classify_source, extract_quotation
-    from quotation_models import (
+    from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import get_reviewable_quotations
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import QuotationParser, classify_source, extract_quotation
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
         IssueSeverity,
         Quotation,
         QuotationReview,
@@ -42,9 +42,9 @@ except ImportError:
         dump_json,
         load_json,
     )
-    from quotation_ranker import rank_quotations
-    from quotation_registrar import register_supplier_quotation
-    from quotation_reviewer import load_rfq_requirements, review_quotation
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import rank_quotations
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import register_supplier_quotation
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import load_rfq_requirements, review_quotation
 
 
 RegistrationFn = Callable[[Quotation], dict[str, Any]]

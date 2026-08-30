@@ -24,14 +24,14 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.append(str(BACKEND_ROOT))
 
-from erp_client import ERPNextAPIError, erp_get, erp_get_one
+from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_get, erp_get_one
 
 try:
     from .quotation_models import Quotation
     from .quotation_reviewer import extract_specifications
 except ImportError:  # quotation_filter 폴더에서 직접 실행할 때
-    from quotation_models import Quotation
-    from quotation_reviewer import extract_specifications
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import Quotation
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import extract_specifications
 
 
 GetOne = Callable[[str, str], dict[str, Any] | None]

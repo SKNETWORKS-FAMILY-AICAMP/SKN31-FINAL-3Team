@@ -14,13 +14,10 @@ resolve_suppliers.py로 찾은 신규 후보들을 실제 ERPNext Supplier로 �
 실행: python nodes/register_candidate_suppliers.py
 """
 
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import html
 import requests
-from erp_client import erp_get_one, erp_post, ERPNextAPIError, SITE_URL, HEADERS
+from backend_logic2.integrations.erp_client import erp_get_one, erp_post, ERPNextAPIError, SITE_URL, HEADERS
 
 
 def _sanitize_name(name: str, max_length: int = 140) -> str:

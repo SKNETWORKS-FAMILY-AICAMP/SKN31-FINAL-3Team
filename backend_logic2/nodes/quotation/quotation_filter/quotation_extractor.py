@@ -43,7 +43,7 @@ try:
         load_json,
     )
 except ImportError:  # nodes 폴더에서 직접 실행할 때
-    from quotation_models import (
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
         Quotation,
         QuotationItem,
         QuotationSource,
@@ -899,7 +899,7 @@ def main() -> None:
         try:
             from .quotation_registrar import register_supplier_quotation
         except ImportError:  # quotation_filter 폴더에서 직접 실행할 때
-            from quotation_registrar import register_supplier_quotation
+            from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import register_supplier_quotation
         registration = register_supplier_quotation(quotation, dry_run=args.erp_dry_run)
         print(json.dumps(registration, ensure_ascii=False, indent=2, default=str))
 

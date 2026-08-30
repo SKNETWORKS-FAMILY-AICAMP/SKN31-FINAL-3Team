@@ -23,7 +23,7 @@ try:
         load_json,
     )
 except ImportError:
-    from quotation_models import (
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
         QuotationReview,
         RankedQuotation,
         RankingResult,

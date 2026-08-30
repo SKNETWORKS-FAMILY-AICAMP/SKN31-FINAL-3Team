@@ -201,7 +201,7 @@ def tavily_search_vendors(item_name, target_count=10, max_results_per_query=10):
     try:
         from .naver_contact_enrichment import enrich_contacts_batch
     except ImportError:  # tools 폴더에서 직접 실행할 때
-        from naver_contact_enrichment import enrich_contacts_batch
+        from backend_logic2.nodes.supplier.tools.naver_contact_enrichment import enrich_contacts_batch
 
     client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
     query_suffixes = ["공식 홈페이지", "제조 전문 주식회사", "납품 공급 업체"]

@@ -1,37 +1,35 @@
 """
-nodes/find_substitute_item.py — 대체품 추천 모듈 (전면 재설계)
+nodes/find_substitute.py — 대체품 추천 모듈
 
 find_duplicate_stock.py랑 다른 목적:
   - find_duplicate_stock: "이름만 다른 같은 물건" 찾기 (예: 장갑 == 장갑#103)
   - 이 모듈: "진짜 다른 물건인데, 변형(색상·규격 등)만 다르고 용도가 같아서
     대신 쓸 수 있는 것" 찾기
 
-⚠️ 예전 버전(description 완전일치/유사도 비교로 그룹화)은 폐기함 — 실제
-   데이터를 보니 모든 품목의 description이 다 고유해서(같은 물건도 치수·
-   중량 등이 조금씩 달라 완전일치가 안 됨) 그 접근 자체가 전제부터 틀렸음.
-   문자열 유사도로 "AI가 이해하는 것"을 흉내내려다 계속 오판(스펙 좋은 게
-   오히려 유사도 낮게 나오는 등)이 나서, 흉내내지 않고 AI한테 후보 전체를
-   통째로 보여주고 판단을 맡기는 방식으로 바꿈.
+핵심 최적화(병렬화, 정확도는 안 건드림):
+  ① 재고조회(Bin API)를 후보마다 순차로 부르던 것 -> ThreadPoolExecutor로 병렬화
+  ② MR 안에 품목이 여러 개면, find_substitute_items()를 품목마다 순차로
+     부르던 것 -> 이것도 병렬화 (품목끼리 서로 완전히 독립적인 조회라서)
 
-새 흐름:
+흐름:
   ① item_group + 핵심단어(AI 1번)로 후보를 넓게 가져옴
-  ② 재고 있는 것만 추림
+  ② 재고 있는 것만 추림 (병렬)
   ③ AI 1번 호출로 후보 전체(이름+설명+재고)를 보여주고, 실제로 대체
      가능한 것만 순위+이유와 함께 골라달라고 함
   → AI 호출은 총 2번으로 고정 (후보 개수와 무관)
 
 폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/이 파일
 
-실행: python nodes/find_substitute_item.py
+실행: python nodes/find_substitute.py
 """
 
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import re
-from erp_client import erp_get, erp_get_one
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from backend_logic2.integrations.erp_client import erp_get, erp_get_one
 
 
 def _strip_html(text: str) -> str:
@@ -91,12 +89,23 @@ def _get_last_purchase_rate(item_code):
     return None
 
 
+def _check_stock(candidate, qty_needed):
+    """후보 하나의 재고를 조회 (병렬실행용 단위작업)"""
+    bins = erp_get(
+        "Bin",
+        filters=[["item_code", "=", candidate["item_code"]], ["actual_qty", ">", 0]],
+        fields=["actual_qty"],
+    )
+    total_qty = sum(b["actual_qty"] for b in (bins or []))
+    if total_qty > qty_needed:
+        return {**candidate, "total_qty": total_qty}
+    return None
+
+
 def _ai_rank_substitutes(item_name, item_description, qty_needed, candidates, max_results=5):
     """
     후보 전체를 AI한테 한 번에 보여주고, 실제로 대체 가능한 것만 골라서
-    순위+이유를 매기게 함. 관련성 판단 + 순위 + 이유를 이 한 번의 호출로
-    다 처리함 (예전처럼 유사도 계산 → 임계값 필터 → 별도 최종검증, 이렇게
-    여러 단계로 흉내내지 않음).
+    순위+이유를 매기게 함.
 
     candidates: [{"item_code", "item_name", "description", "total_qty"}, ...]
     반환: [{"item_code", "rank", "reason"}, ...] (AI가 부적합하다고 판단한 건 아예 목록에서 뺌)
@@ -149,7 +158,7 @@ def _ai_rank_substitutes(item_name, item_description, qty_needed, candidates, ma
         cleaned = result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         return json.loads(cleaned).get("ranking", [])
     except Exception as e:
-        print(f"[_ai_rank_substitutes] AI 응답 파싱 실패: {e}")
+        print(f"    [_ai_rank_substitutes] AI 응답 파싱 실패: {e}")
         return []
 
 
@@ -158,7 +167,7 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
     특정 품목의 대체품 후보를 찾음.
 
     ① item_group(있으면) + 핵심단어로 후보를 넓게 가져옴
-    ② 재고 있는 것만 추림
+    ② 재고 있는 것만 추림 (병렬)
     ③ AI 1번 호출로 실제 대체가능한 것만 순위+이유 매겨서 반환
 
     반환: [{"item_code", "item_name", "description", "total_qty",
@@ -166,6 +175,7 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
     """
     item = erp_get_one("Item", item_code)
     if not item:
+        print(f"  [{item_code}] 품목 조회 실패")
         return []
 
     item_group = item.get("item_group")
@@ -173,14 +183,14 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
     item_description = item.get("description") or ""
     base = _get_core_keyword(item_name)  # AI 호출 1번째
 
-    print(f"\n[DEBUG] 요청품목: {item_name} | item_group: {item_group} | 핵심단어: '{base}'")
+    print(f"  [{item_code}] '{item_name}' | item_group: {item_group} | 핵심단어: '{base}'")
 
     # ① 후보 가져오기
     filters = [["item_name", "like", f"%{base}%"]]
     if item_group:
         filters.append(["item_group", "=", item_group])
     else:
-        print(f"  '{item_code}'에 item_group이 없어 이름 기준으로만 탐색합니다.")
+        print(f"    -> item_group 없어 이름 기준으로만 탐색")
 
     raw_candidates = erp_get(
         "Item",
@@ -188,27 +198,31 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
         fields=["item_code", "item_name", "description"],
     )
     raw_candidates = [c for c in (raw_candidates or []) if c["item_code"] != item_code]
-    print(f"[DEBUG] 후보 조회: {len(raw_candidates)}건")
+    print(f"    -> 후보 조회: {len(raw_candidates)}건 "
+          f"{[c['item_code'] for c in raw_candidates]}")
 
-    # ② 재고 있는 것만 추림
+    if not raw_candidates:
+        return []
+
+    # ② 재고 있는 것만 추림 (병렬)
     stocked_candidates = []
-    for c in raw_candidates:
-        bins = erp_get(
-            "Bin",
-            filters=[["item_code", "=", c["item_code"]], ["actual_qty", ">", 0]],
-            fields=["actual_qty"],
-        )
-        total_qty = sum(b["actual_qty"] for b in (bins or []))
-        if total_qty > qty_needed:
-            stocked_candidates.append({**c, "total_qty": total_qty})
-    print(f"[DEBUG] 재고가 요청량보다 많은 후보만 추린 후: {len(stocked_candidates)}건")
+    with ThreadPoolExecutor(max_workers=min(len(raw_candidates), 8) or 1) as executor:
+        futures = [executor.submit(_check_stock, c, qty_needed) for c in raw_candidates]
+        for f in as_completed(futures):
+            result = f.result()
+            if result is not None:
+                stocked_candidates.append(result)
+
+    print(f"    -> 재고가 요청량({qty_needed})보다 많은 후보: {len(stocked_candidates)}건 "
+          f"{[(c['item_code'], c['total_qty']) for c in stocked_candidates]}")
 
     if not stocked_candidates:
         return []
 
     # ③ AI 최종 판단 (호출 2번째)
     ranking = _ai_rank_substitutes(item_name, item_description, qty_needed, stocked_candidates, max_results)
-    print(f"[DEBUG] AI가 최종 선정한 대체품: {len(ranking)}건")
+    print(f"    -> AI 최종 선정 대체품: {len(ranking)}건 "
+          f"{[(r.get('item_code'), r.get('reason')) for r in ranking]}")
 
     candidates_by_code = {c["item_code"]: c for c in stocked_candidates}
     results = []
@@ -231,21 +245,31 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
     return results
 
 
+def _find_substitutes_for_line(line):
+    """MR 품목 한 줄에 대해 대체품 탐색 (병렬실행용 단위작업)"""
+    item_code = line["item_code"]
+    qty_needed = line["qty"]
+    substitutes = find_substitute_items(item_code, qty_needed)
+    return item_code, {"qty_needed": qty_needed, "substitutes": substitutes}
+
+
 def find_substitutes_for_mr(mr_name: str) -> dict:
-    """MR 안의 각 품목마다 find_substitute_items() 실행"""
+    """MR 안의 각 품목마다 find_substitute_items() 실행 (품목끼리 병렬)"""
     mr = erp_get_one("Material Request", mr_name)
     if not mr:
         return {}
 
-    results = {}
-    for line in mr.get("items", []):
-        item_code = line["item_code"]
-        qty_needed = line["qty"]
-        results[item_code] = {
-            "qty_needed": qty_needed,
-            "substitutes": find_substitute_items(item_code, qty_needed),
-        }
+    items = mr.get("items", [])
+    print(f"\n[대체품 탐색] '{mr_name}' 품목 {len(items)}건, 병렬 조회 시작")
 
+    results = {}
+    with ThreadPoolExecutor(max_workers=min(len(items), 8) or 1) as executor:
+        futures = [executor.submit(_find_substitutes_for_line, line) for line in items]
+        for f in as_completed(futures):
+            item_code, info = f.result()
+            results[item_code] = info
+
+    print(f"[대체품 탐색 완료] 총 {len(results)}개 품목 처리됨\n")
     return results
 
 
@@ -268,10 +292,9 @@ if __name__ == "__main__":
 
         for s in sorted(info["substitutes"], key=lambda x: x.get("rank") or 99):
             rate_disp = f"{s['last_rate']:,.0f}원" if s["last_rate"] is not None else "구매이력 없음"
-            fulfill_disp = "✅ 전량충족" if s["fulfills_full_qty"] else f"⚠️ 부분충족({s['total_qty']}개만 있음)"
+            fulfill_disp = "전량충족" if s["fulfills_full_qty"] else f"부분충족({s['total_qty']}개만 있음)"
 
-            print(f"\n  ─────────────────────────────")
-            print(f"  #{s['rank']} {s['item_name']} ({s['item_code']})")
+            print(f"\n  #{s['rank']} {s['item_name']} ({s['item_code']})")
             print(f"  재고: {s['total_qty']} | {fulfill_disp}")
             print(f"  최근단가: {rate_disp}")
             print(f"  AI 판단 이유: {s['reason']}")

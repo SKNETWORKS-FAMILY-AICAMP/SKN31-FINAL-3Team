@@ -14,12 +14,9 @@ nodes/create_and_send_rfq.py — 6번 모듈: RFQ 생성 + 발송
 실행: python nodes/create_and_send_rfq.py
 """
 
-import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import requests
-from erp_client import erp_get_one, erp_post, erp_submit, ERPNextAPIError, SITE_URL, HEADERS
+from backend_logic2.integrations.erp_client import erp_get_one, erp_post, erp_submit, ERPNextAPIError, SITE_URL, HEADERS
 
 DEFAULT_MESSAGE = (
     "견적 부탁드립니다.<br><br>"

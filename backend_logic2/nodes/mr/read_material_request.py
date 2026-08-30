@@ -5,9 +5,8 @@ material_request.py — Pending 상태인 Material Request 목록 조회
 """
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
  
-from erp_client import erp_get
+from backend_logic2.integrations.erp_client import erp_get
 
 def get_pending_material_requests():
     """

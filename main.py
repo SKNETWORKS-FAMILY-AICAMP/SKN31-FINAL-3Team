@@ -13,7 +13,7 @@ load_dotenv(dotenv_path=ENV_FILE)
 
 from auth_service.dependencies import CurrentUser, require_authenticated_user
 from auth_service.router import router as auth_router
-from backend_logic2.erp_client import (
+from backend_logic2.integrations.erp_client import (
     ERPNextAPIError,
     get_stock_level,
     router as purchase_router,
