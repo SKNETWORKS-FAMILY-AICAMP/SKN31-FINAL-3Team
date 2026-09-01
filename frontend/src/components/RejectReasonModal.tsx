@@ -4,7 +4,7 @@ import { X, AlertCircle } from 'lucide-react';
 interface RejectReasonModalProps {
   title: string;
   itemNo: string;
-  onConfirm: (reason: string) => void;
+  onConfirm: (reason: string) => void | Promise<void>;
   onClose: () => void;
 }
 
@@ -15,14 +15,24 @@ export const RejectReasonModal: React.FC<RejectReasonModalProps> = ({
   onClose,
 }) => {
   const [reason, setReason] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!reason.trim()) {
       alert('반려 사유를 입력해주세요.');
       return;
     }
-    onConfirm(reason);
+    setIsSubmitting(true);
+    setSubmitError(null);
+    try {
+      await onConfirm(reason.trim());
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : '반려 사유 저장에 실패했습니다.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -51,14 +61,17 @@ export const RejectReasonModal: React.FC<RejectReasonModalProps> = ({
                 style={{ resize: 'vertical' }}
                 autoFocus
               />
+              {submitError && (
+                <span style={{ color: '#FCA5A5', fontSize: '12px' }}>{submitError}</span>
+              )}
             </div>
           </div>
 
           <div className="modal-footer">
-            <button type="button" className="btn-outline" onClick={onClose}>
+            <button type="button" className="btn-outline" onClick={onClose} disabled={isSubmitting}>
               취소
             </button>
-            <button type="submit" className="btn-reject">
+            <button type="submit" className="btn-reject" disabled={isSubmitting}>
               반려 확정 처리
             </button>
           </div>

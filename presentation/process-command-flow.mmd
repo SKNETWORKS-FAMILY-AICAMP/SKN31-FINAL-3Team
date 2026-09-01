@@ -1,0 +1,108 @@
+flowchart TD
+    START((START)) --> ROUTE["route_entrypoint_command"]
+
+    ROUTE -->|일반 시작| INSPECT["inspect_mr_command"]
+    ROUTE -->|supplier_approval 복구| SUPPLIER_APPROVAL
+    ROUTE -->|create_rfq 복구| CREATE_RFQ
+    ROUTE -->|create_po 복구| CREATE_PO
+
+    INSPECT --> ANOMALY{"MR 이상 있음?"}
+    ANOMALY -->|예| MR_APPROVAL["mr_approval_command<br/>사람 승인 대기"]
+    ANOMALY -->|아니오| SUBSTITUTE["find_substitutes_command<br/>대체품 탐색"]
+    SUBSTITUTE -->|결과 State 저장| MR_APPROVAL
+
+    MR_APPROVAL --> MR_DECISION{"승인 입력 검증"}
+    MR_DECISION -->|잘못된 입력| MR_APPROVAL
+    MR_DECISION -->|반려 사유 없음| MR_APPROVAL
+    MR_DECISION -->|반려| MR_REJECT["MR Comment 등록<br/>Draft 폐기<br/>status = rejected"]
+    MR_DECISION -->|승인| MR_SUBMIT["ERPNext MR Submit<br/>status = deciding_bidding"]
+    MR_REJECT --> END_REJECT((END))
+    MR_SUBMIT --> BIDDING["decide_bidding_command"]
+
+    BIDDING --> BIDDING_RESULT{"비딩 대상 품목 있음?"}
+    BIDDING_RESULT -->|없음| CATALOG["status = catalog_purchase_required<br/>별도 카탈로그 구매 필요"]
+    BIDDING_RESULT -->|있음| RESOLVE["resolve_suppliers_command"]
+    CATALOG --> END_CATALOG((END))
+
+    RESOLVE --> MR_EXISTS{"MR 조회 성공?"}
+    MR_EXISTS -->|실패| HUMAN_REVIEW_1["status = human_review<br/>MR 조회 오류"]
+    MR_EXISTS -->|성공| ITEM_SUPPLIER{"품목별 기존 공급사 있음?"}
+    ITEM_SUPPLIER -->|있음| EXISTING["ERPNext 기존 공급사<br/>후보 목록에 추가"]
+    ITEM_SUPPLIER -->|없음| SEARCH["외부 공급사 탐색<br/>나라장터 → Tavily · Naver"]
+    EXISTING --> COLLECT{"전체 후보 존재?"}
+    SEARCH --> COLLECT
+    COLLECT -->|없음| HUMAN_REVIEW_2["status = human_review<br/>공급사 확보 실패"]
+    COLLECT -->|있음| SUPPLIER_APPROVAL["supplier_approval_command<br/>사람 승인 대기"]
+    HUMAN_REVIEW_1 --> END_HR1((END))
+    HUMAN_REVIEW_2 --> END_HR2((END))
+
+    SUPPLIER_APPROVAL --> SUPPLIER_INPUT{"공급사 선택 검증"}
+    SUPPLIER_INPUT -->|선택값 오류| SUPPLIER_APPROVAL
+    SUPPLIER_INPUT -->|이메일 누락| SUPPLIER_APPROVAL
+    SUPPLIER_INPUT -->|Supplier 등록 실패| SUPPLIER_APPROVAL
+    SUPPLIER_INPUT -->|검증 통과| REGISTER["선택 공급사만<br/>ERPNext 등록"]
+    REGISTER --> CREATE_RFQ["create_rfq_command"]
+
+    CREATE_RFQ --> RFQ_RESULT{"RFQ 생성 결과"}
+    RFQ_RESULT -->|생성 실패| HUMAN_REVIEW_3["status = human_review<br/>RFQ 처리 실패"]
+    RFQ_RESULT -->|Draft만 생성| RFQ_DRAFT["status = rfq_draft_created"]
+    RFQ_RESULT -->|Submit 성공| DEADLINE["quotation_deadline_command<br/>견적 처리 입력 대기"]
+    HUMAN_REVIEW_3 --> END_HR3((END))
+    RFQ_DRAFT --> END_DRAFT((END))
+
+    DEADLINE --> PROCESS_INPUT{"action = process?"}
+    PROCESS_INPUT -->|아니오| DEADLINE
+    PROCESS_INPUT -->|예| MANIFEST{"Manifest 유효?"}
+    MANIFEST -->|JSON/구조 오류| DEADLINE
+    MANIFEST -->|공급사명 누락| DEADLINE
+    MANIFEST -->|유효| PIPELINE["Quotation Pipeline"]
+
+    subgraph QUOTATION_PIPELINE["견적 처리 파이프라인"]
+        PIPELINE --> EXTRACT["외부 견적 추출<br/>PDF · 이미지 · Excel · E-mail · Text"]
+        EXTRACT --> ERP_REGISTER["외부 견적을 ERPNext<br/>Supplier Quotation Draft로 등록"]
+        ERP_REGISTER --> FETCH_ALL["RFQ 관련 전체 견적 재조회"]
+        FETCH_ALL --> REVIEW["필수값 · 수량 · 산식 · 규격 검증"]
+        REVIEW --> RANK["총금액 → 납기 기준<br/>Top-K 정렬"]
+    end
+
+    RANK --> FINAL["final_selection_command"]
+    FINAL --> RECOMMENDED{"추천 견적 있음?"}
+    RECOMMENDED -->|없음| HUMAN_REVIEW_4["status = human_review<br/>선정 가능한 견적 없음"]
+    RECOMMENDED -->|있음| FINAL_INTERRUPT["사람의 최종 공급사 선택 대기"]
+    FINAL_INTERRUPT --> ALLOWED{"추천 목록의 공급사?"}
+    ALLOWED -->|아니오| FINAL
+    ALLOWED -->|예| CREATE_PO["create_po_command"]
+    HUMAN_REVIEW_4 --> END_HR4((END))
+
+    CREATE_PO --> PO_RESULT{"PO 처리 결과"}
+    PO_RESULT -->|처리 중단| HUMAN_REVIEW_5["status = human_review"]
+    PO_RESULT -->|성공| COMPLETED["PO 생성 · Submit · 이메일<br/>status = completed"]
+    HUMAN_REVIEW_5 --> END_HR5((END))
+    COMPLETED --> END_SUCCESS((END))
+
+    subgraph LEGACY["현재 process_graph에 미등록된 신규 Item 승인 함수"]
+        CHECK_ITEM["check_item_approval_command"] --> ITEM_PENDING{"비활성 Item 있음?"}
+        ITEM_PENDING -->|없음| LEGACY_INSPECT["inspect_mr로 이동 예정"]
+        ITEM_PENDING -->|있음| ITEM_APPROVAL["item_approval_command<br/>사람 승인 대기"]
+        ITEM_APPROVAL --> ITEM_DECISION{"승인 / 반려"}
+        ITEM_DECISION -->|잘못된 입력| ITEM_APPROVAL
+        ITEM_DECISION -->|반려| LEGACY_END((END))
+        ITEM_DECISION -->|승인| ACTIVATE["Item disabled = 0"]
+        ACTIVATE --> LEGACY_INSPECT
+    end
+
+    classDef startEnd fill:#143d73,color:#fff,stroke:#143d73;
+    classDef human fill:#fff4d6,stroke:#e3a008,color:#513800;
+    classDef process fill:#eaf3ff,stroke:#2563a7,color:#102a43;
+    classDef decision fill:#fff,stroke:#6b7280,color:#111827;
+    classDef error fill:#ffe8e8,stroke:#d64545,color:#7f1d1d;
+    classDef success fill:#e8f7ec,stroke:#2f855a,color:#14532d;
+    classDef legacy fill:#f2f2f2,stroke:#888,stroke-dasharray: 5 5;
+
+    class START,END_REJECT,END_CATALOG,END_HR1,END_HR2,END_HR3,END_DRAFT,END_HR4,END_HR5,END_SUCCESS,LEGACY_END startEnd;
+    class MR_APPROVAL,SUPPLIER_APPROVAL,DEADLINE,FINAL_INTERRUPT human;
+    class ROUTE,INSPECT,SUBSTITUTE,MR_SUBMIT,BIDDING,RESOLVE,EXISTING,SEARCH,REGISTER,CREATE_RFQ,PIPELINE,EXTRACT,ERP_REGISTER,FETCH_ALL,REVIEW,RANK,FINAL,CREATE_PO process;
+    class ANOMALY,MR_DECISION,BIDDING_RESULT,MR_EXISTS,ITEM_SUPPLIER,COLLECT,SUPPLIER_INPUT,RFQ_RESULT,PROCESS_INPUT,MANIFEST,RECOMMENDED,ALLOWED,PO_RESULT,ITEM_PENDING,ITEM_DECISION decision;
+    class HUMAN_REVIEW_1,HUMAN_REVIEW_2,HUMAN_REVIEW_3,HUMAN_REVIEW_4,HUMAN_REVIEW_5,MR_REJECT error;
+    class COMPLETED success;
+    class CHECK_ITEM,ITEM_APPROVAL,LEGACY_INSPECT,ACTIVATE legacy;

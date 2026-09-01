@@ -20,6 +20,9 @@ from backend_logic2.integrations.erp_client import (
     get_stock_level,
     router as purchase_router,
 )
+from backend_logic2.nodes.mr.reject_material_request import (
+    router as material_request_router,
+)
 
 
 app = FastAPI(title="SKN31 Purchasing Agent API")
@@ -48,6 +51,10 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(
     purchase_router,
+    dependencies=[Depends(require_authenticated_user)],
+)
+app.include_router(
+    material_request_router,
     dependencies=[Depends(require_authenticated_user)],
 )
 
