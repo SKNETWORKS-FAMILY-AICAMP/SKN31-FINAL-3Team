@@ -62,8 +62,29 @@ export function App() {
     showToast('MR 요청 승인이 성공적으로 완료되었습니다.');
   };
 
-  const handleConfirmReject = (reason: string) => {
+  const handleConfirmReject = async (reason: string) => {
     if (!rejectingItem) return;
+
+    const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+    const accessToken = localStorage.getItem('access_token');
+    const response = await fetch(
+      `${apiBaseUrl}/purchase/material-requests/${encodeURIComponent(rejectingItem.mrNo)}/rejection-comment`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({ reason }),
+      }
+    );
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.detail ?? '반려 사유 저장에 실패했습니다.');
+    }
+
+    // 화면의 검토 결과만 갱신하며 ERPNext MR 문서는 Draft로 유지된다.
     setRequests((prev) =>
       prev.map((r) =>
         r.id === rejectingItem.id ? { ...r, status: '반려', rejectReason: reason } : r
