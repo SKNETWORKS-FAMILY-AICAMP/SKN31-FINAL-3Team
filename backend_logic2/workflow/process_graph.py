@@ -1,9 +1,22 @@
 """Compiled LangGraph for the backend_logic2 purchasing process.
 
-주의: 8단계(check_mr_item+substitute_selection, decide_bidding_choice,
+전체 9단계(check_mr_item+substitute_selection, decide_bidding_choice,
 resolve_suppliers_choice, search_new_suppliers, select_rfq_targets,
-create_rfq, check_quotations, final_selection)까지 등록됨. 다음 단계
-(PO 생성+발송) 합의되면 add_node로 이어서 추가할 예정.
+create_rfq, check_quotations, final_selection, create_po) 등록 완료
+(2026-08-31, PO 생성+발송 추가).
+
+케이스 상태이력 로깅(2026-08-31 추가): 노드 함수들(process_commands.py)이
+전부 Command(update={"status": ..., ...}, goto=...) 형태로 통일돼 있는
+걸 이용해서, 각 노드 함수 내부를 일일이 고치는 대신 여기 노드 등록
+시점에 _with_status_log()로 감싸서 "이전상태 -> 새상태" 전이를
+case_status_history에 자동으로 남김. 새 노드(PO 생성 등)가 추가돼도
+add_node를 이 wrapper로 감싸기만 하면 자동으로 로깅 대상에 포함됨.
+
+interrupt()로 사람 입력을 기다리며 멈추는 노드(substitute_selection,
+select_rfq_targets, check_quotations, final_selection)는 멈추는 시점엔
+LangGraph가 예외를 던져서 함수가 끝까지 실행이 안 되고 멈추므로(정상
+동작), 그때는 로깅도 자동으로 건너뛰어짐 - 사람이 답을 줘서 resume되고
+함수가 끝까지 실행돼 실제 Command를 반환하는 시점에만 로깅됨.
 """
 
 from __future__ import annotations
@@ -19,6 +32,7 @@ from .process_commands import (
     PurchaseProcessState,
     check_mr_item_command,
     check_quotations_command,
+    create_po_command,
     create_rfq_command,
     decide_bidding_choice_command,
     final_selection_command,
@@ -30,18 +44,50 @@ from .process_commands import (
 )
 
 
+def _with_status_log(node_name: str, fn):
+    """
+    노드 함수 하나를 감싸서, 실행 전/후 state["status"]를 비교해
+    case_status_history에 자동 기록. state["case_id"]가 없으면(케이스
+    없이 도는 상황) 조용히 스킵 - case_logging.log_status_change 자체가
+    case_id=None을 안전하게 허용함.
+    """
+    from functools import wraps
+
+    @wraps(fn)
+    def wrapper(state: Any) -> Any:
+        from backend_logic2.nodes.supplier.tools.case_logging import log_status_change
+
+        from_status = state.get("status")
+        cmd = fn(state)
+
+        update = getattr(cmd, "update", None) or {}
+        case_id = update.get("case_id") or state.get("case_id")
+        to_status = update.get("status")
+        if case_id and to_status:
+            reason = update.get("error") or f"[{node_name}] 처리 완료"
+            log_status_change(case_id, to_status, reason=reason, from_status=from_status)
+
+        return cmd
+
+    return wrapper
+
+
 def build_process_graph(*, checkpointer: Any = None):
     graph = StateGraph(PurchaseProcessState)
-    graph.add_node("route_entrypoint", route_entrypoint_command)
-    graph.add_node("check_mr_item", check_mr_item_command)
-    graph.add_node("substitute_selection", substitute_selection_command)
-    graph.add_node("decide_bidding_choice", decide_bidding_choice_command)
-    graph.add_node("resolve_suppliers_choice", resolve_suppliers_choice_command)
-    graph.add_node("search_new_suppliers", search_new_suppliers_command)
-    graph.add_node("select_rfq_targets", select_rfq_targets_command)
-    graph.add_node("create_rfq", create_rfq_command)
-    graph.add_node("check_quotations", check_quotations_command)
-    graph.add_node("final_selection", final_selection_command)
+    graph.add_node("route_entrypoint", _with_status_log("route_entrypoint", route_entrypoint_command))
+    graph.add_node("check_mr_item", _with_status_log("check_mr_item", check_mr_item_command))
+    graph.add_node("substitute_selection", _with_status_log("substitute_selection", substitute_selection_command))
+    graph.add_node("decide_bidding_choice", _with_status_log("decide_bidding_choice", decide_bidding_choice_command))
+    graph.add_node(
+        "resolve_suppliers_choice",
+        _with_status_log("resolve_suppliers_choice", resolve_suppliers_choice_command),
+    )
+    graph.add_node("search_new_suppliers", _with_status_log("search_new_suppliers", search_new_suppliers_command))
+    graph.add_node("select_rfq_targets", _with_status_log("select_rfq_targets", select_rfq_targets_command))
+    graph.add_node("create_rfq", _with_status_log("create_rfq", create_rfq_command))
+    graph.add_node("check_quotations", _with_status_log("check_quotations", check_quotations_command))
+    graph.add_node("final_selection", _with_status_log("final_selection", final_selection_command))
+    graph.add_node("create_po", _with_status_log("create_po", create_po_command))
     graph.add_edge(START, "route_entrypoint")
     return graph.compile(checkpointer=checkpointer)
 

@@ -1,62 +1,48 @@
 """
-nodes/decide_bidding.py — 3번 모듈: 이 MR 품목이 비딩(경쟁견적) 대상인지 판별
-
-기준 (하나라도 만족하면 비딩 필요 — OR조건):
-  1. 금액 ≥ 20,000,000원 (과거 거래이력이 있으면 가장 최근 단가로 계산.
-     이력이 없으면 계산 자체가 불가능한데, 그 경우는 아래 2번 기준이 대신 잡아줌)
-  2. 신규거래 — 이 품목을 과거에 한 번도 구매한 적 없음
-  3. 구매주기 불규칙 — 과거 주문 3건 이상 & 주문간격 변동계수(CV) ≥ 0.5
-  4. 수량 ≥ 2,000개
-
-핵심 최적화(병렬화, 판정기준은 안 건드림):
-  ① 과거 PO 상세조회(erp_get_one)를 PO건마다 순차로 부르던 것
-     -> ThreadPoolExecutor로 병렬화
-  ② MR 안에 품목이 여러 개면, 품목마다 순차로 판정하던 것도 병렬화
-     (품목끼리 서로 완전히 독립적인 조회라서)
-
-폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/이 파일
-
-실행: python nodes/decide_bidding.py
+nodes/mr/decide_bidding.py - MR 품목별 비딩(경쟁견적) 필요 여부 룰 기반 판정
+우선순위: 1. 신규거래 -> 2. 제조사 직거래 -> 3. 긴급발주 -> 4. 고액구매 -> 5. 구매패턴 분석
+실행: python -m backend_logic2.nodes.mr.decide_bidding
 """
 
-import sys
-import os
-
 import statistics
-from datetime import datetime
+from datetime import datetime, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from backend_logic2.integrations.erp_client import erp_get, erp_get_one
 
-AMOUNT_THRESHOLD = 20_000_000       # 금액 기준(원)
-QUANTITY_THRESHOLD = 2_000          # 수량 기준(개)
-IRREGULAR_CV_THRESHOLD = 0.5        # 주문간격 변동계수 기준
-MIN_ORDERS_FOR_IRREGULARITY = 3     # 불규칙성 판단에 필요한 최소 과거 주문 건수
+# 비딩 정책 설정값
+AMOUNT_THRESHOLD = 20_000_000
+MIN_ORDERS_FOR_PATTERN = 3
+IRREGULAR_CV_THRESHOLD = 0.5
+CYCLE_OVERDUE_MULTIPLIER = 1.5
+INACTIVE_MONTHS = 12
+URGENT_LEAD_TIME_DAYS = 7
+
+
+def _parse_date(value):
+    if not value:
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.date() if isinstance(value, datetime) else value
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
 
 
 def _fetch_po_line(order, item_code):
-    """PO 한 건에서 이 품목의 라인(날짜+단가) 추출 (병렬실행용 단위작업)"""
     po_doc = erp_get_one("Purchase Order", order["name"])
-    for item_line in po_doc.get("items", []):
-        if item_line["item_code"] == item_code:
-            return {"date": order["transaction_date"], "rate": item_line.get("rate") or 0}
+    if not po_doc:
+        return None
+    for item in po_doc.get("items", []):
+        if item.get("item_code") == item_code:
+            return {"date": order["transaction_date"], "rate": item.get("rate") or 0}
     return None
 
 
 def _get_past_purchases(item_code):
-    """
-    이 품목의 과거 확정 구매(Purchase Order) 이력을 오래된순으로 가져옴
-    (PO 상세조회는 병렬). 날짜뿐 아니라 단가(rate)도 같이 가져와서,
-    신규거래·불규칙성·금액추정 3가지 판단에 이 함수 하나만 재사용함
-    (API 호출 중복 방지).
-
-    반환: [{"date": "YYYY-MM-DD", "rate": 숫자}, ...] (오래된순)
-    """
     orders = erp_get(
         "Purchase Order",
-        filters=[
-            ["Purchase Order Item", "item_code", "=", item_code],
-            ["docstatus", "=", 1],
-        ],
+        filters=[["Purchase Order Item", "item_code", "=", item_code], ["docstatus", "=", 1]],
         fields=["name", "transaction_date"],
     )
     if not orders:
@@ -64,88 +50,143 @@ def _get_past_purchases(item_code):
 
     purchases = []
     with ThreadPoolExecutor(max_workers=min(len(orders), 8) or 1) as executor:
-        futures = [executor.submit(_fetch_po_line, o, item_code) for o in orders]
-        for f in as_completed(futures):
-            result = f.result()
-            if result is not None:
-                purchases.append(result)
+        futures = [executor.submit(_fetch_po_line, order, item_code) for order in orders]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                purchases.append(res)
 
-    purchases.sort(key=lambda p: p["date"])
+    purchases.sort(key=lambda p: _parse_date(p["date"]))
     return purchases
 
 
-def _is_new_transaction(purchases):
-    """과거 구매이력이 아예 한 번도 없으면 신규거래로 판단"""
-    return len(purchases) == 0
+def _analyze_purchase_pattern(purchases):
+    empty_res = {"enough_history": False, "irregular": None, "cv": None, "average_interval_days": None}
+    if len(purchases) < MIN_ORDERS_FOR_PATTERN:
+        return empty_res
+
+    dates = [_parse_date(p["date"]) for p in purchases]
+    intervals = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
+    if not intervals:
+        return empty_res
+
+    avg_interval = statistics.mean(intervals)
+    if avg_interval <= 0:
+        return empty_res
+
+    cv = statistics.stdev(intervals) / avg_interval if len(intervals) > 1 else 0
+    return {
+        "enough_history": True,
+        "irregular": cv >= IRREGULAR_CV_THRESHOLD,
+        "cv": cv,
+        "average_interval_days": avg_interval,
+    }
 
 
-def _is_irregular_interval(purchases):
-    """
-    과거 주문이 3건 이상 있을 때만 판단.
-    주문 간격(일수)들의 변동계수(CV = 표준편차/평균)가 기준 이상이면 불규칙.
-    """
-    if len(purchases) < MIN_ORDERS_FOR_IRREGULARITY:
-        return False
-
-    date_objs = [datetime.strptime(p["date"], "%Y-%m-%d") for p in purchases]
-    intervals = [(date_objs[i + 1] - date_objs[i]).days for i in range(len(date_objs) - 1)]
-
-    if not intervals or statistics.mean(intervals) == 0:
-        return False
-
-    cv = statistics.stdev(intervals) / statistics.mean(intervals) if len(intervals) > 1 else 0
-    return cv >= IRREGULAR_CV_THRESHOLD
-
-
-def _estimate_amount(purchases, qty):
-    """과거 거래이력이 있으면 가장 최근(마지막) 단가로 금액 추정. 없으면 0
-    (이 경우는 신규거래 기준이 대신 비딩 필요로 잡아줌)"""
+def _days_since_last_purchase(purchases):
     if not purchases:
-        return 0
-    latest_rate = purchases[-1]["rate"]
-    return qty * latest_rate
+        return None
+    last_date = _parse_date(purchases[-1]["date"])
+    return (date.today() - last_date).days if last_date else None
+
+
+def _normalize_name(value):
+    return str(value).strip().casefold() if value else ""
+
+
+def _find_brand_supplier(item):
+    brand = item.get("brand")
+    if not brand:
+        return None
+
+    normalized_brand = _normalize_name(brand)
+    for row in item.get("supplier_items") or []:
+        supplier_name = row.get("supplier")
+        if supplier_name and _normalize_name(supplier_name) == normalized_brand:
+            return supplier_name
+    return None
 
 
 def _decide_one_item(line):
-    """MR 품목 한 줄에 대해 비딩필요 여부 판정 (병렬실행용 단위작업)"""
-    item_code = line["item_code"]
-    qty = line["qty"]
-
+    item_code, qty = line["item_code"], line["qty"]
     print(f"  [{item_code}] 판정 시작 (요청수량: {qty})")
+
+    item = erp_get_one("Item", item_code) or {}
     purchases = _get_past_purchases(item_code)
     print(f"    -> 과거 확정구매 이력: {len(purchases)}건")
 
-    reasons = []
+    # 1. 신규거래
+    if not purchases:
+        reason = "신규거래(과거 구매이력 없음)"
+        print(f"    -> 판정: 비딩 필요 | {reason}")
+        return item_code, {"needs_bidding": True, "reasons": [reason]}
 
-    amount = _estimate_amount(purchases, qty)
-    if amount >= AMOUNT_THRESHOLD:
-        reasons.append(f"금액 {amount:,.0f}원 ≥ 기준({AMOUNT_THRESHOLD:,}원)")
+    # 2. 제조사 직거래 (Brand == Supplier)
+    brand_supplier = _find_brand_supplier(item)
+    if brand_supplier:
+        reason = f"제조사 직거래 (Brand '{item.get('brand')}' = Supplier '{brand_supplier}')"
+        print(f"    -> 판정: 비딩 불필요 | {reason}")
+        return item_code, {"needs_bidding": False, "reasons": [reason], "direct_supplier": brand_supplier}
 
-    if qty >= QUANTITY_THRESHOLD:
-        reasons.append(f"수량 {qty}개 ≥ 기준({QUANTITY_THRESHOLD}개)")
+    # 3. 긴급발주
+    schedule_date = _parse_date(line.get("schedule_date"))
+    remaining_days = (schedule_date - date.today()).days if schedule_date else None
 
-    if _is_new_transaction(purchases):
-        reasons.append("신규거래(과거 구매이력 없음)")
-
-    if _is_irregular_interval(purchases):
-        reasons.append(f"구매주기 불규칙(변동계수 ≥ {IRREGULAR_CV_THRESHOLD})")
-
-    needs_bidding = len(reasons) > 0
-    if needs_bidding:
-        print(f"    -> 판정: 비딩 필요 | 사유: {', '.join(reasons)}")
+    if remaining_days is not None:
+        print(f"    -> 납기일까지 남은 기간: {remaining_days}일")
+        if remaining_days <= URGENT_LEAD_TIME_DAYS:
+            reason = f"긴급발주 (납기까지 {remaining_days}일, 긴급 기준 {URGENT_LEAD_TIME_DAYS}일 이하)"
+            print(f"    -> 판정: 비딩 불필요 | {reason}")
+            return item_code, {"needs_bidding": False, "reasons": [reason]}
     else:
-        print(f"    -> 판정: 카탈로그(비딩 불필요) | 4개 기준 다 미달"
-              f" (추정금액 {amount:,.0f}원 < {AMOUNT_THRESHOLD:,}원, "
-              f"수량 {qty}개 < {QUANTITY_THRESHOLD}개, 기존거래 있음, 구매주기 규칙적)")
+        print("    -> 납기일 정보 없음: 긴급발주 판단 생략")
 
-    return item_code, {"needs_bidding": needs_bidding, "reasons": reasons}
+    # 4. 고액구매
+    amount = qty * (purchases[-1].get("rate") or 0)
+    print(f"    -> 최근단가 기준 예상금액: {amount:,.0f}원")
+    if amount >= AMOUNT_THRESHOLD:
+        reason = f"고액구매 ({amount:,.0f}원 ≥ {AMOUNT_THRESHOLD:,}원)"
+        print(f"    -> 판정: 비딩 필요 | {reason}")
+        return item_code, {"needs_bidding": True, "reasons": [reason]}
+
+    # 5. 구매패턴 분석
+    pattern = _analyze_purchase_pattern(purchases)
+    days_since_last = _days_since_last_purchase(purchases)
+
+    if pattern["enough_history"]:
+        cv, avg_interval = pattern["cv"], pattern["average_interval_days"]
+        print(f"    -> 평균 구매주기: {avg_interval:.1f}일 | CV: {cv:.3f}")
+
+        if pattern["irregular"]:
+            reason = f"구매주기 불규칙 (CV {cv:.2f} ≥ {IRREGULAR_CV_THRESHOLD})"
+            print(f"    -> 판정: 비딩 필요 | {reason}")
+            return item_code, {"needs_bidding": True, "reasons": [reason]}
+
+        allowed_days = avg_interval * CYCLE_OVERDUE_MULTIPLIER
+        print(f"    -> 구매주기 규칙적 | 마지막 구매 후 {days_since_last}일 경과 (허용: {allowed_days:.1f}일)")
+
+        if days_since_last and days_since_last > allowed_days:
+            reason = f"정상 구매주기 초과 (마지막 구매 후 {days_since_last}일, 허용 {allowed_days:.0f}일)"
+            print(f"    -> 판정: 비딩 필요 | {reason}")
+            return item_code, {"needs_bidding": True, "reasons": [reason]}
+
+        reason = "기존 저액거래 + 구매주기 규칙적 + 정상 구매시점"
+        print(f"    -> 판정: 비딩 불필요 | {reason}")
+        return item_code, {"needs_bidding": False, "reasons": [reason]}
+
+    # 구매이력 부족 (N건 미만)
+    print(f"    -> 구매패턴 판단 이력 부족 ({len(purchases)}건 < {MIN_ORDERS_FOR_PATTERN}건)")
+    if days_since_last and days_since_last > (INACTIVE_MONTHS * 30.44):
+        reason = f"장기 미거래 (마지막 거래 후 {INACTIVE_MONTHS}개월 이상)"
+        print(f"    -> 판정: 비딩 필요 | {reason}")
+        return item_code, {"needs_bidding": True, "reasons": [reason]}
+
+    reason = f"구매이력은 부족하지만 마지막 거래가 {INACTIVE_MONTHS}개월 이내"
+    print(f"    -> 판정: 비딩 불필요 | {reason}")
+    return item_code, {"needs_bidding": False, "reasons": [reason]}
 
 
 def decide_bidding(mr_name):
-    """
-    MR 안의 각 품목마다 비딩이 필요한지 판단 (품목끼리 병렬).
-    반환: {item_code: {"needs_bidding": bool, "reasons": [...]}}
-    """
     mr = erp_get_one("Material Request", mr_name)
     if not mr:
         return {}
@@ -156,13 +197,12 @@ def decide_bidding(mr_name):
     results = {}
     with ThreadPoolExecutor(max_workers=min(len(items), 8) or 1) as executor:
         futures = [executor.submit(_decide_one_item, line) for line in items]
-        for f in as_completed(futures):
-            item_code, info = f.result()
+        for future in as_completed(futures):
+            item_code, info = future.result()
             results[item_code] = info
 
     bidding_count = sum(1 for info in results.values() if info["needs_bidding"])
     print(f"[비딩판정 완료] 총 {len(results)}개 품목 중 {bidding_count}개 비딩 필요\n")
-
     return results
 
 
@@ -174,7 +214,7 @@ if __name__ == "__main__":
         print("해당 MR을 찾을 수 없거나 품목이 없습니다.")
 
     for item_code, info in results.items():
-        status = "비딩 필요" if info["needs_bidding"] else "비딩 불필요 (카탈로그 등 기존절차)"
+        status = "비딩 필요" if info["needs_bidding"] else "비딩 불필요"
         print(f"\n[{item_code}] {status}")
-        for r in info["reasons"]:
-            print(f"  - {r}")
+        for reason in info["reasons"]:
+            print(f"  - {reason}")

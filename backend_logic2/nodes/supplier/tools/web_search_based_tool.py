@@ -92,6 +92,10 @@ _BLACKLISTED_DOMAINS = [
     "kin.naver.com", "tistory.com", "velog.io", "brunch.co.kr",
     "youtube.com", "instagram.com", "facebook.com", "dcinside.com",
     "clien.net",
+    # 2026-08-31 추가: '오일씰' 테스트에서 회사 홈페이지 자리에
+    # 백과사전 페이지가 잡힌 게 확인됨 (naver_contact_enrichment.py의
+    # _EXCLUDED_CONTACT_DOMAINS와 동일 사유로 추가)
+    "grandculture.net", "myfactory.co.kr",
 ]
 
 
@@ -151,7 +155,7 @@ def _filter_corporate_results(item_name, results):
         return results
 
 
-def _extract_company_names_llm(item_name, text):
+def _extract_company_names_llm(item_name, text, case_id=None):
     """
     Tavily 검색결과 텍스트 뭉치에서 "회사명"만 뽑아냄 (연락처는 신경 안 씀).
     Tavily 스니펫이 너무 짧아서(실측 88~122자) 연락처까지 한 번에 뽑는 건
@@ -179,29 +183,41 @@ def _extract_company_names_llm(item_name, text):
 
     try:
         cleaned = result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        return json.loads(cleaned).get("company_names", [])
+        names = json.loads(cleaned).get("company_names", [])
     except Exception as e:
         print(f"    [_extract_company_names_llm 파싱 실패] {e}")
-        return []
+        names = []
+
+    try:
+        from .case_logging import log_ai_decision
+    except ImportError:
+        from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
+    reason = f"'{item_name}' Tavily 검색결과 텍스트에서 회사명 {len(names)}개 추출: {names}"
+    log_ai_decision(case_id, "company_name_extraction", reason=reason)
+
+    return names
 
 
-def tavily_search_vendors(item_name, target_count=10, max_results_per_query=10):
+def tavily_collect_candidate_names(item_name, target_count=10, max_results_per_query=10, case_id=None):
     """
-    2순위(최후 폴백): 검색어 3개(대량구매/조달업체/납품업체)를 병렬로
-    Tavily 검색한 다음, 그 원본 결과를 전부 하나로 합쳐서 필터+회사명
-    추출을 딱 1번씩만 돌림 (이전엔 검색어마다 따로 돌려서 필터AI 3번+
-    추출AI 3번 = 6번이었는데, 이제 합쳐서 2번).
+    검색어 3개(공식 홈페이지/제조 전문 주식회사/납품 공급 업체)를 병렬로
+    Tavily 검색한 다음, 원본 결과를 전부 하나로 합쳐서 필터+회사명추출을
+    딱 1번씩만 돌려서 "후보 회사명"만 뽑아 반환 (연락처 enrichment는
+    안 함).
 
-    연락처 확보는 naver_contact_enrichment.enrich_contacts_batch로 위임 -
-    회사 여러 개를 묶어서 AI 호출하므로, 회사수가 늘어도 AI호출이 거의
-    비례해서 늘지 않음.
+    2026-08-31 통합구조 개편: 예전엔 tavily_search_vendors가 이 수집
+    단계까지 포함해서 "후보수집+연락처enrichment"를 통째로 하고, 그마저
+    1순위(나라장터)가 목표개수를 못 채웠을 때만 호출되는 폴백이었음.
+    근데 나라장터API/DB캐시가 카테고리에 따라 구조적으로 0건일 수 있어서
+    ("오일씰" 등 산업부품류 실측 확인), "1순위가 못 채우면 2순위"라는
+    순차 전제 자체가 항상 성립하진 않음이 확인됨. 그래서 이제
+    나라장터API/DB캐시/Tavily 3개 소스를 처음부터 병렬로 돌려서 후보
+    이름을 모으고(이 함수가 그 중 Tavily 담당), supplier_search.py에서
+    한 데 합친 뒤 narajangteo_search_based_tool.enrich_candidates로
+    출처 상관없이 동일한 enrichment 파이프라인에 태움.
     """
     from tavily import TavilyClient
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    try:
-        from .naver_contact_enrichment import enrich_contacts_batch
-    except ImportError:  # tools 폴더에서 직접 실행할 때
-        from backend_logic2.nodes.supplier.tools.naver_contact_enrichment import enrich_contacts_batch
 
     client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
     query_suffixes = ["공식 홈페이지", "제조 전문 주식회사", "납품 공급 업체"]
@@ -235,25 +251,45 @@ def tavily_search_vendors(item_name, target_count=10, max_results_per_query=10):
         f"[{r.get('url')}]\n{(r.get('raw_content') or r.get('content', ''))[:1000]}"
         for r in corporate_results
     )
-    all_company_names = set(_extract_company_names_llm(item_name, combined_text))
-    print(f"  누적 회사명 {len(all_company_names)}개: {sorted(all_company_names)}")
+    all_company_names = sorted(set(_extract_company_names_llm(item_name, combined_text, case_id=case_id)))
+    print(f"  [Tavily] 누적 회사명 {len(all_company_names)}개: {all_company_names}")
 
-    names_to_process = sorted(all_company_names)
     cap = target_count * 2
-    if len(names_to_process) > cap:
-        print(f"  -> {cap}개로 제한 (나머지 {len(names_to_process) - cap}개는 조회 생략)")
-        names_to_process = names_to_process[:cap]
+    if len(all_company_names) > cap:
+        print(f"  [Tavily] -> {cap}개로 제한 (나머지 {len(all_company_names) - cap}개는 생략)")
+        all_company_names = all_company_names[:cap]
+
+    return [{"name": n, "source": "tavily", "operation": "tavily", "raw": {}} for n in all_company_names]
+
+
+def tavily_search_vendors(item_name, target_count=10, max_results_per_query=10, case_id=None):
+    """
+    (하위호환/단독실행용) tavily_collect_candidate_names로 회사명만 모으고
+    naver_contact_enrichment.enrich_contacts_batch로 연락처까지 채워서
+    반환하는 기존 인터페이스. 메인 파이프라인(supplier_search.py)은 이제
+    이 함수 대신 tavily_collect_candidate_names를 직접 써서 나라장터API/
+    DB캐시 후보와 같은 enrichment 파이프라인에 합침 - 이 함수는 이 파일
+    단독 실행(__main__)이나 다른 곳에서 Tavily만 따로 테스트할 때 씀.
+    """
+    try:
+        from .naver_contact_enrichment import enrich_contacts_batch
+    except ImportError:  # tools 폴더에서 직접 실행할 때
+        from backend_logic2.nodes.supplier.tools.naver_contact_enrichment import enrich_contacts_batch
+
+    candidates = tavily_collect_candidate_names(item_name, target_count, max_results_per_query, case_id=case_id)
+    names_to_process = [c["name"] for c in candidates]
 
     print(f"  네이버 배치 연락처 조회 중...")
-    enriched_list = enrich_contacts_batch(names_to_process, item_name=item_name, batch_size=5, target_count=target_count)
+    enriched_list = enrich_contacts_batch(
+        names_to_process, item_name=item_name, batch_size=5, target_count=target_count, case_id=case_id
+    )
 
-    candidates = []
+    result = []
     for enriched in enriched_list:
-        # 채택기준: 이메일 필수 (전화만 있고 이메일 없으면 제외)
         # 채택기준: 이메일 OR 전화 (임시로 완화 - 지금 필터가 너무 많이 걸러내서
         # 디버깅 중, 안정화되면 다시 정책 논의)
         if enriched.get("email") or enriched.get("phone"):
-            candidates.append({
+            result.append({
                 "name": enriched["name"], "email": enriched.get("email"),
                 "phone": enriched.get("phone"), "site_url": enriched.get("site_url"),
                 "source": "tavily",
@@ -261,4 +297,4 @@ def tavily_search_vendors(item_name, target_count=10, max_results_per_query=10):
         else:
             print(f"      - '{enriched['name']}': 연락처 확보 실패, 제외")
 
-    return candidates
+    return result

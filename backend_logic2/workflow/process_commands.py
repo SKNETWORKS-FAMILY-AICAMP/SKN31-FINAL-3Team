@@ -1,12 +1,22 @@
 """LangGraph Command wrappers connecting the purchasing nodes end to end.
 
-주의: 처음부터 다시 짜는 중 - 아래 2단계까지 구현됨.
+전체 9단계 구현 완료(2026-08-31):
   [1단계] check_mr_item + substitute_selection - 대체품 확인, 있으면
     사람이 목록에서 고르거나 신규구매 선택 (HITL)
   [2단계] decide_bidding_choice - 비딩/카탈로그 자동판정 (decide_bidding.py
     기존 규칙 그대로 신뢰, 사람 개입 없음)
+  [3단계] resolve_suppliers_choice - 기존 공급사 풀 판정, 신규탐색 필요여부 자동분기
+  [4단계] search_new_suppliers - 신규 공급사 탐색(3소스 병렬)
+  [5단계] select_rfq_targets - RFQ 보낼 공급사 선택/등록 (HITL)
+  [6단계] create_rfq - RFQ 생성+발송
+  [7단계] check_quotations - 견적 확인(반복 가능) (HITL)
+  [8단계] final_selection - 최종 공급사 선정 (HITL)
+  [9단계] create_po - 선정 견적을 PO로 전환 + 발송
 
-나머지 단계(공급사탐색, RFQ, 견적, PO)는 이어서 추가할 예정.
+⚠️ 미구현으로 END에서 멈추는 분기(사람이 수동으로 이어받아야 함):
+  - catalog_purchase_required(비딩 불필요): 자동 RFQ/PO 없음
+  - human_review(각 단계 실패/후보없음): 담당자 직접 확인 필요
+  - substitute_selected(대체품 선택됨): 대체품으로 새 MR 만드는 건 수동
 """
 
 from __future__ import annotations
@@ -23,6 +33,7 @@ from langgraph.types import Command, interrupt
 class PurchaseProcessState(TypedDict, total=False):
     entrypoint: str
     mr_name: str
+    case_id: str
     status: str
     substitute_results: dict[str, Any]
     selected_substitute: str
@@ -35,6 +46,7 @@ class PurchaseProcessState(TypedDict, total=False):
     rfq_name: str
     quotation_ranking: list[dict[str, Any]]
     selected_supplier: str
+    po_name: str
     error: str
 
 
@@ -62,8 +74,20 @@ def _decision_value(value: Any) -> str:
 
 
 def route_entrypoint_command(state: PurchaseProcessState) -> Command:
-    """일반 시작 라우팅. 나중에 단계 추가되면 entrypoint별 분기 추가."""
-    return Command(update={"entrypoint": "", "status": "checking_mr_item"}, goto="check_mr_item")
+    """
+    일반 시작 라우팅. 나중에 단계 추가되면 entrypoint별 분기 추가.
+
+    2026-08-31 추가: 그래프 맨 처음(START 다음) 노드라 MR당 딱 1번만
+    실행됨(재개/resume은 interrupt된 노드에서 바로 이어감, 여기로
+    다시 안 옴) - 그래서 케이스 생성을 여기 한 곳에서만 함. 이후 모든
+    노드는 state["case_id"]로 이 케이스를 계속 재사용(process_graph.py의
+    공용 로깅 wrapper가 매 노드 상태전이를 자동으로 case_status_history에
+    남김).
+    """
+    from backend_logic2.nodes.supplier.tools.case_logging import create_case
+
+    case_id = state.get("case_id") or create_case(mr_name=state.get("mr_name"), status="started")
+    return Command(update={"entrypoint": "", "case_id": case_id, "status": "checking_mr_item"}, goto="check_mr_item")
 
 
 def check_mr_item_command(state: PurchaseProcessState) -> Command:
@@ -169,7 +193,7 @@ def resolve_suppliers_choice_command(state: PurchaseProcessState) -> Command:
     from backend_logic2.nodes.supplier.resolve_supplier_pool import resolve_supplier_pool
 
     bidding_items = state.get("bidding_items", [])
-    result = resolve_supplier_pool(bidding_items)
+    result = resolve_supplier_pool(bidding_items, case_id=state.get("case_id"))
 
     print(f"\n[공급사풀 판정]")
     for line in result["log_lines"]:
@@ -185,7 +209,7 @@ def resolve_suppliers_choice_command(state: PurchaseProcessState) -> Command:
     )
 
 
-def _search_new_suppliers(item_codes: list[str]) -> list[dict]:
+def _search_new_suppliers(item_codes: list[str], case_id: str = None) -> list[dict]:
     """item_code 목록에 대해 supplier_search로 신규 공급사 탐색, 이름기준 중복제거."""
     from backend_logic2.integrations.erp_client import erp_get_one
     from backend_logic2.nodes.supplier.supplier_search import supplier_search
@@ -195,7 +219,7 @@ def _search_new_suppliers(item_codes: list[str]) -> list[dict]:
         item = erp_get_one("Item", item_code) or {}
         item_name = item.get("item_name") or item_code
         print(f"  [{item_code}] '{item_name}' 신규 공급사 탐색 중...")
-        searched = supplier_search(item_name, target_count=10)
+        searched = supplier_search(item_name, target_count=10, case_id=case_id)
         for c in searched:
             name = str(c.get("name") or "").strip()
             if name and name not in candidates_by_name:
@@ -212,7 +236,7 @@ def search_new_suppliers_command(state: PurchaseProcessState) -> Command:
     candidates_by_name = {c["name"]: c for c in existing}
 
     print(f"\n[신규 공급사 탐색] 대상 품목 {len(bidding_items)}건")
-    new_ones = _search_new_suppliers(bidding_items)
+    new_ones = _search_new_suppliers(bidding_items, case_id=state.get("case_id"))
     for c in new_ones:
         if c["name"] not in candidates_by_name:
             candidates_by_name[c["name"]] = c
@@ -303,7 +327,7 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
     from backend_logic2.nodes.supplier.register_candidate_suppliers import register_candidate_suppliers
 
     print(f"\n[공급사 등록] {len(selected_candidates)}건 등록 시도: {[c['name'] for c in selected_candidates]}")
-    registrations = register_candidate_suppliers(selected_candidates)
+    registrations = register_candidate_suppliers(selected_candidates, case_id=state.get("case_id"))
     failed = [row for row in registrations if row.get("status") == "failed"]
     if failed:
         print(f"  등록 실패: {failed}")
@@ -455,8 +479,56 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
             goto="final_selection",
         )
 
-    # 다음 단계(PO 생성+발송)는 아직 미구현 - 임시로 여기서 멈춤
     return Command(
-        update={"selected_supplier": supplier, "status": "supplier_selected_awaiting_po", "error": ""},
+        update={"selected_supplier": supplier, "status": "creating_po", "error": ""},
+        goto="create_po",
+    )
+
+
+def create_po_command(state: PurchaseProcessState) -> Command:
+    """[9단계] 최종 선정된 공급사의 견적을 그대로 PO로 전환 + 포털링크 이메일 발송.
+
+    실제 로직은 nodes/po/create_and_send_po.py(RFQ에 달린 Supplier Quotation
+    재조회 -> 선정 공급사 견적 특정 -> 중복PO 방지 -> 납기일 확인 -> PO
+    생성+Submit -> 포털링크 이메일 발송까지 이미 완성돼있던 독립 스크립트)에
+    그대로 위임함. 그 함수는 원래 CLI 스크립트라 실패 시 sys.exit(1)로
+    프로세스를 통째로 죽이는데, 그래프 노드 안에서 그러면 체크포인트/로깅이
+    중간에 끊기니까 여기서 SystemExit을 잡아서 정상적인 human_review
+    Command로 바꿔줌.
+
+    이메일 발송은 send_rfq.py와 같은 이유로 TEST_MODE면 무조건 강제로
+    막음(send_email=not test_mode) - erp_send_email 자체도 TEST_MODE를
+    다시 확인하지만, 이중 안전장치로 여기서도 명시적으로 막음.
+    """
+    from backend_logic2.integrations.erp_client import is_test_mode
+    from backend_logic2.nodes.po.create_and_send_po import create_and_send_po
+
+    rfq_name = state["rfq_name"]
+    supplier = state.get("selected_supplier")
+    test_mode = is_test_mode()
+
+    print(f"\n[PO 생성] '{state['mr_name']}' (RFQ: {rfq_name}) -> 공급사: {supplier}")
+    print(f"  환경: {'TEST_MODE (실제 이메일 발송 안 함)' if test_mode else '운영 모드 (실제 이메일 발송됨)'}")
+
+    try:
+        po = create_and_send_po(rfq_name, supplier, send_email=not test_mode)
+    except SystemExit:
+        print("  -> PO 생성/발송 중단됨 (사유는 위 콘솔 출력 참고)")
+        return Command(
+            update={"status": "human_review", "error": "PO 생성/발송 중 오류로 중단되었습니다. 콘솔 로그를 확인하세요."},
+            goto=END,
+        )
+
+    if not po or not po.get("name"):
+        print("  -> PO 생성 실패")
+        return Command(
+            update={"status": "human_review", "error": "PO 생성에 실패했습니다."},
+            goto=END,
+        )
+
+    print(f"  -> PO 처리 완료: {po['name']} (이메일 발송: {'예' if po.get('email_sent') else '아니오'})\n")
+
+    return Command(
+        update={"po_name": po["name"], "status": "po_sent", "error": ""},
         goto=END,
     )

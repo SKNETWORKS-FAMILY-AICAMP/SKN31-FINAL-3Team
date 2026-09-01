@@ -18,6 +18,7 @@ resolve_suppliers.py로 찾은 신규 후보들을 실제 ERPNext Supplier로 �
 import html
 import requests
 from backend_logic2.integrations.erp_client import erp_get_one, erp_post, ERPNextAPIError, SITE_URL, HEADERS
+from backend_logic2.nodes.supplier.tools.case_logging import log_status_change
 
 
 def _sanitize_name(name: str, max_length: int = 140) -> str:
@@ -42,10 +43,15 @@ def supplier_exists(name: str) -> bool:
     return get_existing_supplier(name) is not None
 
 
-def register_candidate_suppliers(candidates: list) -> list:
+def register_candidate_suppliers(candidates: list, case_id: str = None) -> list:
     """
     candidates: [{"name": ..., "email": ...(선택), "phone": ...(선택)}, ...]
     이미 존재하는 이름은 건너뛰고, 없는 것만 새로 생성.
+
+    case_id를 넘기면(예: supplier_search()가 쓰던 케이스를 그대로 이어서)
+    등록 결과 요약을 case_status_history에 'suppliers_registered' 상태로
+    남김 - 탐색(searching/collected/search_completed) 다음 단계로 케이스
+    이력이 이어짐. 안 넘기면(단독 실행 등) 그냥 등록만 하고 이력은 안 남김.
 
     반환: [{"name": 등록된이름, "status": "created" 또는 "already_exists" 또는 "failed", ...}]
     """
@@ -97,6 +103,16 @@ def register_candidate_suppliers(candidates: list) -> list:
             results.append({"name": created["name"], "status": "created"})
         except ERPNextAPIError as e:
             results.append({"name": name, "status": "failed", "reason": str(e)})
+
+    if case_id:
+        counts = {}
+        for r in results:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        counts_text = ", ".join(f"{status} {n}건" for status, n in counts.items())
+        log_status_change(
+            case_id, "suppliers_registered",
+            reason=f"공급사 등록 총 {len(results)}건 처리 ({counts_text})",
+        )
 
     return results
 

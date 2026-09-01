@@ -192,51 +192,17 @@ def create_and_send_po(
         sys.exit(1)
 
     # ---------------------------------------------------------
-    # 5. 과거 납기일 확인
+    # 5. Purchase Order Item 구성
+    #
+    # ⚠️ 납기일이 과거인 케이스(견적 제출 후 시간이 많이 지나 확인이
+    # 늦어진 경우 등)는 지금 단계에서는 다루지 않음 - 예전엔 여기서
+    # input()으로 사람한테 y/n을 물어봤는데, 이건 LangGraph interrupt()
+    # 기반 HITL이 아니라 그냥 터미널 blocking이라 재개(resume)가 안 먹히는
+    # 문제가 있었음. 지금은 이 edge case를 그냥 제외 - 과거 납기일이어도
+    # 그대로 진행하고, 필요하면 나중에 interrupt() 패턴으로 다시 추가.
     # ---------------------------------------------------------
 
     today = date.today().isoformat()
-
-    past_date_items = [
-        item
-        for item in supplier_items
-        if str(item.get("expected_delivery_date")) < today
-    ]
-
-    if past_date_items:
-        print(
-            f"\n[확인 필요] 아래 품목의 견적 납기일이 "
-            f"오늘({today})보다 과거입니다."
-        )
-
-        for item in past_date_items:
-            print(
-                f"  - {item.get('item_code')}: "
-                f"{item.get('expected_delivery_date')}"
-            )
-
-        answer = input(
-            "그래도 진행하시겠습니까? "
-            "진행 시 해당 품목의 납기일을 오늘로 조정합니다. (y/n): "
-        ).strip().lower()
-
-        if answer != "y":
-            print("PO 생성을 중단합니다.")
-            sys.exit(1)
-
-        for item in past_date_items:
-            old_date = item.get("expected_delivery_date")
-
-            print(
-                f"  -> {item.get('item_code')} "
-                f"{old_date} -> {today}"
-            )
-
-            item["expected_delivery_date"] = today
-
-    # ---------------------------------------------------------
-    # 6. Purchase Order Item 구성
-    # ---------------------------------------------------------
 
     po_items = []
 
@@ -262,7 +228,7 @@ def create_and_send_po(
         po_items.append(po_item)
 
     # ---------------------------------------------------------
-    # 7. PO Payload
+    # 6. PO Payload
     # ---------------------------------------------------------
 
     po_payload = {
@@ -278,7 +244,7 @@ def create_and_send_po(
     }
 
     # ---------------------------------------------------------
-    # 8. PO Draft 생성
+    # 7. PO Draft 생성
     # ---------------------------------------------------------
 
     try:
@@ -298,7 +264,7 @@ def create_and_send_po(
         sys.exit(1)
 
     # ---------------------------------------------------------
-    # 9. PO Submit
+    # 8. PO Submit
     # ---------------------------------------------------------
 
     try:
@@ -328,7 +294,7 @@ def create_and_send_po(
         sys.exit(1)
 
     # ---------------------------------------------------------
-    # 10. 이메일 발송 여부
+    # 9. 이메일 발송 여부
     # ---------------------------------------------------------
 
     if not send_email:
@@ -342,7 +308,7 @@ def create_and_send_po(
         }
 
     # ---------------------------------------------------------
-    # 11. Supplier 이메일 조회
+    # 10. Supplier 이메일 조회
     # ---------------------------------------------------------
 
     print(f"\n3. 공급사({supplier_id}) 이메일 조회")
@@ -390,7 +356,7 @@ def create_and_send_po(
         }
 
     # ---------------------------------------------------------
-    # 12. 이메일 발송
+    # 11. 이메일 발송
     # ---------------------------------------------------------
 
     portal_link = (
