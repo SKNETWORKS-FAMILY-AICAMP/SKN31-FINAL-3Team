@@ -57,15 +57,25 @@ def _with_status_log(node_name: str, fn):
     def wrapper(state: Any) -> Any:
         from backend_logic2.nodes.supplier.tools.case_logging import log_status_change
 
-        from_status = state.get("status")
         cmd = fn(state)
 
         update = getattr(cmd, "update", None) or {}
         case_id = update.get("case_id") or state.get("case_id")
         to_status = update.get("status")
         if case_id and to_status:
+            # ⚠️ from_status를 여기서 state.get("status")로 미리 캡처해서 넘기면
+            # 안 됨(예전엔 그랬었고, 실제로 버그였음) - 이 노드 함수(fn) 안에서
+            # supplier_search() 같은 서브파이프라인이 log_status_change()를
+            # 여러 번 직접 호출해서 DB status를 이미 몇 단계 더 바꿔놓은 뒤일
+            # 수 있음(예: search_new_suppliers_command 안에서 searching ->
+            # collected -> search_completed까지 갔는데, 노드 시작 시점 state는
+            # 여전히 resolving_supplier_pool). 그 상태에서 fn 실행 전 값을
+            # from_status로 넘기면 case_status_history 체인이 끊겨 보임(중간
+            # 단계가 통째로 사라진 것처럼). from_status를 아예 안 넘기고
+            # log_status_change() 자체의 자동조회(현재 DB status)에 맡기면
+            # 항상 진짜 마지막 상태부터 이어짐.
             reason = update.get("error") or f"[{node_name}] 처리 완료"
-            log_status_change(case_id, to_status, reason=reason, from_status=from_status)
+            log_status_change(case_id, to_status, reason=reason)
 
         return cmd
 

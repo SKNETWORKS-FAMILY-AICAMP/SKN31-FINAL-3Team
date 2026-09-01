@@ -13,8 +13,10 @@ load_dotenv(dotenv_path=ENV_FILE)
 
 from auth_service.dependencies import CurrentUser, require_authenticated_user
 from auth_service.router import router as auth_router
+from backend_logic2.api.mr_substitute_routes import router as mr_substitute_router
 from backend_logic2.integrations.erp_client import (
     ERPNextAPIError,
+    SITE_URL,
     get_stock_level,
     router as purchase_router,
 )
@@ -22,6 +24,12 @@ from backend_logic2.integrations.erp_client import (
 
 app = FastAPI(title="SKN31 Purchasing Agent API")
 
+# SITE_URL(ERPNext 주소)을 CORS 허용 목록에 자동으로 추가함(2026-09-01) -
+# MR의 "AI 대체품 확인" Client Script가 ERPNext 페이지 안에서 이 API로
+# fetch()를 날리는데, ERPNext 주소가 이 목록에 없으면 브라우저가 CORS로
+# 그 요청 자체를 막아버림(배포 위치가 어디든 상관없이 무조건 걸리는
+# 문제라 SITE_URL 기준으로 자동 반영되게 함 - .env에 SITE_URL 값이
+# 바뀌어도 여기 따로 손댈 필요 없음).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -29,6 +37,7 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
+        SITE_URL,
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -41,6 +50,11 @@ app.include_router(
     purchase_router,
     dependencies=[Depends(require_authenticated_user)],
 )
+
+# MR 대체품 확인 라우트는 ERPNext Client Script(우리 로그인 세션이 없음)가
+# 부르는 거라 require_authenticated_user로 안 막고, 자체 시크릿 헤더
+# 검증(mr_substitute_routes.py의 _require_client_script_secret)으로 감.
+app.include_router(mr_substitute_router)
 
 
 @app.get("/api/health")

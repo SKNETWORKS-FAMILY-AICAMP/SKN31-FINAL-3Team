@@ -29,7 +29,13 @@ import os
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from backend_logic2.integrations.erp_client import erp_get, erp_get_one
+from backend_logic2.integrations.erp_client import (
+    erp_get,
+    erp_get_one,
+    erp_add_comment,
+    erp_assign_to,
+    ERPNextAPIError,
+)
 
 
 def _strip_html(text: str) -> str:
@@ -271,6 +277,77 @@ def find_substitutes_for_mr(mr_name: str) -> dict:
 
     print(f"[대체품 탐색 완료] 총 {len(results)}개 품목 처리됨\n")
     return results
+
+
+def flatten_substitute_candidates(substitute_results: dict) -> list:
+    """
+    substitute_results({item_code: {"qty_needed":, "substitutes": [...]}, ...})를
+    번호매기기 좋은 평평한 리스트로 펼침(2026-09-01 추가).
+
+    ⚠️ 이 순서(딕셔너리 순회 순서 그대로)가 사람이 보는 번호(1, 2, 3...)의
+    기준이 됨 - process_commands.substitute_selection_command(그래프
+    interrupt UI), notify_requester_of_substitutes(ERPNext 댓글 안내),
+    substitute_reply_watcher.py(댓글 답장 파싱) 셋 다 반드시 이 함수 하나만
+    통해서 번호를 매겨야 서로 어긋나지 않음 - 로직을 각자 중복 구현하면
+    번호가 틀어질 위험이 있어서 여기 한 곳에만 둠.
+    """
+    flattened = []
+    for item_code, info in substitute_results.items():
+        for sub in info.get("substitutes", []):
+            flattened.append({**sub, "original_item_code": item_code})
+    return flattened
+
+
+def notify_requester_of_substitutes(mr: dict, substitute_results: dict) -> None:
+    """
+    대체품 후보를 찾았을 때 요청부서(MR 작성자)한테 ERPNext 안에서 바로
+    알려줌(2026-09-01 추가) - 새 API 엔드포인트나 Client Script 없이,
+    ERPNext에 이미 있는 기능만 재사용:
+      - erp_add_comment: 후보 번호 목록 + 답장 방법 안내를 타임라인에 남김
+      - erp_assign_to: 실제 알림(종모양 + ToDo)이 가게 만드는 부분 -
+        댓글만 달면 아무한테도 알림이 안 가서(erp_add_comment 자체의
+        한계) 이걸로 보완함
+
+    댓글은 반드시 "[AI Procurement]"로 시작하게 만듦 - substitute_reply_
+    watcher.py가 이 접두어로 "이건 우리가 단 댓글"을 구분해서, 그 다음에
+    새로 달린 댓글을 사람의 답장으로 인식함(댓글 작성자 이메일 비교 대신
+    내용 기준으로 구분하는 게 더 단순해서 이렇게 함).
+    """
+    mr_name = mr.get("name")
+    requester_email = mr.get("owner")
+
+    flattened = flatten_substitute_candidates(substitute_results)
+    if not flattened:
+        return
+
+    lines = ["[AI Procurement] 대체품 후보가 확인되었습니다.", ""]
+    for i, sub in enumerate(flattened, start=1):
+        fulfill = "전량충족" if sub.get("fulfills_full_qty") else f"부분충족({sub.get('total_qty')}개)"
+        lines.append(
+            f"{i}. {sub.get('item_name')} ({sub.get('item_code')}) "
+            f"- 재고 {sub.get('total_qty')} ({fulfill}) - {sub.get('reason')}"
+        )
+    lines.append("")
+    lines.append("아래 형식으로 이 문서에 댓글로 답장해주세요:")
+    lines.append("  - 대체품을 쓰려면: 번호만 (예: 1)")
+    lines.append("  - 원래 품목을 그대로 구매하려면: '구매'")
+    comment = "\n".join(lines)
+
+    try:
+        erp_add_comment("Material Request", mr_name, comment)
+    except ERPNextAPIError as e:
+        print(f"  [notify_requester_of_substitutes] 댓글 등록 실패: {e}")
+
+    if requester_email:
+        try:
+            erp_assign_to(
+                "Material Request", mr_name, requester_email,
+                description="대체품 후보가 확인되었습니다. 댓글로 번호를 선택하거나 '구매'라고 답해주세요.",
+            )
+        except ERPNextAPIError as e:
+            print(f"  [notify_requester_of_substitutes] 담당자 할당(알림) 실패: {e}")
+    else:
+        print("  [notify_requester_of_substitutes] MR owner 이메일을 확인할 수 없어 할당(알림)은 건너뜀")
 
 
 if __name__ == "__main__":

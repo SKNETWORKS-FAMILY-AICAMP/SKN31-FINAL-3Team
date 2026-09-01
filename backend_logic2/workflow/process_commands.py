@@ -16,7 +16,9 @@
 ⚠️ 미구현으로 END에서 멈추는 분기(사람이 수동으로 이어받아야 함):
   - catalog_purchase_required(비딩 불필요): 자동 RFQ/PO 없음
   - human_review(각 단계 실패/후보없음): 담당자 직접 확인 필요
-  - substitute_selected(대체품 선택됨): 대체품으로 새 MR 만드는 건 수동
+  - substitute_selected(대체품 선택됨): 원본 MR엔 확인 댓글 등록 + Stopped
+    전환까지 자동 처리됨(2026-09-01, _apply_substitute_selected_to_mr).
+    대체품으로 새 MR을 만드는 것 자체는 여전히 수동.
 """
 
 from __future__ import annotations
@@ -94,7 +96,10 @@ def check_mr_item_command(state: PurchaseProcessState) -> Command:
     """[1단계] MR 품목별로 대체품 존재여부 확인.
     있으면 substitute_selection(사람이 고름)으로, 없으면 바로 비딩판정으로."""
     from backend_logic2.integrations.erp_client import erp_get_one
-    from backend_logic2.nodes.mr.find_substitute import find_substitutes_for_mr
+    from backend_logic2.nodes.mr.find_substitute import (
+        find_substitutes_for_mr,
+        notify_requester_of_substitutes,
+    )
 
     mr_name = state["mr_name"]
     mr = erp_get_one("Material Request", mr_name)
@@ -108,6 +113,12 @@ def check_mr_item_command(state: PurchaseProcessState) -> Command:
     any_substitutes = any(info.get("substitutes") for info in substitute_results.values())
 
     if any_substitutes:
+        # 요청부서한테 ERPNext 댓글+할당(알림)으로 바로 안내(2026-09-01
+        # 추가) - substitute_selection의 interrupt()는 우리 CLI로만 답할
+        # 수 있는데, 실제로 이 결정을 내리는 사람은 요청부서라 ERPNext
+        # 안에서 바로 알려주고 답장받을 수 있게 함(substitute_reply_
+        # watcher.py가 그 답장을 읽어서 대신 resume 호출).
+        notify_requester_of_substitutes(mr, substitute_results)
         return Command(
             update={"substitute_results": substitute_results, "status": "awaiting_substitute_selection"},
             goto="substitute_selection",
@@ -122,12 +133,10 @@ def check_mr_item_command(state: PurchaseProcessState) -> Command:
 def substitute_selection_command(state: PurchaseProcessState) -> Command:
     """[1단계-대기] 대체품 목록을 보여주고, 사람이 하나 선택하거나
     'new_purchase'로 신규구매 진행을 선택하게 함."""
-    substitute_results = state.get("substitute_results", {})
+    from backend_logic2.nodes.mr.find_substitute import flatten_substitute_candidates
 
-    all_substitutes = []
-    for item_code, info in substitute_results.items():
-        for sub in info.get("substitutes", []):
-            all_substitutes.append({**sub, "original_item_code": item_code})
+    substitute_results = state.get("substitute_results", {})
+    all_substitutes = flatten_substitute_candidates(substitute_results)
 
     answer = interrupt({
         "type": "substitute_selection",
@@ -155,10 +164,55 @@ def substitute_selection_command(state: PurchaseProcessState) -> Command:
             goto="substitute_selection",
         )
 
+    _apply_substitute_selected_to_mr(state["mr_name"], choice)
+
     return Command(
         update={"status": "substitute_selected", "selected_substitute": choice, "error": ""},
         goto=END,
     )
+
+
+def _apply_substitute_selected_to_mr(mr_name: str, item_code: str) -> None:
+    """대체품 선택 후처리(2026-09-01) - 원래 MR 문서 자체엔 아무 반응이
+    없었던 걸 요청부서가 실사용 중 직접 지적함("그 후처리는 뭐야?").
+
+    1) 확인 댓글을 남기고
+    2) MR을 ERPNext 네이티브 "Stopped" 상태로 전환함(구매팀이 이 MR로
+       더 이상 조달을 진행하지 않는다는 걸 화면에서 바로 알 수 있게).
+
+    "Stopped"로의 전환은 일반 필드 PUT이 아니라 전용 whitelisted method가
+    있음 - 실제로 ERPNext 화면에서 네이티브 "Stop" 버튼을 눌러 Chrome
+    DevTools Network 탭으로 직접 캡처해서 확인한 값
+    (Request URL: {SITE_URL}/api/method/erpnext.stock.doctype.
+    material_request.material_request.update_status, 200 OK). 파라미터명
+    (name/status)은 캡처된 요청의 Payload 탭까지 본 게 아니라 ERPNext의
+    공통 update_status(name, status) 컨벤션(Sales Order/Purchase Order 등
+    다른 트랜잭션 문서들도 동일 패턴)을 근거로 넣은 값이라, 만약 틀리면
+    여기서 바로 ERPNextAPIError로 드러남(그 경우 정확한 파라미터명은 같은
+    방식으로 Payload 탭까지 확인해서 고치면 됨).
+
+    실패해도(둘 중 하나라도) 그래프 진행 자체를 막지 않음 - 대체품 선택은
+    이미 확정된 결정이라, ERPNext 쪽 후처리가 실패했다고 사람이 방금 내린
+    선택을 되돌릴 이유는 없음(fail-open, 로그만 남김).
+    """
+    from backend_logic2.integrations.erp_client import erp_add_comment, erp_call, ERPNextAPIError
+
+    try:
+        erp_add_comment(
+            "Material Request", mr_name,
+            f"[AI Procurement] 대체품({item_code})으로 처리되어 이 MR은 종료(Stopped)됩니다. "
+            f"신규 발주는 대체품 기준으로 별도 진행됩니다.",
+        )
+    except ERPNextAPIError as e:
+        print(f"[substitute_selection] 확인 댓글 등록 실패({mr_name}): {e}")
+
+    try:
+        erp_call(
+            "erpnext.stock.doctype.material_request.material_request.update_status",
+            {"name": mr_name, "status": "Stopped"},
+        )
+    except ERPNextAPIError as e:
+        print(f"[substitute_selection] MR Stopped 전환 실패({mr_name}): {e}")
 
 
 def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
