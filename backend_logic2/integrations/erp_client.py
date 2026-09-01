@@ -175,6 +175,39 @@ def erp_send_email(doctype, name, recipients, subject, content):
     return res.json().get("message")
 
 
+def erp_get_document_email_communications(doctype, name):
+    """
+    특정 문서(RFQ 등)에 연결된 이메일 Communication(발신/수신) 목록을 가져옴.
+
+    ERPNext에서 우리가 공급사에게 보낸 메일에 공급사가 '답장'을 하면, 그
+    메일이 이 문서의 Activity 탭에 Communication(sent_or_received=Received)
+    으로 자동으로 붙는다 — 독촉메일을 보낼지 말지 판단하는 근거가 바로 이 목록.
+
+    communication_medium="Email"로 좁혀서 전화 기록 등 다른 종류의
+    Communication은 제외함. creation 오름차순으로 반환해서, 호출하는 쪽에서
+    "가장 처음 보낸 메일"과 "가장 최근 메일"을 순서대로 다루기 쉽게 함.
+    """
+    return erp_get(
+        "Communication",
+        filters=[
+            ["reference_doctype", "=", doctype],
+            ["reference_name", "=", name],
+            ["communication_medium", "=", "Email"],
+        ],
+        fields=[
+            "name",
+            "sent_or_received",
+            "sender",
+            "recipients",
+            "cc",
+            "subject",
+            "creation",
+            "communication_date",
+        ],
+        order_by="creation asc",
+    ) or []
+
+
 def erp_add_comment(doctype, name, comment_text):
     """
     문서 타임라인에 댓글만 남김 (Comment 문서 생성).
