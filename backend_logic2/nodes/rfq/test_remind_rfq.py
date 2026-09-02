@@ -240,7 +240,8 @@ class ProcessRfqReminderTest(unittest.TestCase):
         ]
         with mock.patch.object(rr, "erp_get_document_email_communications", return_value=comms), \
              mock.patch.object(rr, "erp_send_email") as mock_send, \
-             mock.patch.object(rr, "SUPPLIER_REPLY_DEADLINE_OVERRIDES", {}):
+             mock.patch.object(rr, "SUPPLIER_REPLY_DEADLINE_OVERRIDES", {}), \
+             mock.patch.object(rr, "erp_get_one", return_value=None):
             results = rr.process_rfq_reminder(rfq, now=self.now)
 
         results_by_supplier = {r["supplier"]: r for r in results}
@@ -252,7 +253,8 @@ class ProcessRfqReminderTest(unittest.TestCase):
         comms = [sent_comm("2026-09-01 11:00:00", "buyer@daehan.example.com")]
         with mock.patch.object(rr, "erp_get_document_email_communications", return_value=comms), \
              mock.patch.object(rr, "erp_send_email", side_effect=ERPNextAPIError("SMTP 오류")), \
-             mock.patch.object(rr, "SUPPLIER_REPLY_DEADLINE_OVERRIDES", {}):
+             mock.patch.object(rr, "SUPPLIER_REPLY_DEADLINE_OVERRIDES", {}), \
+             mock.patch.object(rr, "erp_get_one", return_value=None):
             results = rr.process_rfq_reminder(self.rfq, now=self.now)
         self.assertEqual(results[0]["action"], "error")
         self.assertIn("SMTP 오류", results[0]["detail"])

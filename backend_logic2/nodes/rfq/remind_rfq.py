@@ -67,6 +67,11 @@ DEFAULT_REPLY_DEADLINE_DAYS = int(os.getenv("RFQ_REPLY_DEADLINE_DAYS", "3"))
 
 REMINDER_SUBJECT_PREFIX = "[재발송][RFQ]"
 
+# 과거 자동 독촉 메일은 ``[자동독촉][RFQ]`` 접두사를 사용했습니다.
+# 이미 ERPNext Communication에 쌓인 이력도 독촉 횟수에 포함해야 같은 날
+# 중복 발송과 단계 하향을 막을 수 있으므로 두 형식을 모두 인식합니다.
+REMINDER_SUBJECT_PREFIXES = (REMINDER_SUBJECT_PREFIX, "[자동독촉][RFQ]")
+
 
 def _load_deadline_overrides() -> dict:
     """.env의 RFQ_REPLY_DEADLINE_OVERRIDES(JSON 문자열)를 공급사별 마감일 딕셔너리로 로드.
@@ -201,7 +206,7 @@ def get_supplier_mail_state(communications: list, supplier_email: str) -> dict:
     reminder_count = 0
     for dt, c in sent[1:]:
         subject = c.get("subject") or ""
-        if subject.startswith(REMINDER_SUBJECT_PREFIX):
+        if subject.startswith(REMINDER_SUBJECT_PREFIXES):
             reminder_count += 1
 
     return {
