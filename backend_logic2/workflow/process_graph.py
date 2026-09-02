@@ -1,9 +1,13 @@
 """Compiled LangGraph for the backend_logic2 purchasing process.
 
-전체 9단계(check_mr_item+substitute_selection, decide_bidding_choice,
-resolve_suppliers_choice, search_new_suppliers, select_rfq_targets,
-create_rfq, check_quotations, final_selection, create_po) 등록 완료
-(2026-08-31, PO 생성+발송 추가).
+"Draft-first" 구조로 재설계 완료(2026-09-01): check_mr_item+
+substitute_selection(대체품 선택시 Draft MR 삭제), confirm_no_substitute
+(여기서만 MR Submit), check_urgency(긴급판정, 신규), decide_bidding_choice,
+create_catalog_po(카탈로그 직접발주, 신규), resolve_suppliers_choice,
+search_new_suppliers, select_rfq_targets(후보0건 사람선택 지원), create_rfq,
+check_quotations, final_selection, po_approval(PO 발송전 승인, 신규),
+create_po 등록 완료. 자세한 단계 설명은 process_commands.py 모듈 docstring
+참고.
 
 케이스 상태이력 로깅(2026-08-31 추가): 노드 함수들(process_commands.py)이
 전부 Command(update={"status": ..., ...}, goto=...) 형태로 통일돼 있는
@@ -32,10 +36,14 @@ from .process_commands import (
     PurchaseProcessState,
     check_mr_item_command,
     check_quotations_command,
+    check_urgency_command,
+    confirm_no_substitute_command,
+    create_catalog_po_command,
     create_po_command,
     create_rfq_command,
     decide_bidding_choice_command,
     final_selection_command,
+    po_approval_command,
     resolve_suppliers_choice_command,
     route_entrypoint_command,
     search_new_suppliers_command,
@@ -87,7 +95,13 @@ def build_process_graph(*, checkpointer: Any = None):
     graph.add_node("route_entrypoint", _with_status_log("route_entrypoint", route_entrypoint_command))
     graph.add_node("check_mr_item", _with_status_log("check_mr_item", check_mr_item_command))
     graph.add_node("substitute_selection", _with_status_log("substitute_selection", substitute_selection_command))
+    graph.add_node(
+        "confirm_no_substitute",
+        _with_status_log("confirm_no_substitute", confirm_no_substitute_command),
+    )
+    graph.add_node("check_urgency", _with_status_log("check_urgency", check_urgency_command))
     graph.add_node("decide_bidding_choice", _with_status_log("decide_bidding_choice", decide_bidding_choice_command))
+    graph.add_node("create_catalog_po", _with_status_log("create_catalog_po", create_catalog_po_command))
     graph.add_node(
         "resolve_suppliers_choice",
         _with_status_log("resolve_suppliers_choice", resolve_suppliers_choice_command),
@@ -97,6 +111,7 @@ def build_process_graph(*, checkpointer: Any = None):
     graph.add_node("create_rfq", _with_status_log("create_rfq", create_rfq_command))
     graph.add_node("check_quotations", _with_status_log("check_quotations", check_quotations_command))
     graph.add_node("final_selection", _with_status_log("final_selection", final_selection_command))
+    graph.add_node("po_approval", _with_status_log("po_approval", po_approval_command))
     graph.add_node("create_po", _with_status_log("create_po", create_po_command))
     graph.add_edge(START, "route_entrypoint")
     return graph.compile(checkpointer=checkpointer)

@@ -24,6 +24,7 @@ from backend_logic2.integrations.erp_client import (
     erp_send_email,
     ERPNextAPIError,
     erp_get,
+    erp_get_one,
     is_test_mode,
 )
 
@@ -39,7 +40,11 @@ ERP_DOMAIN = os.getenv(
 
 ERP_PORTAL_PATH_TEMPLATE = os.getenv(
     "ERP_PORTAL_PATH_TEMPLATE",
-    "/orders/{po_name}",
+    # 2026-09-02 수정: "/orders/{po_name}"는 Sales Order(고객 포털) 경로랑
+    # 헷갈려서 검증 없이 잘못 넣어뒀던 값 - 실제 공급사에게 보낸 링크가
+    # 404 났음. ERPNext 관리자 화면에서 직접 확인해서 Purchase Order
+    # 포털 경로가 "/purchase-orders"(복수형)인 걸로 확정.
+    "/purchase-orders/{po_name}",
 )
 
 
@@ -204,6 +209,27 @@ def create_and_send_po(
 
     today = date.today().isoformat()
 
+    # ---------------------------------------------------------
+    # 5-1. MR 연결 정보(material_request/material_request_item) 확보
+    #
+    # ⚠️ 2026-09-02 추가 - 이거 없이 item_code/qty만 넣으면 ERPNext가
+    # 이 PO를 원래 MR과 연결 못 해서, MR 문서의 "% Ordered"(발주 진행률)
+    # 계산이 전혀 안 됨. get_quotations_for_rfq()가 돌려주는 Supplier
+    # Quotation Item에는 이 두 필드가 안 들어있어서(sq_evaluation.py가
+    # 그 필드들을 아예 안 읽어옴), 여기서 RFQ 원본 문서를 다시 조회해서
+    # request_for_quotation_item(=RFQ Item의 child row name, SQ Item에
+    # 이미 들어있음)으로 매칭해 가져옴. RFQ Item에는 create_rfq()
+    # (send_rfq.py)가 만들 때부터 material_request/material_request_item을
+    # 이미 채워넣고 있어서 여기서 새로 만들 필요는 없음.
+    # ---------------------------------------------------------
+
+    rfq_doc = erp_get_one("Request for Quotation", rfq_name) or {}
+    rfq_items_by_row_name = {
+        row.get("name"): row
+        for row in rfq_doc.get("items", [])
+        if row.get("name")
+    }
+
     po_items = []
 
     for item in supplier_items:
@@ -224,6 +250,17 @@ def create_and_send_po(
         # supplier_quotation_item까지 연결
         if item.get("name"):
             po_item["supplier_quotation_item"] = item["name"]
+
+        rfq_item = rfq_items_by_row_name.get(item.get("request_for_quotation_item"))
+        if rfq_item and rfq_item.get("material_request") and rfq_item.get("material_request_item"):
+            po_item["material_request"] = rfq_item["material_request"]
+            po_item["material_request_item"] = rfq_item["material_request_item"]
+        else:
+            print(
+                f"  [경고] '{item.get('item_code')}' 품목의 material_request 연결정보를 "
+                f"RFQ '{rfq_name}'에서 찾지 못했습니다 - 이 PO 품목은 원본 MR과 "
+                f"자동 연결되지 않습니다(MR의 % Ordered에 반영 안 됨)."
+            )
 
         po_items.append(po_item)
 

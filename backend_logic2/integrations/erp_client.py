@@ -108,6 +108,25 @@ def erp_submit(doctype, name, max_retries=3):
         raise ERPNextAPIError(f"SUBMIT {doctype}/{name}: {res.status_code} - {res.text[:500]}")
 
 
+def erp_cancel(doctype, name):
+    """
+    Submit된 문서를 Cancel(docstatus 1 -> 2) 처리.
+
+    erp_submit과 대칭되는 함수 - Submit된 문서는 표준 Frappe 규칙상 바로
+    삭제가 안 되고 먼저 Cancel부터 해야 함(2026-09-01 추가, Draft MR
+    삭제는 erp_discard_draft로 별개 처리 - Submit 전/후 두 경로가 서로
+    다른 API를 씀).
+    """
+    res = requests.put(
+        f"{SITE_URL}/api/resource/{doctype}/{name}",
+        headers=HEADERS,
+        json={"docstatus": 2},
+    )
+    if res.status_code != 200:
+        raise ERPNextAPIError(f"CANCEL {doctype}/{name}: {res.status_code} - {res.text[:500]}")
+    return res.json().get("data")
+
+
 def erp_call(method, payload=None):
     """Frappe의 whitelisted method를 호출하고 반환값을 꺼낸다."""
     res = requests.post(
@@ -173,39 +192,6 @@ def erp_send_email(doctype, name, recipients, subject, content):
     if res.status_code != 200:
         raise ERPNextAPIError(f"EMAIL: {res.status_code} - {res.text[:500]}")
     return res.json().get("message")
-
-
-def erp_get_document_email_communications(doctype, name):
-    """
-    특정 문서(RFQ 등)에 연결된 이메일 Communication(발신/수신) 목록을 가져옴.
-
-    ERPNext에서 우리가 공급사에게 보낸 메일에 공급사가 '답장'을 하면, 그
-    메일이 이 문서의 Activity 탭에 Communication(sent_or_received=Received)
-    으로 자동으로 붙는다 — 독촉메일을 보낼지 말지 판단하는 근거가 바로 이 목록.
-
-    communication_medium="Email"로 좁혀서 전화 기록 등 다른 종류의
-    Communication은 제외함. creation 오름차순으로 반환해서, 호출하는 쪽에서
-    "가장 처음 보낸 메일"과 "가장 최근 메일"을 순서대로 다루기 쉽게 함.
-    """
-    return erp_get(
-        "Communication",
-        filters=[
-            ["reference_doctype", "=", doctype],
-            ["reference_name", "=", name],
-            ["communication_medium", "=", "Email"],
-        ],
-        fields=[
-            "name",
-            "sent_or_received",
-            "sender",
-            "recipients",
-            "cc",
-            "subject",
-            "creation",
-            "communication_date",
-        ],
-        order_by="creation asc",
-    ) or []
 
 
 def erp_add_comment(doctype, name, comment_text):

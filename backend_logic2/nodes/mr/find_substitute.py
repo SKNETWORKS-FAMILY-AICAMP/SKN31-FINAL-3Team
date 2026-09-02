@@ -301,17 +301,22 @@ def flatten_substitute_candidates(substitute_results: dict) -> list:
 def notify_requester_of_substitutes(mr: dict, substitute_results: dict) -> None:
     """
     대체품 후보를 찾았을 때 요청부서(MR 작성자)한테 ERPNext 안에서 바로
-    알려줌(2026-09-01 추가) - 새 API 엔드포인트나 Client Script 없이,
-    ERPNext에 이미 있는 기능만 재사용:
-      - erp_add_comment: 후보 번호 목록 + 답장 방법 안내를 타임라인에 남김
+    알려줌(2026-09-01 추가, 2026-09-02 안내문구 수정) - 새 API 엔드포인트나
+    Client Script 없이, ERPNext에 이미 있는 기능만 재사용:
+      - erp_add_comment: 후보 목록 + 선택 방법 안내를 타임라인에 남김
       - erp_assign_to: 실제 알림(종모양 + ToDo)이 가게 만드는 부분 -
         댓글만 달면 아무한테도 알림이 안 가서(erp_add_comment 자체의
         한계) 이걸로 보완함
 
-    댓글은 반드시 "[AI Procurement]"로 시작하게 만듦 - substitute_reply_
-    watcher.py가 이 접두어로 "이건 우리가 단 댓글"을 구분해서, 그 다음에
-    새로 달린 댓글을 사람의 답장으로 인식함(댓글 작성자 이메일 비교 대신
-    내용 기준으로 구분하는 게 더 단순해서 이렇게 함).
+    ⚠️ 2026-09-02 수정: 예전엔 "댓글로 번호를 답장해달라"고 안내했는데,
+    그건 substitute_reply_watcher.py(댓글 답장을 파싱해서 대신 resume
+    호출)가 그 답장을 받는 걸 전제로 한 문구였음. 근데 그 watcher는
+    Client Script("AI 대체품 확인" 버튼, create_mr_substitute_client_script.py)
+    + API 엔드포인트(mr_substitute_routes.py) 방식으로 대체되면서 더 이상
+    아무도 안 씀(그래서 substitute_reply_watcher.py 자체가 죽은 코드로
+    남아있음). 실제로 지금 살아있는 경로는 MR 화면의 "AI 대체품 확인"
+    버튼이라, 안내 문구도 그걸 가리키게 고침 - 댓글로 답장해도 이제
+    아무도 안 읽음.
     """
     mr_name = mr.get("name")
     requester_email = mr.get("owner")
@@ -328,9 +333,9 @@ def notify_requester_of_substitutes(mr: dict, substitute_results: dict) -> None:
             f"- 재고 {sub.get('total_qty')} ({fulfill}) - {sub.get('reason')}"
         )
     lines.append("")
-    lines.append("아래 형식으로 이 문서에 댓글로 답장해주세요:")
-    lines.append("  - 대체품을 쓰려면: 번호만 (예: 1)")
-    lines.append("  - 원래 품목을 그대로 구매하려면: '구매'")
+    lines.append("이 화면 위쪽의 'AI 대체품 확인' 버튼을 눌러서 선택해주세요:")
+    lines.append("  - 대체품을 쓰려면: 목록에서 원하는 대체품을 클릭")
+    lines.append("  - 원래 품목을 그대로 구매하려면: '원래 품목 그대로 구매' 클릭")
     comment = "\n".join(lines)
 
     try:
@@ -342,7 +347,7 @@ def notify_requester_of_substitutes(mr: dict, substitute_results: dict) -> None:
         try:
             erp_assign_to(
                 "Material Request", mr_name, requester_email,
-                description="대체품 후보가 확인되었습니다. 댓글로 번호를 선택하거나 '구매'라고 답해주세요.",
+                description="대체품 후보가 확인되었습니다. 'AI 대체품 확인' 버튼을 눌러 선택해주세요.",
             )
         except ERPNextAPIError as e:
             print(f"  [notify_requester_of_substitutes] 담당자 할당(알림) 실패: {e}")

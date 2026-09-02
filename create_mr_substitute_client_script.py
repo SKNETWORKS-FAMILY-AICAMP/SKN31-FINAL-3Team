@@ -44,7 +44,12 @@ MARKER = "// PROCUREMENT_AI_SUBSTITUTE_BUTTON_V1"
 SCRIPT_JS = f"""{MARKER}
 frappe.ui.form.on('Material Request', {{
     refresh: function(frm) {{
-        if (frm.doc.docstatus !== 1) return;
+        // 2026-09-01: "Draft-first" 구조로 바뀌면서 대체품 선택은 이제
+        // MR이 Submit되기 전(Draft)에 일어남 - Submit 자체가 "대체품
+        // 미사용 확정"의 결과이지, 대체품 선택의 전제조건이 아님. 그래서
+        // 기존 docstatus===1(Submit됨) 조건을 뒤집어서 Draft에서만 버튼이
+        // 뜨게 함.
+        if (frm.doc.docstatus !== 0) return;
 
         frm.add_custom_button('AI 대체품 확인', function() {{
             fetch('{API_BASE}/api/mr/' + frm.doc.name + '/substitutes', {{
