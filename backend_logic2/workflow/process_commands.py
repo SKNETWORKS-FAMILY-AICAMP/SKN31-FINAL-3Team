@@ -13,12 +13,10 @@
   [8단계] final_selection - 최종 공급사 선정 (HITL)
   [9단계] create_po - 선정 견적을 PO로 전환 + 발송
 
-⚠️ 미구현으로 END에서 멈추는 분기(사람이 수동으로 이어받아야 함):
-  - catalog_purchase_required(비딩 불필요): 자동 RFQ/PO 없음
+⚠️ 사람이 수동으로 이어받아야 하는 종료 분기:
   - human_review(각 단계 실패/후보없음): 담당자 직접 확인 필요
-  - substitute_selected(대체품 선택됨): 원본 MR엔 확인 댓글 등록 + Stopped
-    전환까지 자동 처리됨(2026-09-01, _apply_substitute_selected_to_mr).
-    대체품으로 새 MR을 만드는 것 자체는 여전히 수동.
+  - substitute_selected(대체품 선택됨): 원본 Draft MR에 표준 사유를 남긴 뒤
+    Discard하고 PostgreSQL Case는 CANCELLED로 보존함.
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Any, TypedDict
+from uuid import UUID
 
 from langgraph.graph import END
 from langgraph.types import Command, interrupt
@@ -41,14 +40,19 @@ class PurchaseProcessState(TypedDict, total=False):
     selected_substitute: str
     bidding_results: dict[str, Any]
     bidding_items: list[str]
+    direct_purchase: bool
+    direct_purchase_items: dict[str, dict[str, Any]]
     existing_supplier_candidates: list[dict[str, Any]]
     supplier_candidates: list[dict[str, Any]]
     supplier_registration_results: list[dict[str, Any]]
     selected_suppliers: list[str]
+    quotation_deadline: str
     rfq_name: str
     quotation_ranking: list[dict[str, Any]]
+    requested_supplier: str
     selected_supplier: str
     po_name: str
+    cancellation_reason: str
     error: str
 
 
@@ -66,6 +70,8 @@ def to_checkpoint_data(value: Any) -> Any:
         return str(value)
     if isinstance(value, (date, datetime)):
         return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
     return value
 
 
@@ -89,6 +95,11 @@ def route_entrypoint_command(state: PurchaseProcessState) -> Command:
     from backend_logic2.nodes.supplier.tools.case_logging import create_case
 
     case_id = state.get("case_id") or create_case(mr_name=state.get("mr_name"), status="started")
+    if state.get("entrypoint") == "bidding_recheck":
+        return Command(
+            update={"entrypoint": "", "case_id": case_id, "status": "checking_bidding"},
+            goto="decide_bidding_choice",
+        )
     return Command(update={"entrypoint": "", "case_id": case_id, "status": "checking_mr_item"}, goto="check_mr_item")
 
 
@@ -124,6 +135,10 @@ def check_mr_item_command(state: PurchaseProcessState) -> Command:
             goto="substitute_selection",
         )
 
+    # 구매 담당자의 시작 승인은 곧 신규 구매 경로의 MR Submit이다. RFQ
+    # child row가 Material Request를 참조하려면 이 시점 이후 docstatus=1이
+    # 보장되어야 한다.
+    _submit_mr_for_purchase(mr_name)
     return Command(
         update={"substitute_results": substitute_results, "status": "checking_bidding"},
         goto="decide_bidding_choice",
@@ -149,6 +164,7 @@ def substitute_selection_command(state: PurchaseProcessState) -> Command:
 
     choice = answer.get("item_code") if isinstance(answer, dict) else str(answer or "").strip()
     if _decision_value(answer) == "new_purchase" or choice == "new_purchase":
+        _submit_mr_for_purchase(state["mr_name"])
         return Command(
             update={"status": "checking_bidding", "error": ""},
             goto="decide_bidding_choice",
@@ -173,46 +189,67 @@ def substitute_selection_command(state: PurchaseProcessState) -> Command:
 
 
 def _apply_substitute_selected_to_mr(mr_name: str, item_code: str) -> None:
-    """대체품 선택 후처리(2026-09-01) - 원래 MR 문서 자체엔 아무 반응이
-    없었던 걸 요청부서가 실사용 중 직접 지적함("그 후처리는 뭐야?").
+    """요청자가 대체품을 선택하면 원본 Draft MR을 즉시 폐기한다.
 
-    1) 확인 댓글을 남기고
-    2) MR을 ERPNext 네이티브 "Stopped" 상태로 전환함(구매팀이 이 MR로
-       더 이상 조달을 진행하지 않는다는 걸 화면에서 바로 알 수 있게).
-
-    "Stopped"로의 전환은 일반 필드 PUT이 아니라 전용 whitelisted method가
-    있음 - 실제로 ERPNext 화면에서 네이티브 "Stop" 버튼을 눌러 Chrome
-    DevTools Network 탭으로 직접 캡처해서 확인한 값
-    (Request URL: {SITE_URL}/api/method/erpnext.stock.doctype.
-    material_request.material_request.update_status, 200 OK). 파라미터명
-    (name/status)은 캡처된 요청의 Payload 탭까지 본 게 아니라 ERPNext의
-    공통 update_status(name, status) 컨벤션(Sales Order/Purchase Order 등
-    다른 트랜잭션 문서들도 동일 패턴)을 근거로 넣은 값이라, 만약 틀리면
-    여기서 바로 ERPNextAPIError로 드러남(그 경우 정확한 파라미터명은 같은
-    방식으로 Payload 탭까지 확인해서 고치면 됨).
-
-    실패해도(둘 중 하나라도) 그래프 진행 자체를 막지 않음 - 대체품 선택은
-    이미 확정된 결정이라, ERPNext 쪽 후처리가 실패했다고 사람이 방금 내린
-    선택을 되돌릴 이유는 없음(fail-open, 로그만 남김).
+    이 단계까지 MR은 의도적으로 Draft를 유지한다. 표준 Discard가 실패한
+    경우 그래프도 실패로 남겨 ERP와 BiddingFlow 상태가 어긋나지 않게 한다.
     """
-    from backend_logic2.integrations.erp_client import erp_add_comment, erp_call, ERPNextAPIError
+    from backend_logic2.nodes.mr.reject_material_request import reject_material_request
 
-    try:
-        erp_add_comment(
-            "Material Request", mr_name,
-            f"[AI Procurement] 대체품({item_code})으로 처리되어 이 MR은 종료(Stopped)됩니다. "
-            f"신규 발주는 대체품 기준으로 별도 진행됩니다.",
-        )
-    except ERPNextAPIError as e:
-        print(f"[substitute_selection] 확인 댓글 등록 실패({mr_name}): {e}")
+    reject_material_request(
+        mr_name,
+        f"대체품({item_code}) 사용이 확정되어 원본 MR을 종료합니다.",
+        reason_code="SUBSTITUTE_SELECTED",
+    )
 
-    try:
-        erp_call(
-            "erpnext.stock.doctype.material_request.material_request.update_status",
-            {"name": mr_name, "status": "Stopped"},
-        )
-    except ERPNextAPIError as e:
-        print(f"[substitute_selection] MR Stopped 전환 실패({mr_name}): {e}")
+
+def _submit_mr_for_purchase(mr_name: str) -> dict:
+    """구매 담당자 승인 뒤 Draft MR을 한 번만 Submit한다."""
+    from backend_logic2.integrations.erp_client import erp_get_one, erp_submit
+
+    material_request = erp_get_one("Material Request", mr_name)
+    if not material_request:
+        raise ValueError(f"Material Request를 찾을 수 없습니다: {mr_name}")
+    docstatus = int(material_request.get("docstatus") or 0)
+    if docstatus == 1:
+        return material_request
+    if docstatus != 0:
+        raise ValueError(f"구매 진행할 수 없는 MR 상태입니다: {mr_name} (docstatus={docstatus})")
+    return erp_submit("Material Request", mr_name)
+
+
+def _cancel_urgent_mr_without_supplier(
+    mr_name: str,
+    bidding_results: dict[str, Any],
+) -> str | None:
+    """긴급 구매인데 연결 공급사가 전혀 없으면 표준 사유로 MR을 취소한다."""
+    urgent_items = [
+        item_code
+        for item_code, info in bidding_results.items()
+        if any(str(reason).startswith("긴급발주") for reason in info.get("reasons", []))
+    ]
+    if not urgent_items:
+        return None
+
+    from backend_logic2.nodes.mr.reject_material_request import reject_material_request
+
+    # 품목 마스터의 공급사 연결만으로는 즉시 구매할 가격 근거가 없다.
+    # 실제 Submit된 최근 PO에서 협력사와 확정단가를 함께 얻은 경우에만
+    # 카탈로그식 직접구매가 가능하다.
+    if all(bidding_results[item_code].get("direct_supplier") for item_code in urgent_items):
+        return None
+
+    reason = (
+        "긴급 구매 요청이지만 최근 거래한 협력사가 없어 "
+        "즉시 구매를 진행할 수 없습니다. 협력사 정보를 확인한 뒤 MR을 다시 요청해주세요. "
+        f"대상 품목: {', '.join(urgent_items)}"
+    )
+    reject_material_request(
+        mr_name,
+        reason,
+        reason_code="URGENT_NO_SUPPLIER",
+    )
+    return reason
 
 
 def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
@@ -225,9 +262,67 @@ def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
     bidding_items = [code for code, info in bidding_results.items() if info["needs_bidding"]]
 
     if not bidding_items:
+        cancellation_reason = _cancel_urgent_mr_without_supplier(mr_name, bidding_results)
+        if cancellation_reason:
+            return Command(
+                update={
+                    "bidding_results": bidding_results,
+                    "status": "urgent_no_supplier_cancelled",
+                    "cancellation_reason": cancellation_reason,
+                    "error": "",
+                },
+                goto=END,
+            )
+
+        direct_purchase_items = {
+            code: {
+                "supplier": info.get("direct_supplier"),
+                "rate": info.get("last_rate"),
+                "reference_po": info.get("reference_po"),
+                "reference_date": info.get("reference_date"),
+                "reason": (info.get("reasons") or [""])[0],
+            }
+            for code, info in bidding_results.items()
+        }
+        direct_suppliers = {
+            str(item.get("supplier") or "").strip()
+            for item in direct_purchase_items.values()
+            if str(item.get("supplier") or "").strip()
+        }
+        missing_purchase_basis = [
+            code
+            for code, item in direct_purchase_items.items()
+            if not item.get("supplier") or not item.get("rate")
+        ]
+        if missing_purchase_basis or len(direct_suppliers) != 1:
+            error = (
+                "비딩 불필요 판정은 완료됐지만 직접구매에 필요한 최근 협력사와 "
+                "확정단가를 하나로 결정할 수 없습니다. "
+                f"확인 품목: {', '.join(missing_purchase_basis or direct_purchase_items.keys())}"
+            )
+            return Command(
+                update={
+                    "bidding_results": bidding_results,
+                    "direct_purchase_items": direct_purchase_items,
+                    "status": "human_review",
+                    "error": error,
+                },
+                goto=END,
+            )
+
+        # 비딩을 생략해도 PO는 법적 효력이 있으므로 즉시 생성하지 않는다.
+        # 최근 확정 거래를 구매 근거로 저장하고 구매 담당자의 최종 승인을
+        # 받은 뒤 direct PO 생성 노드로 진행한다.
         return Command(
-            update={"bidding_results": bidding_results, "status": "catalog_purchase_required"},
-            goto=END,
+            update={
+                "bidding_results": bidding_results,
+                "direct_purchase": True,
+                "direct_purchase_items": direct_purchase_items,
+                "selected_supplier": next(iter(direct_suppliers)),
+                "status": "awaiting_po_approval",
+                "error": "",
+            },
+            goto="po_approval",
         )
 
     return Command(
@@ -315,13 +410,6 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
         dict(candidate) if isinstance(candidate, dict) else {"name": str(candidate), "registered": True}
         for candidate in raw_candidates
     ]
-    names = [candidate.get("name") for candidate in candidates if candidate.get("name")]
-
-    if not candidates:
-        return Command(
-            update={"status": "human_review", "error": "공급사 후보를 확보하지 못했습니다."},
-            goto=END,
-        )
 
     answer = interrupt({
         "type": "select_rfq_targets",
@@ -349,6 +437,24 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
     for candidate in candidates:
         if candidate.get("name") in updates_by_name:
             candidate.update(updates_by_name[candidate["name"]])
+    # 검색 결과가 0건이거나 목록에 없는 회사를 직접 입력한 경우에도 같은
+    # HITL 폼에서 신규 Supplier 등록과 RFQ 발송을 계속할 수 있다.
+    existing_names = {
+        str(candidate.get("name") or "").strip() for candidate in candidates
+    }
+    for name, update in updates_by_name.items():
+        if name not in existing_names:
+            candidates.append(
+                {
+                    "name": name,
+                    "email": str(update.get("email") or "").strip(),
+                    "registered": False,
+                    "source": "manual",
+                }
+            )
+            existing_names.add(name)
+
+    names = [candidate.get("name") for candidate in candidates if candidate.get("name")]
 
     dismissed = {str(name).strip() for name in answer.get("dismiss", []) if str(name).strip()}
     if _decision_value(answer) == "approve_all":
@@ -400,6 +506,7 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
     return Command(
         update={
             "selected_suppliers": selected,
+            "quotation_deadline": str(answer.get("quotation_deadline") or "").strip(),
             "supplier_candidates": candidates,
             "supplier_registration_results": registrations,
             "status": "creating_rfq",
@@ -437,10 +544,10 @@ def create_rfq_command(state: PurchaseProcessState) -> Command:
 
     if not rfq or not rfq.get("name"):
         print("  -> RFQ 생성/발송 실패")
-        return Command(
-            update={"status": "human_review", "error": "RFQ 생성 또는 발송에 실패했습니다."},
-            goto=END,
-        )
+        # 실패 노드를 END로 커밋하면 snapshot.next가 비어 실제 재시도가
+        # 불가능하다. 예외로 남겨 직전 RFQ 대상 선택 체크포인트에서 다시
+        # 응답할 수 있게 한다.
+        raise RuntimeError("RFQ 생성 또는 발송에 실패했습니다.")
 
     print(f"  -> RFQ 생성 완료: {rfq['name']}"
           f" (이메일 {'발송 안 함, TEST_MODE' if test_mode else '실제 발송됨'})\n")
@@ -489,7 +596,11 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         )
 
     # check와 finalize 둘 다 일단 지금 시점 견적을 조회함
-    from backend_logic2.nodes.quotation.sq_evaluation import evaluate_quotations, print_evaluation
+    from backend_logic2.nodes.quotation.sq_evaluation import (
+        evaluate_quotations,
+        print_evaluation,
+        submit_finalized_quotations,
+    )
 
     result = evaluate_quotations(state["rfq_name"])
     print_evaluation(result)
@@ -511,21 +622,41 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             goto="check_quotations",
         )
 
+    # 포털 견적은 Draft로 생성된다. 사용자가 명시적으로 최종 선정을
+    # 시작할 때만 순위에 포함된 견적을 Submit하여 이후 변경을 막는다.
+    submit_finalized_quotations(state["rfq_name"], result["ranking"])
+    requested_supplier = (
+        str(answer.get("supplier") or "").strip()
+        if isinstance(answer, dict)
+        else ""
+    )
     return Command(
-        update={"quotation_ranking": result["ranking"], "status": "awaiting_final_selection", "error": ""},
+        update={
+            "quotation_ranking": result["ranking"],
+            "requested_supplier": requested_supplier,
+            "status": "awaiting_final_selection",
+            "error": "",
+        },
         goto="final_selection",
     )
 
 
 def final_selection_command(state: PurchaseProcessState) -> Command:
-    """[8단계-대기] 순위목록 보여주고 최종 공급사 선정 물어봄."""
+    """[8단계-대기] 순위목록을 보여주고 최종 공급사를 선정한다.
+
+    선정과 발주는 서로 다른 사람의 명시적 행위다. 공급사를 골랐다는 이유로
+    법적 효력이 생기는 PO를 즉시 만들지 않고, 협력사 선정 화면의 '발주 시작'
+    입력과 PO 관리 화면의 최종 승인을 차례로 기다린다.
+    """
     ranking = state.get("quotation_ranking", [])
-    answer = interrupt({
-        "type": "final_selection",
-        "rfq_name": state["rfq_name"],
-        "ranking": ranking,
-    })
-    supplier = answer.get("supplier") if isinstance(answer, dict) else str(answer or "").strip()
+    supplier = str(state.get("requested_supplier") or "").strip()
+    if not supplier:
+        answer = interrupt({
+            "type": "final_selection",
+            "rfq_name": state["rfq_name"],
+            "ranking": ranking,
+        })
+        supplier = answer.get("supplier") if isinstance(answer, dict) else str(answer or "").strip()
     valid_suppliers = {r.get("supplier") for r in ranking}
     if supplier not in valid_suppliers:
         return Command(
@@ -534,8 +665,62 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
         )
 
     return Command(
-        update={"selected_supplier": supplier, "status": "creating_po", "error": ""},
-        goto="create_po",
+        update={
+            "selected_supplier": supplier,
+            "requested_supplier": "",
+            "status": "supplier_selected",
+            "error": "",
+        },
+        goto="await_order_start",
+    )
+
+
+def await_order_start_command(state: PurchaseProcessState) -> Command:
+    """협력사 선정 화면에서 사용자가 '발주 시작'을 누를 때까지 대기."""
+
+    answer = interrupt({
+        "type": "order_start",
+        "mr_name": state["mr_name"],
+        "rfq_name": state.get("rfq_name"),
+        "selected_supplier": state.get("selected_supplier"),
+        "instructions": "선정 결과를 확인한 뒤 발주 시작을 눌러 PO 승인 단계로 이동하세요.",
+    })
+    decision = _decision_value(answer)
+    if decision != "start_order":
+        return Command(
+            update={"status": "supplier_selected", "error": "start_order 입력이 필요합니다."},
+            goto="await_order_start",
+        )
+    return Command(
+        update={"status": "awaiting_po_approval", "error": ""},
+        goto="po_approval",
+    )
+
+
+def po_approval_command(state: PurchaseProcessState) -> Command:
+    """PO 생성·Submit·발송 직전 구매 담당자의 최종 승인을 받는다."""
+
+    answer = interrupt({
+        "type": "po_approval",
+        "mr_name": state["mr_name"],
+        "rfq_name": state.get("rfq_name"),
+        "selected_supplier": state.get("selected_supplier"),
+        "quotation_ranking": state.get("quotation_ranking", []),
+        "purchase_mode": "direct" if state.get("direct_purchase") else "quotation",
+        "direct_purchase_items": state.get("direct_purchase_items", {}),
+        "instructions": "PO는 법적 효력이 있으므로 생성·발송 전에 최종 승인 또는 반려하세요.",
+    })
+    decision = _decision_value(answer)
+    if decision == "approve":
+        return Command(update={"status": "creating_po", "error": ""}, goto="create_po")
+    if decision == "reject":
+        return Command(
+            update={"status": "human_review", "error": "PO 발송 전 최종 승인에서 반려되었습니다."},
+            goto=END,
+        )
+    return Command(
+        update={"status": "awaiting_po_approval", "error": "approve 또는 reject를 선택하세요."},
+        goto="po_approval",
     )
 
 
@@ -555,30 +740,49 @@ def create_po_command(state: PurchaseProcessState) -> Command:
     다시 확인하지만, 이중 안전장치로 여기서도 명시적으로 막음.
     """
     from backend_logic2.integrations.erp_client import is_test_mode
-    from backend_logic2.nodes.po.create_and_send_po import create_and_send_po
+    from backend_logic2.nodes.po.create_and_send_po import (
+        create_and_send_direct_po,
+        create_and_send_po,
+    )
 
-    rfq_name = state["rfq_name"]
+    direct_purchase = bool(state.get("direct_purchase"))
+    rfq_name = state.get("rfq_name")
     supplier = state.get("selected_supplier")
     test_mode = is_test_mode()
 
-    print(f"\n[PO 생성] '{state['mr_name']}' (RFQ: {rfq_name}) -> 공급사: {supplier}")
+    print(
+        f"\n[PO 생성] '{state['mr_name']}' "
+        f"({'최근 거래 직접구매' if direct_purchase else f'RFQ: {rfq_name}'}) "
+        f"-> 공급사: {supplier}"
+    )
     print(f"  환경: {'TEST_MODE (실제 이메일 발송 안 함)' if test_mode else '운영 모드 (실제 이메일 발송됨)'}")
 
     try:
-        po = create_and_send_po(rfq_name, supplier, send_email=not test_mode)
-    except SystemExit:
+        if direct_purchase:
+            po = create_and_send_direct_po(
+                state["mr_name"],
+                supplier,
+                state.get("direct_purchase_items", {}),
+                send_email=not test_mode,
+            )
+        else:
+            if not rfq_name:
+                raise RuntimeError("견적 기반 PO 생성에 필요한 RFQ가 없습니다.")
+            po = create_and_send_po(
+                rfq_name,
+                supplier,
+                mr_name=state["mr_name"],
+                send_email=not test_mode,
+            )
+    except SystemExit as exc:
         print("  -> PO 생성/발송 중단됨 (사유는 위 콘솔 출력 참고)")
-        return Command(
-            update={"status": "human_review", "error": "PO 생성/발송 중 오류로 중단되었습니다. 콘솔 로그를 확인하세요."},
-            goto=END,
-        )
+        raise RuntimeError(
+            "PO 생성 또는 발송이 중단되었습니다. 서버 로그를 확인해 주세요."
+        ) from exc
 
     if not po or not po.get("name"):
         print("  -> PO 생성 실패")
-        return Command(
-            update={"status": "human_review", "error": "PO 생성에 실패했습니다."},
-            goto=END,
-        )
+        raise RuntimeError("PO 생성에 실패했습니다.")
 
     print(f"  -> PO 처리 완료: {po['name']} (이메일 발송: {'예' if po.get('email_sent') else '아니오'})\n")
 

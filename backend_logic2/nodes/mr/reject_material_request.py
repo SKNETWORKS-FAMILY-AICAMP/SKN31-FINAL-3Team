@@ -1,4 +1,4 @@
-"""Record a Material Request rejection reason without changing Draft state."""
+"""Reject a Material Request and close the ERPNext document safely."""
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 from backend_logic2.integrations.erp_client import (
     ERPNextAPIError,
     erp_add_comment,
+    erp_cancel,
+    erp_discard_draft,
     erp_get_one,
 )
 
@@ -26,6 +28,9 @@ class MaterialRequestNotDraftError(Exception):
 
 class RejectionCommentRequest(BaseModel):
     reason: str = Field(..., max_length=2000)
+
+
+REJECTION_COMMENT_TEMPLATE = "[AI Procurement][{reason_code}] {reason}"
 
 
 def add_rejection_comment(mr_name: str, reason: str) -> dict:
@@ -51,11 +56,53 @@ def add_rejection_comment(mr_name: str, reason: str) -> dict:
     return erp_add_comment("Material Request", mr_name, clean_reason)
 
 
+def reject_material_request(
+    mr_name: str,
+    reason: str,
+    *,
+    reason_code: str = "BUYER_REJECTED",
+) -> dict:
+    """Comment and close an MR without leaving it in Pending/Draft.
+
+    ERPNext cannot *Cancel* a Draft transaction directly. Drafts therefore use
+    the standard Discard operation, while already submitted MRs use Cancel.
+    Both operations are exposed to BiddingFlow as ``CANCELLED`` and the
+    PostgreSQL workflow history retains the reason after a discarded ERP draft
+    disappears from the active MR list.
+    """
+    clean_reason = reason.strip()
+    if not clean_reason:
+        raise ValueError("반려 사유를 입력해주세요.")
+
+    material_request = erp_get_one("Material Request", mr_name)
+    if material_request is None:
+        raise MaterialRequestNotFoundError(mr_name)
+
+    docstatus = int(material_request.get("docstatus") or 0)
+    if docstatus == 2:
+        return {"name": mr_name, "status": "CANCELLED", "action": "already_cancelled"}
+    if docstatus not in {0, 1}:
+        raise MaterialRequestNotDraftError(mr_name)
+
+    comment = REJECTION_COMMENT_TEMPLATE.format(
+        reason_code=reason_code.strip() or "REJECTED",
+        reason=clean_reason,
+    )
+    erp_add_comment("Material Request", mr_name, comment)
+    if docstatus == 0:
+        erp_discard_draft("Material Request", mr_name)
+        action = "discarded_draft"
+    else:
+        erp_cancel("Material Request", mr_name)
+        action = "cancelled_submitted"
+    return {"name": mr_name, "status": "CANCELLED", "action": action, "reason": clean_reason}
+
+
 @router.post("/{mr_name}/rejection-comment", status_code=status.HTTP_201_CREATED)
 def create_rejection_comment(mr_name: str, request: RejectionCommentRequest):
-    """Record a rejection reason while preserving the MR's Draft state."""
+    """Backward-compatible route that now also closes the rejected MR."""
     try:
-        comment = add_rejection_comment(mr_name, request.reason)
+        result = reject_material_request(mr_name, request.reason)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except MaterialRequestNotFoundError as exc:
@@ -74,6 +121,6 @@ def create_rejection_comment(mr_name: str, request: RejectionCommentRequest):
     return {
         "success": True,
         "mr_name": mr_name,
-        "status": "Draft",
-        "comment": comment,
+        "status": "CANCELLED",
+        "result": result,
     }

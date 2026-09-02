@@ -56,6 +56,7 @@ def _config(thread_id: str) -> dict:
 class SubstituteDecisionRequest(BaseModel):
     item_code: Optional[str] = None
     decision: Optional[str] = None
+    reason: Optional[str] = None
 
 
 @router.get("/{mr_name}/substitutes")
@@ -106,6 +107,37 @@ def submit_substitute_decision(
     if not body.item_code and not body.decision:
         raise HTTPException(status_code=400, detail="item_code 또는 decision 중 하나는 필요합니다.")
 
+    normalized_decision = str(body.decision or "").strip().lower()
+    if normalized_decision in {"reject", "force_reject"}:
+        # Client Script의 강제 반려도 댓글만 남기고 Pending에 방치하지 않는다.
+        # Draft는 Discard, 이미 Submit된 MR은 Cancel한다.
+        from backend_logic2.nodes.mr.reject_material_request import reject_material_request
+        from backend_logic2.repositories.cases import get_case_by_mr, transition_case
+        from backend_logic2.repositories.tasks import cancel_pending_tasks
+
+        reason = (body.reason or "대체품 검토 결과 구매 요청이 반려되었습니다.").strip()
+        reject_material_request(
+            mr_name,
+            reason,
+            reason_code="FORCE_REJECT" if normalized_decision == "force_reject" else "SUBSTITUTE_REJECTED",
+        )
+        case = get_case_by_mr(mr_name)
+        if case:
+            cancel_pending_tasks(str(case["case_id"]), reason=reason)
+            transition_case(
+                str(case["case_id"]),
+                status="CANCELLED",
+                stage="CANCELLED",
+                reason=reason,
+                triggered_by="erpnext_client_script",
+            )
+        return {
+            "mr_name": mr_name,
+            "success": True,
+            "status": "cancelled",
+            "reason": reason,
+        }
+
     app = get_process_app()
     resume_data = {}
     if body.decision:
@@ -117,6 +149,23 @@ def submit_substitute_decision(
 
     new_values = (app.get_state(_config(mr_name)).values) or {}
     still_waiting = new_values.get("status") == "awaiting_substitute_selection"
+
+    # ERPNext 요청자가 선택한 결과를 PostgreSQL에 투영하고 알림/SSE로
+    # 구매 화면을 깨운다. 이 보조 처리가 실패해도 그래프 결정은 보존된다.
+    try:
+        from backend_logic2.services.workflow_service import project_substitute_decision
+
+        is_new_purchase = (
+            str(body.decision or "").strip().lower() == "new_purchase"
+            or str(body.item_code or "").strip().lower() == "new_purchase"
+        )
+        project_substitute_decision(
+            mr_name,
+            new_purchase=is_new_purchase,
+            selected_item_code=None if is_new_purchase else body.item_code,
+        )
+    except Exception as exc:
+        print(f"[mr_substitute_routes] 구매 작업 상태 투영 실패({mr_name}): {exc}")
 
     return to_checkpoint_data({
         "mr_name": mr_name,

@@ -35,7 +35,12 @@ def _fetch_po_line(order, item_code):
         return None
     for item in po_doc.get("items", []):
         if item.get("item_code") == item_code:
-            return {"date": order["transaction_date"], "rate": item.get("rate") or 0}
+            return {
+                "date": order["transaction_date"],
+                "rate": item.get("rate") or 0,
+                "supplier": po_doc.get("supplier"),
+                "purchase_order": po_doc.get("name") or order["name"],
+            }
     return None
 
 
@@ -107,6 +112,35 @@ def _find_brand_supplier(item):
     return None
 
 
+def _direct_purchase_fields(purchases, *, supplier=None):
+    """Return the traceable source needed to create a non-bidding PO.
+
+    A `needs_bidding=False` decision is actionable only when a submitted past
+    PO supplies both the vendor and its last confirmed unit price.  Keeping
+    these values in the graph state lets the PO approval screen explain which
+    transaction is being reused instead of silently guessing later.
+    """
+
+    matching = [
+        purchase
+        for purchase in purchases
+        if not supplier or _normalize_name(purchase.get("supplier")) == _normalize_name(supplier)
+    ]
+    if not matching:
+        return {}
+    latest = matching[-1]
+    direct_supplier = supplier or latest.get("supplier")
+    rate = latest.get("rate") or 0
+    if not direct_supplier or not rate:
+        return {}
+    return {
+        "direct_supplier": direct_supplier,
+        "last_rate": rate,
+        "reference_po": latest.get("purchase_order"),
+        "reference_date": str(latest.get("date") or ""),
+    }
+
+
 def _decide_one_item(line):
     item_code, qty = line["item_code"], line["qty"]
     print(f"  [{item_code}] 판정 시작 (요청수량: {qty})")
@@ -115,8 +149,19 @@ def _decide_one_item(line):
     purchases = _get_past_purchases(item_code)
     print(f"    -> 과거 확정구매 이력: {len(purchases)}건")
 
-    # 1. 신규거래
+    schedule_date = _parse_date(line.get("schedule_date"))
+    remaining_days = (schedule_date - date.today()).days if schedule_date else None
+
+    # 1. 신규거래. 단, 긴급인데 최근 확정 거래가 없다면 새 공급사를
+    # 탐색할 시간도 없으므로 후속 command가 표준 사유로 MR을 중단한다.
     if not purchases:
+        if remaining_days is not None and remaining_days <= URGENT_LEAD_TIME_DAYS:
+            reason = (
+                f"긴급발주이나 최근 거래 협력사 없음 "
+                f"(납기까지 {remaining_days}일, 긴급 기준 {URGENT_LEAD_TIME_DAYS}일 이하)"
+            )
+            print(f"    -> 판정: 비딩 불필요(구매 중단) | {reason}")
+            return item_code, {"needs_bidding": False, "reasons": [reason]}
         reason = "신규거래(과거 구매이력 없음)"
         print(f"    -> 판정: 비딩 필요 | {reason}")
         return item_code, {"needs_bidding": True, "reasons": [reason]}
@@ -124,20 +169,35 @@ def _decide_one_item(line):
     # 2. 제조사 직거래 (Brand == Supplier)
     brand_supplier = _find_brand_supplier(item)
     if brand_supplier:
+        direct_fields = _direct_purchase_fields(purchases, supplier=brand_supplier)
+        if not direct_fields:
+            reason = "제조사 직거래 공급사의 확정 구매단가가 없어 경쟁견적 필요"
+            print(f"    -> 판정: 비딩 필요 | {reason}")
+            return item_code, {"needs_bidding": True, "reasons": [reason]}
         reason = f"제조사 직거래 (Brand '{item.get('brand')}' = Supplier '{brand_supplier}')"
         print(f"    -> 판정: 비딩 불필요 | {reason}")
-        return item_code, {"needs_bidding": False, "reasons": [reason], "direct_supplier": brand_supplier}
+        return item_code, {
+            "needs_bidding": False,
+            "reasons": [reason],
+            **direct_fields,
+        }
 
     # 3. 긴급발주
-    schedule_date = _parse_date(line.get("schedule_date"))
-    remaining_days = (schedule_date - date.today()).days if schedule_date else None
-
     if remaining_days is not None:
         print(f"    -> 납기일까지 남은 기간: {remaining_days}일")
         if remaining_days <= URGENT_LEAD_TIME_DAYS:
+            direct_fields = _direct_purchase_fields(purchases)
+            if not direct_fields:
+                reason = "긴급발주이나 재사용할 최근 협력사·확정단가가 없어 구매 중단 필요"
+                print(f"    -> 판정: 비딩 불필요(구매 중단) | {reason}")
+                return item_code, {"needs_bidding": False, "reasons": [reason]}
             reason = f"긴급발주 (납기까지 {remaining_days}일, 긴급 기준 {URGENT_LEAD_TIME_DAYS}일 이하)"
             print(f"    -> 판정: 비딩 불필요 | {reason}")
-            return item_code, {"needs_bidding": False, "reasons": [reason]}
+            return item_code, {
+                "needs_bidding": False,
+                "reasons": [reason],
+                **direct_fields,
+            }
     else:
         print("    -> 납기일 정보 없음: 긴급발주 판단 생략")
 
@@ -172,7 +232,11 @@ def _decide_one_item(line):
 
         reason = "기존 저액거래 + 구매주기 규칙적 + 정상 구매시점"
         print(f"    -> 판정: 비딩 불필요 | {reason}")
-        return item_code, {"needs_bidding": False, "reasons": [reason]}
+        return item_code, {
+            "needs_bidding": False,
+            "reasons": [reason],
+            **_direct_purchase_fields(purchases),
+        }
 
     # 구매이력 부족 (N건 미만)
     print(f"    -> 구매패턴 판단 이력 부족 ({len(purchases)}건 < {MIN_ORDERS_FOR_PATTERN}건)")
@@ -183,7 +247,11 @@ def _decide_one_item(line):
 
     reason = f"구매이력은 부족하지만 마지막 거래가 {INACTIVE_MONTHS}개월 이내"
     print(f"    -> 판정: 비딩 불필요 | {reason}")
-    return item_code, {"needs_bidding": False, "reasons": [reason]}
+    return item_code, {
+        "needs_bidding": False,
+        "reasons": [reason],
+        **_direct_purchase_fields(purchases),
+    }
 
 
 def decide_bidding(mr_name):

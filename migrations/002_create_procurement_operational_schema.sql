@@ -66,18 +66,20 @@ COMMENT ON TABLE procurement.item_group_spec IS
     'Cached required specification fields for each ERPNext Item Group.';
 
 CREATE TABLE IF NOT EXISTS procurement.narajangteo_company_info (
-    bizno VARCHAR(140) PRIMARY KEY,
+    bizno VARCHAR(140) NOT NULL,
     company_name VARCHAR(140) NOT NULL,
     sigungu VARCHAR(140),
     head_branch_cls VARCHAR(140),
     country VARCHAR(140),
     company_type VARCHAR(140),
-    main_biz_type VARCHAR(140),
+    main_biz_type VARCHAR(140) NOT NULL,
     is_manufacturer CHAR(1),
-    main_item_no VARCHAR(140),
+    main_item_no VARCHAR(140) NOT NULL,
     main_item_name VARCHAR(140),
     reg_date DATE,
-    biz_status_code VARCHAR(140)
+    biz_status_code VARCHAR(140),
+    CONSTRAINT pk_narajangteo_company_info
+        PRIMARY KEY (bizno, main_item_no, main_biz_type)
 );
 
 COMMENT ON TABLE procurement.narajangteo_company_info IS

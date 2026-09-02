@@ -197,6 +197,13 @@ def build_supplier_quotation_payload(
             "rate": float(quotation_item.unit_price),
             "price_list_rate": float(quotation_item.unit_price),
             "lead_time_days": lead_time_days,
+            # 프로젝트 ERPNext에 추가된 실제 견적 납기 필드. lead_time_days도
+            # 함께 유지해 표준 ERPNext와 기존 평가 모듈 모두 호환한다.
+            "expected_delivery_date": (
+                quotation_item.delivery_date.isoformat()
+                if quotation_item.delivery_date
+                else None
+            ),
             "request_for_quotation": quotation.rfq_name,
             "request_for_quotation_item": rfq_item.get("name"),
             "material_request": rfq_item.get("material_request"),

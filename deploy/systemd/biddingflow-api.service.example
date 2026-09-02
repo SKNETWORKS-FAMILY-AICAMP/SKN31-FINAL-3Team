@@ -1,0 +1,21 @@
+[Unit]
+Description=BiddingFlow FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/biddingflow/SKN31-FINAL-3Team
+EnvironmentFile=/opt/biddingflow/SKN31-FINAL-3Team/.env
+ExecStart=/opt/biddingflow/SKN31-FINAL-3Team/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+# 현재 LangGraph checkpointer와 실행 lock은 단일 프로세스 기준이다.
+# PostgreSQL checkpointer/외부 worker 전환 전에는 workers를 늘리지 않는다.
+
+[Install]
+WantedBy=multi-user.target

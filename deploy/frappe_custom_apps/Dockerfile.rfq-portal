@@ -1,0 +1,6 @@
+FROM frappe/erpnext:v16.32.0
+
+USER root
+COPY --chown=frappe:frappe biddingflow_rfq_portal /home/frappe/frappe-bench/apps/biddingflow_rfq_portal
+RUN /home/frappe/frappe-bench/env/bin/pip install --no-cache-dir -e /home/frappe/frappe-bench/apps/biddingflow_rfq_portal
+USER frappe

@@ -24,6 +24,7 @@ from backend_logic2.integrations.erp_client import (
     erp_send_email,
     ERPNextAPIError,
     erp_get,
+    erp_get_one,
     is_test_mode,
 )
 
@@ -47,6 +48,7 @@ def create_and_send_po(
     rfq_name: str,
     supplier_id: str,
     *,
+    mr_name: str | None = None,
     send_email: bool = True,
 ):
     print("\n=== PO(Purchase Order) 생성 및 발송 ===")
@@ -204,9 +206,54 @@ def create_and_send_po(
 
     today = date.today().isoformat()
 
+    # Supplier Quotation portal rows do not consistently retain the original
+    # Material Request links. Recover them through the RFQ child rows, then use
+    # the workflow MR as a guarded fallback. A PO is never submitted without
+    # both the MR header and child-row references.
+    rfq = erp_get_one("Request for Quotation", rfq_name) or {}
+    rfq_items = rfq.get("items") or []
+    rfq_items_by_name = {
+        str(item.get("name")): item for item in rfq_items if item.get("name")
+    }
+    material_request = erp_get_one("Material Request", mr_name) if mr_name else None
+    mr_items = (material_request or {}).get("items") or []
+
+    def source_links(item: dict) -> tuple[str | None, str | None]:
+        linked_rfq_item = rfq_items_by_name.get(str(item.get("request_for_quotation_item")))
+        if linked_rfq_item is None:
+            linked_rfq_item = next(
+                (
+                    row for row in rfq_items
+                    if row.get("item_code") == item.get("item_code")
+                ),
+                {},
+            )
+        linked_mr = item.get("material_request") or linked_rfq_item.get("material_request") or mr_name
+        linked_mr_item = (
+            item.get("material_request_item")
+            or linked_rfq_item.get("material_request_item")
+        )
+        if not linked_mr_item and linked_mr:
+            linked_mr_item = next(
+                (
+                    row.get("name") for row in mr_items
+                    if row.get("item_code") == item.get("item_code")
+                ),
+                None,
+            )
+        return linked_mr, linked_mr_item
+
     po_items = []
 
     for item in supplier_items:
+
+        linked_mr, linked_mr_item = source_links(item)
+        if not linked_mr or not linked_mr_item:
+            print(
+                f"[오류] {item.get('item_code')} 품목의 Material Request 연결을 "
+                "확인할 수 없어 PO 생성을 중단합니다."
+            )
+            sys.exit(1)
 
         po_item = {
             "item_code": item["item_code"],
@@ -214,6 +261,8 @@ def create_and_send_po(
             "rate": item["rate"],
             "schedule_date": item["expected_delivery_date"],
             "supplier_quotation": quotation_name,
+            "material_request": linked_mr,
+            "material_request_item": linked_mr_item,
         }
 
         # SQ에서 UOM이 존재할 때만 전달
@@ -261,6 +310,22 @@ def create_and_send_po(
 
     except ERPNextAPIError as e:
         print(f"[에러] PO Draft 생성 실패: {e}")
+        sys.exit(1)
+
+    # ERPNext가 전달한 링크 필드를 실제로 보존했는지 Submit 전에 검증한다.
+    # 링크가 누락된 Draft는 법적 효력이 생기기 전 멈춰 사람이 확인할 수 있다.
+    created_po = erp_get_one("Purchase Order", po_name) or new_po
+    unlinked_items = [
+        item.get("item_code")
+        for item in created_po.get("items") or []
+        if not item.get("material_request") or not item.get("material_request_item")
+    ]
+    if unlinked_items or not (created_po.get("items") or []):
+        print(
+            f"[오류] PO '{po_name}'의 MR 연결 검증에 실패했습니다: "
+            f"{unlinked_items or ['품목 없음']}"
+        )
+        print("연결되지 않은 Draft는 Submit하지 않습니다. ERPNext에서 확인해주세요.")
         sys.exit(1)
 
     # ---------------------------------------------------------
@@ -425,6 +490,194 @@ def create_and_send_po(
     return {
         "name": po_name,
         "supplier_quotation": quotation_name,
+        "status": "submitted",
+        "email_sent": not test_mode,
+    }
+
+
+def create_and_send_direct_po(
+    mr_name: str,
+    supplier_id: str,
+    direct_purchase_items: dict,
+    *,
+    send_email: bool = True,
+):
+    """Create a PO without RFQ from the most recent confirmed transaction.
+
+    This is the catalog/direct-purchase path.  The bidding node records the
+    source PO, supplier and unit price in ``direct_purchase_items``; this
+    function validates those facts against the current MR and keeps the MR
+    header/child links on every PO row.  It must only be called after the
+    explicit ``po_approval`` interrupt has been approved.
+    """
+
+    print("\n=== 카탈로그식 직접 PO 생성 및 발송 ===")
+    print(f"MR: {mr_name}")
+    print(f"최근 거래 협력사: {supplier_id}")
+
+    material_request = erp_get_one("Material Request", mr_name)
+    if not material_request:
+        print(f"[오류] Material Request를 찾을 수 없습니다: {mr_name}")
+        sys.exit(1)
+    if int(material_request.get("docstatus") or 0) != 1:
+        print(f"[오류] Submit된 Material Request만 직접 구매할 수 있습니다: {mr_name}")
+        sys.exit(1)
+
+    try:
+        existing_pos = erp_get(
+            "Purchase Order",
+            filters=[
+                ["Purchase Order Item", "material_request", "=", mr_name],
+                ["docstatus", "!=", 2],
+            ],
+            fields=["name"],
+            limit=100,
+        )
+    except Exception as exc:
+        print(f"[오류] MR 기준 중복 PO 확인에 실패했습니다: {exc}")
+        sys.exit(1)
+    if existing_pos:
+        names = sorted({row.get("name") for row in existing_pos if row.get("name")})
+        print(f"[오류] MR '{mr_name}'에 이미 PO가 존재합니다: {names}")
+        sys.exit(1)
+
+    today = date.today().isoformat()
+    po_items = []
+    for item in material_request.get("items") or []:
+        item_code = str(item.get("item_code") or "").strip()
+        basis = direct_purchase_items.get(item_code) or {}
+        basis_supplier = str(basis.get("supplier") or "").strip()
+        try:
+            rate = float(basis.get("rate") or 0)
+        except (TypeError, ValueError):
+            rate = 0
+        if basis_supplier != supplier_id or rate <= 0:
+            print(
+                f"[오류] {item_code}의 최근 거래 협력사·확정단가를 검증할 수 없습니다. "
+                f"supplier={basis_supplier or '-'}, rate={rate}"
+            )
+            sys.exit(1)
+        schedule_date = str(
+            item.get("schedule_date")
+            or material_request.get("schedule_date")
+            or today
+        )[:10]
+        if schedule_date < today:
+            schedule_date = today
+        po_item = {
+            "item_code": item_code,
+            "qty": item.get("qty") or item.get("stock_qty"),
+            "rate": rate,
+            "schedule_date": schedule_date,
+            "material_request": mr_name,
+            "material_request_item": item.get("name"),
+        }
+        if item.get("uom"):
+            po_item["uom"] = item["uom"]
+        if item.get("warehouse"):
+            po_item["warehouse"] = item["warehouse"]
+        if not po_item["material_request_item"]:
+            print(f"[오류] {item_code}의 Material Request Item 링크가 없습니다.")
+            sys.exit(1)
+        po_items.append(po_item)
+
+    if not po_items:
+        print(f"[오류] MR '{mr_name}'에 구매할 품목이 없습니다.")
+        sys.exit(1)
+
+    payload = {
+        "supplier": supplier_id,
+        "transaction_date": today,
+        "schedule_date": min(item["schedule_date"] for item in po_items),
+        "items": po_items,
+    }
+    try:
+        new_po = erp_post("Purchase Order", payload)
+        po_name = new_po.get("name")
+    except ERPNextAPIError as exc:
+        print(f"[오류] 직접구매 PO Draft 생성 실패: {exc}")
+        sys.exit(1)
+    if not po_name:
+        print("[오류] ERPNext가 생성된 PO 이름을 반환하지 않았습니다.")
+        sys.exit(1)
+
+    created_po = erp_get_one("Purchase Order", po_name) or new_po
+    created_items = created_po.get("items") or []
+    if not created_items or any(
+        not item.get("material_request") or not item.get("material_request_item")
+        for item in created_items
+    ):
+        print(f"[오류] 직접구매 PO '{po_name}'의 MR 연결 검증에 실패했습니다.")
+        sys.exit(1)
+
+    try:
+        erp_submit("Purchase Order", po_name)
+    except ERPNextAPIError as exc:
+        print(f"[오류] 직접구매 PO '{po_name}' Submit 실패: {exc}")
+        sys.exit(1)
+
+    test_mode = is_test_mode()
+    if not send_email:
+        return {
+            "name": po_name,
+            "direct_purchase": True,
+            "reference_pos": sorted({
+                str(item.get("reference_po"))
+                for item in direct_purchase_items.values()
+                if item.get("reference_po")
+            }),
+            "status": "submitted",
+            "email_sent": False,
+        }
+
+    supplier_rows = erp_get(
+        "Supplier",
+        filters=[["name", "=", supplier_id]],
+        fields=["email_id"],
+    ) or []
+    recipient_email = supplier_rows[0].get("email_id") if supplier_rows else None
+    if not recipient_email:
+        print(f"[경고] 공급사 '{supplier_id}' 이메일이 없어 PO는 Submit 후 수동 발송 대기합니다.")
+        return {
+            "name": po_name,
+            "direct_purchase": True,
+            "status": "submitted",
+            "email_sent": False,
+        }
+
+    portal_link = ERP_DOMAIN + ERP_PORTAL_PATH_TEMPLATE.format(po_name=po_name)
+    references = ", ".join(sorted({
+        str(item.get("reference_po"))
+        for item in direct_purchase_items.values()
+        if item.get("reference_po")
+    }))
+    content = f"""
+    <p>안녕하세요.</p>
+    <p>최근 거래({references or '확정 구매 이력'})를 기준으로 발주서
+       <b>{po_name}</b>를 송부합니다.</p>
+    <p><a href="{portal_link}" target="_blank">발주서 상세 확인하기</a></p>
+    """
+    try:
+        erp_send_email(
+            "Purchase Order",
+            po_name,
+            recipient_email,
+            f"발주서(PO) 안내 - {po_name}",
+            content,
+        )
+    except ERPNextAPIError as exc:
+        print(f"[오류] PO는 확정됐지만 이메일 발송에 실패했습니다: {exc}")
+        return {
+            "name": po_name,
+            "direct_purchase": True,
+            "status": "submitted",
+            "email_sent": False,
+            "email_error": str(exc),
+        }
+
+    return {
+        "name": po_name,
+        "direct_purchase": True,
         "status": "submitted",
         "email_sent": not test_mode,
     }

@@ -1,0 +1,25 @@
+services:
+  backend:
+    image: skn31/erpnext-biddingflow:v16.32.0-rfq1
+    pull_policy: never
+    build:
+      context: ./custom-apps
+      dockerfile: Dockerfile.rfq-portal
+  configurator:
+    image: skn31/erpnext-biddingflow:v16.32.0-rfq1
+    pull_policy: never
+  frontend:
+    image: skn31/erpnext-biddingflow:v16.32.0-rfq1
+    pull_policy: never
+  queue-long:
+    image: skn31/erpnext-biddingflow:v16.32.0-rfq1
+    pull_policy: never
+  queue-short:
+    image: skn31/erpnext-biddingflow:v16.32.0-rfq1
+    pull_policy: never
+  scheduler:
+    image: skn31/erpnext-biddingflow:v16.32.0-rfq1
+    pull_policy: never
+  websocket:
+    image: skn31/erpnext-biddingflow:v16.32.0-rfq1
+    pull_policy: never

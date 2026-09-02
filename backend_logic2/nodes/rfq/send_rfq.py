@@ -16,7 +16,15 @@ nodes/create_and_send_rfq.py — 6번 모듈: RFQ 생성 + 발송
 
 import os
 import requests
-from backend_logic2.integrations.erp_client import erp_get_one, erp_post, erp_submit, ERPNextAPIError, SITE_URL, HEADERS
+from backend_logic2.integrations.erp_client import (
+    ERPNextAPIError,
+    HEADERS,
+    SITE_URL,
+    erp_discard_draft,
+    erp_get_one,
+    erp_post,
+    erp_submit,
+)
 
 DEFAULT_MESSAGE = (
     "견적 부탁드립니다.<br><br>"
@@ -117,12 +125,31 @@ def create_rfq(
 
     # 4. ERPNext에 완성된 RFQ 문서 실제 생성 (Draft)
     rfq = erp_post("Request for Quotation", mapped_rfq)
-    
+
+    # RFQ가 만들어졌다는 사실만으로 성공 처리하지 않는다. 각 child row의
+    # Material Request 링크가 실제 저장되었는지 다시 읽어 검증해야 이후
+    # Supplier Quotation -> PO까지 원본 MR 추적이 끊기지 않는다.
+    if not rfq or not rfq.get("name"):
+        raise ERPNextAPIError(f"RFQ 생성 응답에 문서명이 없습니다: {mr_name}")
+    rfq_detail = erp_get_one("Request for Quotation", rfq["name"]) or {}
+    linked_rows = [
+        row for row in rfq_detail.get("items") or []
+        if row.get("material_request") == mr_name and row.get("material_request_item")
+    ]
+    if len(linked_rows) != len(items_payload):
+        # 연결이 깨진 Draft를 남기면 재시도 때 중복 RFQ가 생기므로 즉시
+        # 폐기하고 사람이 원인을 확인할 수 있는 명시적 오류로 바꾼다.
+        erp_discard_draft("Request for Quotation", rfq["name"])
+        raise ERPNextAPIError(
+            f"RFQ {rfq['name']}의 Material Request 링크 검증 실패: "
+            f"expected={len(items_payload)}, linked={len(linked_rows)}"
+        )
+
     # 5. 선택적으로 제출 (Draft-only이면 생성까지만 수행)
     if rfq and submit:
         erp_submit("Request for Quotation", rfq["name"])
-        
-    return rfq
+
+    return rfq_detail or rfq
 
 
 def send_rfq(rfq_name: str):

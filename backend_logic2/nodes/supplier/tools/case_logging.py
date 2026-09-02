@@ -54,10 +54,13 @@ def create_case(mr_name=None, status="created"):
         with get_connection(autocommit=True) as conn:
             conn.execute(
                 """
-                INSERT INTO procurement.procurement_case (case_id, mr_name, status)
-                VALUES (%(case_id)s, %(mr_name)s, %(status)s)
+                INSERT INTO procurement.procurement_case (
+                    case_id, mr_name, thread_id, status, stage
+                ) VALUES (
+                    %(case_id)s, %(mr_name)s, %(mr_name)s, 'RUNNING', 'ITEM_CHECK'
+                )
                 """,
-                {"case_id": case_id, "mr_name": mr_name, "status": status},
+                {"case_id": case_id, "mr_name": mr_name},
             )
     except Exception as e:
         print(f"    [case_logging] 케이스 생성 실패, 케이스 없이 진행: {e}")
@@ -69,9 +72,13 @@ def create_case(mr_name=None, status="created"):
 
 def log_status_change(case_id, to_status, reason=None, from_status=None):
     """
-    case_status_history에 상태전이 1건 기록 + procurement_case.status도
-    같이 최신 상태로 갱신. case_id가 None이면(케이스 없이 단독 실행 등)
-    조용히 스킵.
+    LangGraph 내부 상태전이를 case_status_history에만 기록한다.
+
+    procurement_case.status/stage는 프론트용 안정 상태이며
+    workflow_service.project_case_from_checkpoint()만 갱신한다. 내부 상태를
+    같은 컬럼에 쓰면 WAITING_INPUT과 awaiting_quotation_check가 실행 순서에
+    따라 서로 덮어쓰므로 여기서는 운영 read model을 절대 수정하지 않는다.
+    case_id가 None이면(케이스 없이 단독 실행 등) 조용히 스킵한다.
 
     from_status 자동 보완(2026-08-31 추가): process_graph.py의
     _with_status_log 래퍼는 그래프 "노드" 레벨 전이(checking_mr_item ->
@@ -82,8 +89,8 @@ def log_status_change(case_id, to_status, reason=None, from_status=None):
     search_completed 등)는 호출부가 from_status를 안 넘기면 매번 NULL로
     찍혔었음(DBeaver에서 실제로 확인됨). 호출부 하나하나에 이전 상태를
     손으로 들고 다니게 하는 대신, 여기서 from_status가 안 넘어오면
-    procurement_case.status(직전에 기록된 최신 상태)를 먼저 조회해서
-    자동으로 채움 - 호출부는 그대로 두고 여기 한 곳만 고치면 됨.
+    case_status_history의 직전 to_status를 조회해서 자동으로 채운다. 따라서
+    UI 상태값이 내부 그래프 상태 이력에 섞이지 않는다.
     """
     if not case_id:
         return
@@ -95,11 +102,17 @@ def log_status_change(case_id, to_status, reason=None, from_status=None):
         with get_connection(autocommit=True) as conn:
             if from_status is None:
                 row = conn.execute(
-                    "SELECT status FROM procurement.procurement_case WHERE case_id = %(case_id)s",
+                    """
+                    SELECT to_status
+                    FROM procurement.case_status_history
+                    WHERE case_id = %(case_id)s
+                    ORDER BY occurred_at DESC, id DESC
+                    LIMIT 1
+                    """,
                     {"case_id": case_id},
                 ).fetchone()
                 if row:
-                    from_status = row["status"] if isinstance(row, dict) else row[0]
+                    from_status = row["to_status"] if isinstance(row, dict) else row[0]
 
             conn.execute(
                 """
@@ -107,11 +120,6 @@ def log_status_change(case_id, to_status, reason=None, from_status=None):
                 VALUES (%(case_id)s, %(from_status)s, %(to_status)s, %(reason)s)
                 """,
                 {"case_id": case_id, "from_status": from_status, "to_status": to_status, "reason": reason},
-            )
-            conn.execute(
-                "UPDATE procurement.procurement_case SET status = %(status)s, updated_at = now() "
-                "WHERE case_id = %(case_id)s",
-                {"status": to_status, "case_id": case_id},
             )
         print(f"    [케이스 상태] {case_id[:8]}... {from_status} -> '{to_status}'" + (f" ({reason})" if reason else ""))
     except Exception as e:

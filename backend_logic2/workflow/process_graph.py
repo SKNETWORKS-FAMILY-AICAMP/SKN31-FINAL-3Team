@@ -30,12 +30,14 @@ from langgraph.graph import START, StateGraph
 
 from .process_commands import (
     PurchaseProcessState,
+    await_order_start_command,
     check_mr_item_command,
     check_quotations_command,
     create_po_command,
     create_rfq_command,
     decide_bidding_choice_command,
     final_selection_command,
+    po_approval_command,
     resolve_suppliers_choice_command,
     route_entrypoint_command,
     search_new_suppliers_command,
@@ -97,6 +99,8 @@ def build_process_graph(*, checkpointer: Any = None):
     graph.add_node("create_rfq", _with_status_log("create_rfq", create_rfq_command))
     graph.add_node("check_quotations", _with_status_log("check_quotations", check_quotations_command))
     graph.add_node("final_selection", _with_status_log("final_selection", final_selection_command))
+    graph.add_node("await_order_start", _with_status_log("await_order_start", await_order_start_command))
+    graph.add_node("po_approval", _with_status_log("po_approval", po_approval_command))
     graph.add_node("create_po", _with_status_log("create_po", create_po_command))
     graph.add_edge(START, "route_entrypoint")
     return graph.compile(checkpointer=checkpointer)

@@ -26,7 +26,7 @@ nodes/sq_evaluation.py - RFQ에 대해 포털로 들어온 Supplier Quotation을
 
 import json
 import argparse
-from backend_logic2.integrations.erp_client import erp_get, erp_get_one
+from backend_logic2.integrations.erp_client import erp_get, erp_get_one, erp_submit
 
 # 확인 필요: Supplier Quotation Item에서 RFQ를 연결하는 실제 필드명.
 REQUEST_FOR_QUOTATION_LINK_FIELD = "request_for_quotation"
@@ -65,7 +65,10 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
         "Supplier Quotation",
         filters=[
             ["Supplier Quotation Item", REQUEST_FOR_QUOTATION_LINK_FIELD, "=", rfq_name],
-            ["docstatus", "=", 0],
+            # Portal quotations start as Draft, but finalized quotations are
+            # submitted before supplier selection.  Keep both active states
+            # visible so PO creation can still resolve the selected document.
+            ["docstatus", "!=", 2],
         ],
         fields=["name"],
     )
@@ -80,6 +83,7 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
         quotations.append({
             "name": doc.get("name"),
             "supplier": doc.get("supplier"),
+            "docstatus": doc.get("docstatus"),
 
             "transaction_date": doc.get("transaction_date"),
             "valid_till": doc.get("valid_till"),
@@ -95,6 +99,10 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
 
                     "request_for_quotation_item":
                         item.get("request_for_quotation_item"),
+                    "request_for_quotation":
+                        item.get("request_for_quotation"),
+                    "material_request": item.get("material_request"),
+                    "material_request_item": item.get("material_request_item"),
 
                     "item_code": item.get("item_code"),
                     "item_name": item.get("item_name"),
@@ -118,6 +126,44 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
             ],
         })
     return quotations
+
+
+def submit_finalized_quotations(rfq_name: str, ranking: list[dict]) -> list[str]:
+    """Submit every active quotation included in a finalized ranking.
+
+    ``check`` is read-only.  This function is called only for the explicit
+    ``finalize`` decision so a portal-created Draft does not remain mutable
+    while the buyer is selecting the winning supplier.
+    """
+
+    quotation_names = {
+        str(row.get("name") or "").strip()
+        for row in ranking
+        if str(row.get("name") or "").strip()
+    }
+    if not quotation_names:
+        raise ValueError("확정할 Supplier Quotation 문서명이 없습니다.")
+
+    submitted: list[str] = []
+    for quotation_name in sorted(quotation_names):
+        quotation = erp_get_one("Supplier Quotation", quotation_name)
+        if not quotation:
+            raise ValueError(f"Supplier Quotation을 찾을 수 없습니다: {quotation_name}")
+        linked = any(
+            item.get(REQUEST_FOR_QUOTATION_LINK_FIELD) == rfq_name
+            for item in quotation.get("items") or []
+        )
+        if not linked:
+            raise ValueError(
+                f"{quotation_name}은(는) RFQ {rfq_name}에 연결된 견적이 아닙니다."
+            )
+        docstatus = int(quotation.get("docstatus") or 0)
+        if docstatus == 0:
+            erp_submit("Supplier Quotation", quotation_name)
+        elif docstatus != 1:
+            raise ValueError(f"확정할 수 없는 견적 상태입니다: {quotation_name}")
+        submitted.append(quotation_name)
+    return submitted
 
 
 def _ai_rank_quotations(requirements: dict, quotations: list) -> list:

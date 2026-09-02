@@ -141,7 +141,11 @@ def _normalize_item(detail: dict[str, Any], item: dict[str, Any]) -> dict[str, A
         "net_rate": item.get("net_rate"),
         "net_amount": item.get("net_amount"),
         "lead_time_days": lead_time_days,
-        "schedule_date": _calculate_schedule_date(transaction_date, lead_time_days),
+        "schedule_date": (
+            item.get("expected_delivery_date")
+            or _calculate_schedule_date(transaction_date, lead_time_days)
+        ),
+        "expected_delivery_date": item.get("expected_delivery_date"),
         "warehouse": item.get("warehouse"),
         "item_tax_rate": _parse_json_object(item.get("item_tax_rate")),
         "request_for_quotation": item.get("request_for_quotation"),
@@ -218,7 +222,10 @@ def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation
             "unit": item.get("uom") or item.get("stock_uom"),
             "unit_price": net_rate if net_rate is not None else item.get("rate"),
             "amount": net_amount if net_amount is not None else item.get("amount"),
-            "delivery_date": _calculate_schedule_date(transaction_date, item.get("lead_time_days")),
+            "delivery_date": (
+                item.get("expected_delivery_date")
+                or _calculate_schedule_date(transaction_date, item.get("lead_time_days"))
+            ),
             "lead_time_days": item.get("lead_time_days"),
             "specifications": extract_specifications(description),
             "raw_description": description,

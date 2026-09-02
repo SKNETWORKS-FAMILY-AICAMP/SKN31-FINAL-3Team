@@ -1,0 +1,709 @@
+BiddingFlow 백엔드-프론트 통합 작업 로그
+정리 기준일: 2026-09-02
+대상: SKN31-FINAL-3Team 백엔드와 SKN31-FINAL-front 프론트의 통합 작업
+
+※ 이 문서는 백엔드-프론트 연결 작업을 시작한 이후의 현재 작업 트리, 테스트 결과,
+   실행 중 확인한 사항을 기능 단위로 재정리한 기록이다.
+※ API Key, Secret, DB 비밀번호, JWT 키 등 실제 비밀 값은 기록하지 않았다.
+※ Git 커밋 단위의 변경 일지가 아니라 현재 로컬 구현을 기준으로 한 통합 작업 요약이다.
+
+
+1. 전체 통합 방향
+------------------
+
+- ERPNext를 구매 원문 문서의 기준 시스템(Source of Truth)으로 유지했다.
+- 별도 PostgreSQL에는 ERPNext가 직접 표현하기 어려운 다음 운영 상태를 저장하도록 분리했다.
+  · MR별 현재 구매 단계와 실행 상태
+  · 사용자 개입 대기 작업(Interrupt Task)
+  · 반려·복귀·재시도 이력
+  · 알림과 실시간 이벤트
+  · 배송/수령 및 공급사 평가 연결 상태
+  · AI 판단 결과와 실행 기록
+- 프로젝트 전제인 “MR 1건 = 품목 1개”를 프론트 표시 및 백엔드 프로젝션의 기본 단위로 삼았다.
+- 프론트가 LangGraph 노드를 직접 호출하지 않고 FastAPI의 안정된 API 계약만 호출하도록 계층을 분리했다.
+- 화면의 단계 이동은 프론트 임의 상태가 아니라 ERPNext 문서 상태 + PostgreSQL 실행 상태의 조합으로 계산하도록 구성했다.
+
+
+2. 인증 및 세션 기반 연결
+-------------------------
+
+- auth_service 모듈을 기준으로 로그인, 로그아웃, Access Token, Refresh Token 흐름을 구성했다.
+- ERPNext 로그인 검증 결과와 BiddingFlow 사용자 세션을 연결할 수 있도록 했다.
+- Refresh Token은 PostgreSQL 인증 저장소에서 회전·폐기할 수 있는 구조로 구성했다.
+- 보호가 필요한 구매 API에는 FastAPI CurrentUser 의존성을 적용했다.
+- 프론트는 API 요청 시 Access Token을 보내고, 만료 시 Refresh 흐름을 거친 뒤 요청을 재시도할 수 있는 기반을 마련했다.
+- 프론트의 백엔드 주소는 고정된 127.0.0.1 문자열 대신 환경변수로 지정할 수 있게 했다.
+
+주요 파일
+- auth_service/config.py
+- auth_service/security.py
+- auth_service/repository.py
+- auth_service/dependencies.py
+- auth_service/router.py
+- migrations/001_create_auth_schema.sql
+- migrations/003_attach_existing_dev_role.sql
+
+
+3. PostgreSQL 구매 운영 스키마 및 데이터 접근 계층
+---------------------------------------------------
+
+- 구매 프로세스 상태를 영속화하는 운영 스키마를 추가·보강했다.
+- 프론트-백엔드 통합에 필요한 케이스, 작업, 이벤트, 알림, 배송 데이터를 저장할 수 있게 했다.
+- SQL을 라우터에 직접 흩뿌리지 않고 repositories 계층으로 분리했다.
+- 동일 ERP 이벤트가 재전송되어도 중복 처리하지 않도록 event_id 기반 멱등 처리 기반을 넣었다.
+- 운영 스키마 적용용 migrate 진입점을 추가했다.
+- 나라장터 CSV 데이터를 PostgreSQL에 적재하는 유틸리티와 회사 키 보정 마이그레이션을 추가했다.
+- 종료 상태 데이터를 명시적으로 정리할 수 있는 cleanup_terminal_cases.py를 추가했다.
+
+주요 파일
+- migrations/002_create_procurement_operational_schema.sql
+- migrations/004_fix_narajangteo_company_key.sql
+- migrations/005_create_frontend_backend_integration.sql
+- procurement_db/migrate.py
+- procurement_db/import_narajangteo_csv.py
+- procurement_db/cleanup_terminal_cases.py
+- backend_logic2/repositories/cases.py
+- backend_logic2/repositories/tasks.py
+- backend_logic2/repositories/events.py
+- backend_logic2/repositories/notifications.py
+- backend_logic2/repositories/deliveries.py
+
+
+4. 프론트가 호출하는 구매 REST API
+----------------------------------
+
+FastAPI에 다음 구매 API를 연결했다.
+
+- POST /api/procurement/cases/sync-drafts
+  ERPNext의 Draft MR을 동기화하고, 필요 시 기존 캐시와 대조한다.
+
+- GET /api/procurement/cases
+  상태·단계·종료 포함 여부·페이지 범위에 따라 구매 케이스를 조회한다.
+
+- GET /api/procurement/cases/{case_id}
+  한 MR의 상세정보, 사용자 작업, 배송정보를 함께 조회한다.
+
+- POST /api/procurement/cases/{case_id}/start
+  사람이 검토한 MR의 AI 구매 워크플로 실행을 시작하거나 실패 체크포인트에서 재개한다.
+
+- POST /api/procurement/cases/{case_id}/reject
+  구매 작업자의 반려 사유를 ERPNext와 운영 DB에 반영한다.
+
+- POST /api/procurement/cases/{case_id}/quotation-deadline
+  견적 마감일 연장과 관련 상태 변경을 처리한다.
+
+- GET /api/procurement/tasks
+  현재 사용자에게 필요한 개입 폼 목록을 조회한다.
+
+- POST /api/procurement/tasks/{task_id}/answer
+  폼 응답을 저장하고 중단된 LangGraph 실행을 재개한다.
+
+- GET /api/procurement/notifications
+  알림 목록과 읽지 않은 알림을 조회한다.
+
+- POST /api/procurement/notifications/{notification_id}/read
+  알림을 읽음 처리한다.
+
+- GET /api/procurement/events
+  PostgreSQL LISTEN/NOTIFY를 이용한 인증된 SSE 실시간 알림 스트림이다.
+
+- GET /api/purchase/items
+  ERPNext에 실제 등록된 Item 목록을 조회한다.
+
+- GET /api/purchase/items/{item_code}/specifications
+  해당 Item의 그룹별 규격 필드와 실제 값을 조회한다.
+
+주요 파일
+- backend_logic2/api/procurement_routes.py
+- backend_logic2/integrations/erp_client.py
+- backend_logic2/services/workflow_service.py
+- backend_logic2/services/workflow_projection.py
+
+
+5. ERPNext 수신 방식: 폴링과 웹훅 전환
+-------------------------------------
+
+- MR 수신 방식을 MR_INGEST_MODE 환경변수로 바꿀 수 있게 했다.
+  · polling: 로컬 개발 및 공용 네트워크 환경에서 사용
+  · webhook: AWS에 백엔드를 배포하고 ERPNext가 접근 가능한 주소가 생긴 뒤 사용
+- polling 모드에서는 서버 시작 시 기존 Draft MR을 한 번 동기화하고 이후 짧은 주기로 신규 Draft를 확인한다.
+- 동기화 시 ERPNext에서 사라진 문서를 무조건 삭제하지 않는다.
+  · 명시적인 404 또는 docstatus=2(Cancelled)인 경우에만 종료 상태로 정리
+  · 일시적인 ERP 통신 오류는 MR 삭제로 오판하지 않음
+- 웹훅 전환을 위한 엔드포인트를 미리 구성했다.
+  · POST /api/webhooks/erpnext/material-request
+  · POST /api/webhooks/erpnext/purchase-receipt
+  · POST /api/webhooks/erpnext/item
+- 웹훅은 로그인 사용자 토큰이 아닌 별도의 서버 간 Secret 헤더로 인증한다.
+- 웹훅 이벤트 ID를 이용해 ERPNext의 재시도 요청을 중복 실행하지 않도록 했다.
+- /api/health에서 현재 수신 모드, MR 폴러, 대체품 응답 폴러의 작동 여부를 확인할 수 있게 했다.
+
+현재 개발 환경 상태
+- MR 수신: polling 모드
+- MR 폴러: 활성
+- 대체품 응답 폴러: 활성
+- AWS 배포 후 할 일: ERPNext Webhook URL을 AWS FastAPI 주소로 변경한 뒤 MR_INGEST_MODE를 webhook으로 전환
+
+
+6. LangGraph 구매 흐름과 상태 프로젝션
+--------------------------------------
+
+- 기존 팀원 노드 코드를 최대한 유지하면서 프론트가 해석할 수 있는 표준 단계/상태로 투영하는 계층을 추가했다.
+- process_graph.py와 process_commands.py의 Command(goto=...) 흐름을 그대로 활용했다.
+- 주요 흐름을 다음과 같이 연결했다.
+  1) MR 검토 시작
+  2) Item 및 대체품 확인
+  3) 요청자의 대체품 선택 대기
+  4) 구매/입찰 판단
+  5) 기존 또는 신규 공급사 탐색
+  6) RFQ 대상 공급사 선택 및 이메일 보완
+  7) RFQ 생성·발송 및 견적 회신 대기
+  8) 견적 비교와 최종 공급사 선택
+  9) 발주 시작과 PO 발송 전 사용자 승인
+  10) PO 생성·Submit·이메일 발송
+  11) Purchase Receipt 수신 및 공급사 평가 가능 상태 전환
+- 각 중단 지점은 단순 input() 대신 task 레코드와 form_schema를 생성하는 방향으로 연결했다.
+- 사용자 답변이 들어오면 task 버전과 상태를 확인한 뒤 LangGraph 체크포인트를 재개한다.
+- 체크포인트의 실제 next 노드와 DB에 표시할 stage/status가 어긋나지 않도록 projection 서비스를 추가했다.
+
+주요 파일
+- backend_logic2/workflow/process_graph.py
+- backend_logic2/workflow/process_commands.py
+- backend_logic2/services/workflow_service.py
+- backend_logic2/services/workflow_projection.py
+- backend_logic2/process_checkpoints.sqlite
+
+
+7. 실패 후 재시작 및 체크포인트 복구
+-------------------------------------
+
+- AI 실행 중 환경변수나 외부 API 문제로 실패한 MR이 영구적으로 멈추지 않도록 재시도 흐름을 추가했다.
+- FAILED 케이스에 유효한 LangGraph 체크포인트가 있으면 ERPNext 문서가 이미 Submitted 상태여도 재시작을 허용한다.
+- 재시도 시 MR 처음부터 다시 실행하지 않고 checkpoint.next 위치에서 app.invoke(None)으로 이어서 실행한다.
+- ERPNext에서 실제 Cancelled 상태인 MR은 재시작하지 못하도록 막았다.
+- 터미널 체크포인트가 남아 있으면 해당 결과를 DB에 다시 투영하여 화면 상태를 복구한다.
+- 프론트의 실패 항목 재시도 버튼과 연결할 수 있는 API 동작을 준비했다.
+
+이 작업으로 해결하려는 사례
+- API Key 또는 외부 서비스 키 누락으로 AI 처리 중 실패
+- 키를 넣고 서버를 재시작한 뒤 동일 MR을 체크포인트부터 계속 처리
+- 이미 Submit된 MR이라는 이유만으로 재개가 막히는 문제 방지
+
+
+8. 대체품 선택의 ERPNext-백엔드 연결
+------------------------------------
+
+- 요청 부서 사용자가 ERPNext Material Request 화면에서 대체품을 확인하고 선택할 수 있는 Client Script를 정리했다.
+- 기존 스크립트의 localhost FastAPI 직접 호출은 다른 팀원 PC에서 동작하지 않고 CORS/포트포워딩 문제가 있어 제거했다.
+- ERPNext 동일 출처의 Comment API를 이용하는 방식으로 변경했다.
+- 사용자의 선택 결과는 MR Comment로 기록되고, 백엔드의 substitute reply poller가 이를 감지한다.
+- 대체품 사용 선택 시 원 MR을 취소·종료하는 흐름으로 연결한다.
+- 신규 구매 진행 선택 시 워크플로를 재개하고 구매 담당자에게 “신규구매 요청됨” 상태와 알림을 투영한다.
+- 대체품 선택은 MR 검토 단계의 Draft 문서에서도 보이도록 조건을 조정했다.
+- Client Script 생성 도구는 기존 스크립트를 삭제 후 재생성하지 않고 PUT으로 갱신하도록 변경했다.
+
+주요 파일
+- create_mr_substitute_client_script.py
+- backend_logic2/api/mr_substitute_routes.py
+- backend_logic2/nodes/mr/substitute_reply_watcher.py
+- main.py
+
+
+9. Item 목록과 규격 데이터
+--------------------------
+
+- Item 목록을 목 데이터가 아니라 ERPNext Item API에서 조회할 수 있는 엔드포인트를 구현했다.
+- Item의 null 값 때문에 프론트에서 replace() 오류가 발생하지 않도록 데이터 정규화와 방어 처리를 보강했다.
+- 규격은 ERPNext 문서의 모든 시스템 필드를 그대로 노출하지 않고 다음 우선순위로 추출한다.
+  · 품목 그룹에 정의된 실제 규격 필드
+  · ERPNext DocType 메타데이터상 사용자 입력 필드
+  · PostgreSQL에 정의된 품목 그룹별 규격 스키마
+- 예: 안전모는 “프리사이즈 54~63cm, 충격흡수 내피, 후면 래칫 조절, 4점식 턱끈, 색상 황색”처럼 사용자가 읽을 수 있는 규격 항목 위주로 표시하도록 준비했다.
+- 프론트 규격 모달은 뭉친 문자열을 쉼표·줄바꿈·구분자 기준으로 임시 파싱해 항목별로 보여주도록 보강했다.
+- Item 목록 검색은 코드, 품명, 요청부서, 규격 등 표시 데이터 기준으로 동작할 수 있게 연결했다.
+
+주요 파일
+- procurement_db/item_specifications.py
+- backend_logic2/integrations/erp_client.py
+- backend_logic2/services/item_service.py
+- tests/test_item_specifications.py
+- tests/test_item_webhook_service.py
+
+
+10. RFQ, Supplier Quotation, 공급사 선정, PO
+--------------------------------------------
+
+- Supplier Quotation 조회 시 RFQ 연결 필드와 품목 자식 테이블을 확인하는 로직을 보강했다.
+- 견적의 valid_till, 품목별 expected_delivery_date가 이후 비교와 PO 생성에 이어지도록 필드 전달을 정리했다.
+- 공급사 추천 → RFQ 대상 선택 → 마감 연장 → 견적 확인 → 업체 선정 → 발주 시작 순서가 구분되도록 상태를 나눴다.
+- 업체 선정은 자동 확정하지 않고 AI 추천 결과를 사람이 최종 선택하도록 유지했다.
+- 업체를 선택한 뒤에는 같은 선정 버튼을 반복 노출하지 않고 “선정 완료”로 표시하며, 목록에서는 다음 상태를 보여주도록 했다.
+- 발주 시작 시 협력사 선정 목록에서 제거되고 PO 관리 단계로 이동하도록 프론트 흐름을 정리했다.
+- 기존의 별도 “협력사 승인 대기 PR” 목업 흐름은 현재 합의된 PO 전 사용자 승인 흐름과 구분했다.
+- 공급사를 찾지 못했거나 PO 발송이 실패하면 성공처럼 넘기지 않고 협력사 선정 단계에서 오류와 사용자 개입 필요 상태로 표시할 수 있게 했다.
+- 이메일이 없는 공급사는 자동 발송 대상에서 제외하되 사용자가 직접 이메일을 보완할 수 있는 폼 흐름을 고려했다.
+
+ERPNext RFQ 포털 보강 준비
+- 코어를 직접 수정하지 않고 Frappe custom app으로 포털 템플릿과 whitelisted method를 오버라이드하는 배포 파일을 준비했다.
+- 포털 Supplier Quotation 작성 화면에 valid_till과 expected_delivery_date 입력을 전달하는 구조다.
+
+주요 파일
+- backend_logic2/nodes/rfq/send_rfq.py
+- backend_logic2/nodes/quotation/quotation_filter/get_supplier_quotations.py
+- backend_logic2/nodes/quotation/quotation_filter/quotation_registrar.py
+- backend_logic2/nodes/po/create_and_send_po.py
+- deploy/frappe_custom_apps/biddingflow_rfq_portal/
+
+
+11. Purchase Receipt 및 공급사 평가 연결
+----------------------------------------
+
+- Purchase Receipt 웹훅으로 실제 수령 여부를 받는 엔드포인트를 추가했다.
+- 수령 이벤트를 PO/MR 케이스와 연결해 배송 상태와 실제 납기 일자를 기록할 수 있게 했다.
+- 수령 완료 후 Supplier Scoreboard 작성 가능 상태로 전환하고 알림/SSE 이벤트를 만들 수 있는 서비스 계층을 추가했다.
+- 프론트 PO 관리 화면에서 예정 납기뿐 아니라 실제 수령 납기 일자를 표시할 수 있는 데이터 구조를 마련했다.
+
+주요 파일
+- backend_logic2/services/receipt_service.py
+- backend_logic2/repositories/deliveries.py
+- POST /api/webhooks/erpnext/purchase-receipt
+
+
+12. 프론트엔드 연결 및 사용자 경험 변경
+---------------------------------------
+
+- 기존 목업 화면의 레이아웃과 정보 구조를 유지하면서 실제 API 데이터로 전환할 수 있는 계층을 추가했다.
+- 개발 중에는 mock/hybrid/실 API 모드를 환경변수로 선택할 수 있도록 했고, 실 API 모드에서 오류를 목 데이터로 조용히 덮지 않도록 구분했다.
+- MR 목록에 실제 상태, 단계, 차수, 긴급 여부, 규격, 반려/복귀 이력을 표시하도록 연결했다.
+- MR 목록 컬럼 정렬, Item 검색, 상세 규격 모달을 추가·보강했다.
+- 사용자 개입이 필요한 단계에는 task의 form_schema를 바탕으로 선택지 + 기타 입력 형태의 폼을 띄울 수 있게 했다.
+- 신규 MR은 목록에 들어올 때 알림과 함께 좌측에서 슬라이드 인하고, 다음 단계로 넘어가면 우측으로 슬라이드 아웃하는 전환을 적용할 수 있게 했다.
+- “AI 처리중”이라는 추상 문구 대신 현재 수행 중인 구체 단계를 간단히 표시하도록 상태 매핑을 보강했다.
+- 대시보드는 Draft/Pending 구매 건을 중심으로 표시하도록 정리했다.
+- 알림 드롭다운, 우측 하단 토스터, SSE 재연결을 연결했다.
+- 사이드바를 접고 펼칠 수 있게 했다.
+- 협력사 선정 완료 건은 선정 UI를 비활성/완료 상태로 바꾸고 다음 단계 액션만 노출하도록 정리했다.
+- 하단 도움말 버튼, 모달, 버튼, 색상 등은 BiddingFlow 모노크롬 톤으로 통일했다.
+
+
+13. 실시간 알림과 미접속 사용자 처리 원칙
+------------------------------------------
+
+- 실시간 이벤트만 프론트로 보내고 끝내지 않고 먼저 PostgreSQL에 상태와 알림을 저장한다.
+- 사용자가 접속 중이면 SSE로 즉시 알림과 화면 갱신 신호를 받는다.
+- 사용자가 미접속이면 DB에 그대로 남아 있다가 다음 로그인 시 REST 목록/알림 API로 한 번에 복구한다.
+- SSE는 정답 데이터 자체가 아니라 “변경됨” 신호로 사용하고, 실제 화면 상태는 REST 재조회로 확정한다.
+- SSE에 retry 지시자와 keep-alive를 적용했다.
+- 서버 종료 시 대기 중인 PostgreSQL notification iterator를 취소·정리하여 Uvicorn 종료가 오래 걸리던 문제를 완화했다.
+- 완료 작업은 즉시 물리 삭제하지 않고 종료 상태로 보존하여 AI 로그와 감사 이력을 검토할 수 있게 하는 방향으로 설계했다.
+
+
+14. 서버 실행 및 환경변수 정리
+--------------------------------
+
+- server.bat에서 FastAPI를 0.0.0.0:8000으로 실행하도록 구성했다.
+- 개발 중 reload를 사용하되 graceful shutdown timeout을 짧게 두어 종료 지연을 줄였다.
+- 중복 실행되어 포트를 점유하던 Uvicorn 프로세스를 확인하고 종료했다.
+- .env.example에 다음 설정 항목을 문서화했다.
+  · DATABASE_URL 계열
+  · ERPNext 주소와 API 인증 항목
+  · JWT/암호화 설정
+  · ERPNEXT_WEBHOOK_SECRET
+  · CLIENT_SCRIPT_SECRET
+  · MR_INGEST_MODE
+  · MR_POLL_INTERVAL_SECONDS
+  · PROCUREMENT_API_BASE_URL
+  · TEST_MODE 및 이메일 관련 설정
+- 실제 .env 값은 Git이나 본 로그에 노출하지 않는다.
+
+
+15. 실제 데이터 정리 및 테스트 중 확인한 사항
+------------------------------------------------
+
+- ERPNext에서 이미 삭제·취소된 MR이 PostgreSQL 캐시에 계속 보이는 문제를 점검했다.
+- 정리 전에 종료 케이스를 JSON으로 백업했다.
+  · FINAL-docs/backups/terminal_procurement_cases_20260902T051609Z.json
+- 당시 종료 케이스 38건과 연결된 AI 판단 로그 87건을 정리했다.
+- 이후 동기화 로직은 일시적인 ERP 오류를 삭제로 오판하지 않도록 변경했다.
+- MAT-MR-2026-00294는 구매 담당자 반려로 ERPNext Cancelled 상태가 되어 재시작 불가 상태인 것을 확인했다.
+- 일부 대체품 응답 대기 MR은 ERP Comment 감지 후 다음 RFQ 대상 선택 단계까지 재개되는 것을 확인했다.
+- 테스트 중 공급사 선택값이 ERPNext 유효 공급사 목록과 맞지 않아 중단되는 사례가 확인되었으며 추가 데이터 정합성 보강이 필요하다.
+
+
+16. 검증 결과
+-------------
+
+- 백엔드 전체 테스트: 30개 통과
+- 프론트 프로덕션 빌드: 성공(1,832 modules transformed)
+- ERPNext Client Script JavaScript 문법 검사: 통과
+- 웹훅 Secret 없이 호출 시 401 응답 확인
+- /api/health에서 polling 모드 및 두 폴러 활성 상태 확인
+- ERPNext Client Script에서 localhost 직접 호출과 외부 fetch가 제거된 것을 확인
+- Draft MR 화면에서 ERPNext 동일 출처 Comment API를 사용하는 것을 확인
+
+
+17. 현재 남아 있는 작업 및 주의사항
+------------------------------------
+
+1) AWS 배포
+- FastAPI를 AWS에서 상시 실행하고 HTTPS 또는 리버스 프록시 주소를 확정해야 한다.
+- ERPNext Webhook URL을 현재 임시 로컬 주소에서 AWS 백엔드 주소로 변경해야 한다.
+- 변경 후 MR_INGEST_MODE=webhook으로 전환하고 서버를 재시작한다.
+
+2) End-to-End 검증
+- 신규 Draft MR 생성부터 다음 전체 흐름을 실제 ERPNext 문서로 재검증해야 한다.
+  MR 시작 → 대체품 응답 → 구매/입찰 판단 → 공급사 → RFQ → 견적 회신 → 업체 선정
+  → 발주 시작 → PO 승인 → PO 발송 → Purchase Receipt → Supplier Scoreboard
+
+3) 공급사 데이터 정합성
+- 추천 결과의 공급사명/ID가 ERPNext Supplier master와 정확히 매칭되는지 검증해야 한다.
+- 이메일 미등록 공급사의 사용자 보완 폼과 재시도 경로를 실제 데이터로 확인해야 한다.
+
+4) 이메일 안전장치
+- 개발 중 TEST_MODE가 실제 공급사 메일 발송을 막거나 테스트 주소로 제한하는지 최종 확인해야 한다.
+- 운영 전환 시에만 실제 발송을 허용해야 한다.
+
+5) 체크포인트 저장소
+- 현재 SQLite 체크포인트 파일과 WAL/SHM 런타임 파일이 작업 트리에 남을 수 있다.
+- 다중 서버 운영 전에는 공유 가능한 PostgreSQL checkpointer 또는 명확한 단일 인스턴스 정책을 결정해야 한다.
+- *.sqlite-wal, *.sqlite-shm 등 런타임 부산물은 Git 추적 대상에서 제외하는 것이 안전하다.
+
+6) 오류 메시지 인코딩
+- backend_logic2/api/procurement_routes.py 일부 한글 오류 문구가 소스에서 깨져 보이는 구간이 있다.
+- API 계약 확정 전 UTF-8 정상 문구로 정리해야 한다.
+
+7) 미완성 UI/API 연결 구간
+- 프론트의 일부 화면에는 발표용 목업 상태나 임시 데이터 변환 코드가 남아 있을 수 있다.
+- API strict 모드에서 각 화면별 빈 상태, 401/409/422/502/503 오류 처리와 재시도를 다시 확인해야 한다.
+
+
+18. 핵심 운영 원칙 요약
+-----------------------
+
+- ERPNext: MR, Item, Supplier, RFQ, Supplier Quotation, PO, Purchase Receipt 원문 보관
+- PostgreSQL: 구매 케이스 상태, 사용자 작업, 알림, AI 이력, 차수/복귀, 배송 프로젝션 보관
+- LangGraph Checkpoint: 중단된 AI 실행 위치와 재개 상태 보관
+- REST API: 최초 로드, 목록, 상세, 명령, 폼 답변에 사용
+- SSE: 접속 중인 프론트에 변경 사실을 즉시 알리는 용도
+- Webhook: AWS 배포 후 ERPNext 변경을 즉시 백엔드에 전달
+- Polling: 로컬 개발 또는 웹훅 도달이 불가능할 때의 대체 수단
+- 사용자 최종 승인: MR 시작, 대체품 선택, 공급사 최종 선택, PO 발송 전 승인 등 법적·업무상 중요한 지점에 유지
+
+
+19. 이번 로그 작성 시 변경사항
+------------------------------
+
+- 백엔드 루트에 본 ailog.txt만 새로 추가했다.
+- 기존 백엔드·프론트 코드, DB 데이터, ERPNext 문서에는 추가 변경을 가하지 않았다.
+- 커밋 및 원격 Push는 수행하지 않았다.
+
+
+20. 대시보드 MR 승인 대기 상태 불일치 수정
+------------------------------------------
+
+- 확인일: 2026-09-02
+- 증상: 대시보드에서 “내 승인 대기”로 보이는 MR이 MR 목록에는 나타나지 않음.
+- 실제 DB 확인 결과 대상 MR은 WAITING_INPUT / RFQ_TARGET_SELECTION 상태로,
+  MR 승인은 이미 끝났고 협력사 선정 화면에서 사용자의 공급사 선택을 기다리는 건이었다.
+- 원인: 프론트 변환 코드가 REJECTED/CANCELLED/COMPLETED가 아닌 모든 케이스를
+  일괄적으로 “승인대기”로 변환하고 있었다. WAITING_INPUT은 MR 승인뿐 아니라
+  대체품 선택, RFQ 대상 선택, PO 승인 등 여러 사용자 개입 단계에서 공용으로 쓰이므로
+  케이스 상태만으로 MR 승인 대기 여부를 판단할 수 없다.
+- 수정: AWAITING_MR_REVIEW / MR_REVIEW 조합인 경우에만 “승인대기”로 표시하고,
+  이후 단계의 MR은 승인 완료로 표시하도록 src/procurement/api/cases.ts를 수정했다.
+- 결과: 실제 MR 승인 대기 건은 대시보드와 MR 목록에 함께 표시되고,
+  RFQ_TARGET_SELECTION 등 다음 단계로 넘어간 건은 협력사 선정 화면에만 표시된다.
+- 검증: npm.cmd run build 성공(1,832 modules transformed).
+
+
+21. 대체품 응답 전 MR 조기 Submit 버그 수정
+------------------------------------------
+
+- 확인일: 2026-09-02
+- 증상: 구매 담당자가 대체품 확인을 시작하면 요청자가 선택하기도 전에
+  ERPNext MR이 Draft(docstatus=0)에서 Pending(docstatus=1)으로 바뀌고,
+  Draft 문서에만 표시되는 “AI 대체품 확인” 버튼이 사라짐.
+- 실제 확인 사례: MAT-MR-2026-00296, MAT-MR-2026-00297.
+- 원인: Frappe는 일반 댓글뿐 아니라 담당자 할당과 상태 변경도 Comment
+  DocType에 각각 Assigned, Label 유형으로 저장한다. AI 안내 댓글 직후
+  자동 생성된 Assigned 이벤트에 “구매”라는 단어가 들어 있었고,
+  substitute_reply_watcher가 이를 요청자의 신규구매 답변으로 잘못 파싱했다.
+- 수정:
+  · ERP 댓글 조회 시 comment_type=Comment만 가져오도록 제한
+  · Client Script가 작성하는 “[BiddingFlow 대체품 선택]” 접두어가 있는
+    댓글만 명시적인 사용자 결정으로 인정
+  · 접두어 뒤의 후보 번호 또는 “구매” 값만 파싱
+  · 일반 댓글, Assigned 이벤트, Label 이벤트는 그래프를 재개하지 않음
+- 기대 흐름:
+  · 대체품 후보 있음 → 안내/할당 → MR은 Draft 유지 → 요청자 선택 대기
+  · 대체품 선택 → 원 MR 취소
+  · 신규구매 선택 → 이 시점에만 MR Submit 및 후속 구매 흐름 재개
+- 회귀 테스트:
+  · 대체품이 있으면 _submit_mr_for_purchase가 호출되지 않는지 검증
+  · Assigned/Label 이벤트가 선택으로 인식되지 않는지 검증
+  · 마커 없는 “구매” 문구를 무시하는지 검증
+  · Comment 조회 필터에 comment_type=Comment가 포함되는지 검증
+- 검증 결과: 백엔드 전체 34개 테스트 통과.
+- 주의: 이미 Pending으로 Submit된 MR은 ERPNext에서 Draft로 직접 되돌릴 수
+  없다. 테스트 문서는 Cancel 후 새 MR을 만들거나 별도의 정리 절차가 필요하다.
+
+
+22. 대체품/신규구매 선택 후 화면 갱신 누락 수정
+-----------------------------------------------
+
+- 확인일: 2026-09-02
+- 증상:
+  · 요청자가 대체품 사용을 선택하면 ERP MR과 PostgreSQL 케이스는 취소되지만
+    구매 담당자 프론트 목록이 즉시 갱신되지 않음.
+  · 신규구매를 선택해도 구매 담당자에게 신규구매 요청 상태가 즉시 전달되지 않음.
+- 원인:
+  · 대체품 선택 경로에는 PostgreSQL notification/NOTIFY 생성이 없어서
+    프론트의 SSE 수신기가 REST 재조회를 실행할 계기가 없었음.
+  · ERP Client Script는 선택 댓글을 쓴 직후 바로 reload하여, 약 1~5초 뒤
+    댓글 폴러가 만든 Cancelled/Pending 상태를 화면에 반영하지 못했음.
+- 수정:
+  · project_substitute_decision() 공통 서비스를 추가하여 직접 API 방식과
+    댓글 폴링 방식이 동일한 체크포인트 투영 및 알림 경로를 사용하도록 통합.
+  · 대체품 선택 시 SUBSTITUTE_SELECTED 알림/SSE 생성.
+  · 신규구매 선택 시 SUBSTITUTE_NEW_PURCHASE_REQUESTED 알림/SSE 생성.
+  · 알림 payload에 실제 후속 stage를 담아 프론트가 MR 목록, 협력사 선정,
+    PO 관리 중 올바른 화면으로 이동하도록 처리.
+  · ERP Client Script가 최대 15초 동안 문서 docstatus 변경을 짧게 확인하고
+    실제 Cancelled/Pending 전환 후 reload하도록 보강.
+- 현재 데이터 복구:
+  · MAT-MR-2026-00298은 DB에서 CANCELLED/SUBSTITUTE_SELECTED 상태임을 확인.
+  · 누락됐던 SUBSTITUTE_SELECTED 알림 1건을 멱등 조건으로 보충하여 현재
+    접속 중인 프론트에도 재조회 이벤트를 전송.
+- 배포:
+  · ERPNext의 Procurement_AI_Substitute_Button Client Script 갱신 완료
+    (polling mode).
+- 검증:
+  · 백엔드 전체 36개 테스트 통과.
+  · 프론트 oxlint 통과.
+  · 프론트 프로덕션 빌드 성공(1,832 modules transformed).
+
+
+23. 아이템/MR 규격 모달의 필드별 분리 표시
+-------------------------------------------
+
+- 확인일: 2026-09-02
+- 증상: ERPNext Description 또는 MR 요청 규격에 쉼표·줄바꿈으로 여러
+  규격이 들어 있어도 모달에서는 하나의 큰 칸 안에 한꺼번에 표시됨.
+- 수정:
+  · 규격 문자열을 쉼표, 줄바꿈, 세미콜론, 구간 제목과 “항목: 값” 기준으로 파싱
+  · 파싱된 각 규격을 2열 그리드의 독립된 규격 카드로 표시
+  · 명시적인 항목명이 없으면 “MR 요청 규격 1, 2, 3…”으로 구분
+  · 섹션 항목 수와 모달 전체 항목 수를 실제 분리된 카드 수로 계산
+  · MR 목록과 대시보드에서 클릭한 행의 fullSpecText를 모달에 직접 전달
+  · 같은 item_code가 여러 MR에 사용되어도 다른 MR의 규격이 섞이지 않도록 처리
+  · Item 상세 API가 실패한 경우에도 해당 MR에 저장된 요청 규격으로 모달 표시
+- 데이터 우선순위: 클릭한 MR의 요청 규격 → ERPNext Item 동적 규격 필드 →
+  기존 호환 규격 순서로 표시한다.
+- 검증:
+  · 프론트 oxlint 통과.
+  · 프론트 프로덕션 빌드 성공(1,832 modules transformed).
+
+
+24. 삭제 후 번호가 재사용된 신규 MR 미노출 수정
+---------------------------------------------
+
+- 확인일: 2026-09-02
+- 증상: ERPNext에 Draft MR MAT-MR-2026-00300이 존재하지만 구매 작업함에는
+  나타나지 않음.
+- 실제 원인:
+  · 테스트 중 기존 MAT-MR-2026-00300이 취소된 뒤 ERPNext에서 삭제됨.
+  · Frappe naming series가 같은 번호를 새 문서에 다시 사용함.
+  · PostgreSQL에는 같은 mr_name의 예전 CANCELLED 케이스가 남아 있었고,
+    upsert가 ERP 필드만 갱신한 채 종료 상태를 의도적으로 보존함.
+  · 따라서 ERP 조회와 동기화는 성공했지만 열린 케이스 조회에서는 제외됨.
+- 수정:
+  · ERP 문서 creation 시각과 기존 케이스 종료 시각을 비교해 실제 재생성 여부 판별
+  · 사용자가 반려했지만 ERP에 Draft로 남아 있는 원본 문서는 다시 열지 않음
+  · 같은 번호로 새로 생성된 문서라면 이전 케이스의 MR/thread 식별자만
+    archived 접미어로 변경하여 감사 이력과 이전 체크포인트를 보존
+  · 현재 ERP 문서는 새 case_id와 깨끗한 thread_id로 AWAITING_MR_REVIEW /
+    MR_REVIEW 상태에 적재
+  · 재생성된 MR도 신규 작업 알림을 발행하도록 case_id 비교 추가
+  · ERPNext의 naive timestamp를 Asia/Seoul 기준 UTC로 정규화
+- 실제 복구 결과:
+  · 현재 MAT-MR-2026-00300 case_id: 71371226-63b1-4090-be77-49c37fb97cc7
+  · 상태: AWAITING_MR_REVIEW / MR_REVIEW
+  · 열린 작업 조회에서 1건 확인
+- 검증: 백엔드 전체 38개 테스트 통과, compileall 성공.
+
+
+25. RFQ 생성 후 구매 작업 API 500 오류 수정
+-----------------------------------------
+
+- 확인일: 2026-09-02
+- 대상: MAT-MR-2026-00301
+- 증상: RFQ 협력사를 선택해 전송하면 프론트에 “구매 작업 API 요청에
+  실패했습니다.”가 표시됨.
+- 확인 결과:
+  · ERPNext RFQ PUR-RFQ-2026-00318은 Submitted 상태로 정상 생성됨
+  · 4개 협력사, MAT-MR-2026-00301 및 BLT-TMG-8M-720 품목 연결 정상
+  · LangGraph도 check_quotations 인터럽트까지 진행됨
+  · PostgreSQL human_task만 이전 select_rfq_targets PENDING에 남음
+- 원인: human_task 완료 SQL에 expected_version=None이 전달될 때 PostgreSQL이
+  파라미터 타입을 결정하지 못해 AmbiguousParameter를 발생시킴. 외부 ERP
+  작업 이후 DB 투영 단계에서 500이 나면서 화면에는 실패처럼 보였음.
+- 수정:
+  · expected_version SQL 파라미터를 integer로 명시 캐스팅
+  · 태스크 저장용 psycopg 오류는 503과 한국어 detail로 반환
+  · FastAPI 422 detail 배열도 프론트에서 실제 검증 메시지로 표시
+  · RFQ 모달은 API 성공을 기다린 뒤에만 완료 안내 및 닫기 수행
+- 상태 복구:
+  · 기존 RFQ는 다시 생성하지 않음
+  · select_rfq_targets 태스크를 COMPLETED로 복구
+  · 현재 케이스를 WAITING_INPUT / QUOTATION_COLLECTION으로 투영
+  · check_quotations PENDING 태스크 생성 확인
+  · 견적 마감: 2026-09-26 18:00 KST
+- 검증: 백엔드 전체 38개 테스트, 프론트 oxlint 및 프로덕션 빌드 통과.
+
+
+26. RFQ 확정·PO 연결 무결성 및 비딩 불필요 단계 오표시 수정
+-----------------------------------------------------------
+
+- 확인일: 2026-09-02
+- 대상 증상:
+  · 견적 최종 확정 후 Supplier Quotation이 Draft로 남음
+  · 생성된 PO 품목에서 원본 Material Request 연결이 누락될 수 있음
+  · MAT-MR-2026-00303이 협력사·견적 없이 PO 단계에 진입한 것처럼 표시됨
+- MAT-MR-2026-00303 실제 대조 결과:
+  · LangGraph 상태: catalog_purchase_required
+  · RFQ, 선정 협력사, PO 이름: 모두 없음
+  · ERPNext의 Purchase Order Item.material_request 기준 연결 PO: 0건
+  · 실제 PO 발송이 아니라 catalog_purchase_required를 PRE_PO_APPROVAL로
+    잘못 번역한 프론트 연동층의 상태 오표시였음
+- 수정:
+  · catalog_purchase_required를 HUMAN_REVIEW/FAILED로 투영하여 PO 관리에서 제외
+  · 해당 분기는 자동 직접구매가 아직 구현되지 않았다는 명시적 안내를 저장
+  · 사용자가 quotation finalize를 선택한 경우 순위에 포함된 Draft Supplier
+    Quotation을 Submit한 뒤 최종 협력사 선정으로 진행
+  · finalize 요청에 포함된 supplier를 다음 노드에 전달해 불필요한 2차 입력 방지
+  · PO 품목에 supplier_quotation/item뿐 아니라 material_request/item을 함께 저장
+  · SQ에 MR 링크가 없으면 RFQ 자식행과 원본 MR 자식행에서 안전하게 복구
+  · PO Draft 생성 후 ERPNext가 MR 링크를 실제 보존했는지 재조회하고,
+    누락 시 Submit을 중단
+  · 제출된 Supplier Quotation도 이후 PO 생성 단계에서 조회 가능하도록
+    취소 문서만 제외
+  · 삭제 후 같은 번호로 재생성된 MR에는 세대별 고유 LangGraph thread_id를
+    발급하여 과거 체크포인트 상속 방지
+- 현재 데이터 보정:
+  · MAT-MR-2026-00303을 FAILED / HUMAN_REVIEW로 재투영 완료
+  · ERPNext 문서나 PO를 취소·삭제하지 않음
+- 검증:
+  · 백엔드 전체 42개 테스트 통과
+  · 신규 테스트로 견적 Submit, PO-MR 연결 payload, 체크포인트 세대 분리,
+    catalog 상태 투영을 확인
+
+
+27. 견적 마감 연장 동작 분리
+----------------------------
+
+- 마감 연장 API는 PostgreSQL 마감시각과 내부 알림만 갱신한다.
+- RFQ 독촉 메일 함수는 호출하지 않으며, 알림 메시지에도 이메일 재발송 없음으로 명시했다.
+- 기존 일일 RFQ 독촉 스케줄러는 별도 작업으로 유지된다.
+
+
+28. 워크플로우 상태 경계 및 단계 오인 전면 보강
+----------------------------------------------
+
+- 확인일: 2026-09-02
+- 1차 핵심 수정:
+  · procurement_case.status는 API 투영 계층만 기록하도록 단일화했다.
+  · LangGraph 노드 로거는 내부 상태 이력만 남기고 화면용 상태를 덮어쓰지 않는다.
+  · 프론트의 구형 상태 매핑을 실제 워크플로우 단계에 맞게 교정했다.
+  · API 모드에서 pending task가 없을 때 목업 성공 상태로 빠지는 경로를 차단했다.
+  · 대시보드 승인도 로컬 목업 함수가 아니라 실제 시작 API를 사용한다.
+- DB 안전 조치:
+  · 적용 전 AWS PostgreSQL에 procurement_backup_20260902_before_state_repair
+    백업 스키마를 생성했다.
+  · 006_enforce_stable_case_status_projection.sql을 적용하여 내부 LangGraph 상태가
+    read model의 status에 들어간 기존 행을 복구했다.
+  · status 컬럼에는 안정 상태만 들어오도록 CHECK 제약을 추가했다.
+  · 보정 후 잘못된 상태 0건, task 없는 WAITING_INPUT 0건,
+    잘못된 PRE_PO_APPROVAL 0건을 확인했다.
+- 후속 안정화:
+  · human_task 응답을 PENDING → PROCESSING으로 먼저 선점하고 version, task type,
+    case stage, 현재 LangGraph interrupt를 모두 검증하도록 변경했다.
+  · 처리 실패 시 작업을 다시 PENDING으로 되돌리고, 성공 시에만 COMPLETED 처리한다.
+  · next가 비어 있는 종료 체크포인트는 재시도 가능하다고 표시하지 않는다.
+  · RFQ/PO 생성 실패는 앞선 HITL 체크포인트에서 재시도할 수 있도록 예외로 전파한다.
+  · 취소된 MR/PO는 pending task도 함께 취소하며 과거 체크포인트로 재활성화되지 않는다.
+  · Purchase Receipt 취소·수량 감소 시 입고 상태를 되돌리고 Scorecard 작업을 잠근다.
+  · 수동 공급사 입력 경로와 RFQ 대상 선택 단계 검증을 추가했다.
+- 검증:
+  · 백엔드 전체 pytest 52개 통과
+  · backend_logic2 및 procurement_db compileall 통과
+  · FastAPI OpenAPI 생성 및 Purchase Order/Receipt 웹훅 경로 등록 확인
+
+
+29. 비딩 불필요 건의 카탈로그식 직접구매 경로 연결
+--------------------------------------------------
+
+- 확인일: 2026-09-02
+- 원인 확인:
+  · 최신 순서도에는 직접구매 경로가 있었지만 Git 전체 이력의 LangGraph 구현은
+    최초부터 catalog_purchase_required 상태에서 END로 종료했다.
+  · erp_client.py에는 catalog/bidding 판정 함수만 있었고, 최근 거래를 이용하는
+    직접 PO 생성 노드와 그래프 연결은 존재하지 않았다.
+- 구현:
+  · 비딩 불필요 판정 시 최근 Submit PO에서 협력사, 확정단가, PO 번호,
+    거래일자를 함께 저장한다.
+  · 최근 거래 협력사가 확인되면 RFQ를 생략하고 PO 발송 전 승인 인터럽트로 직행한다.
+  · 승인 후 현재 MR과 MR Item 링크를 보존한 직접구매 PO를 Draft 생성·검증·Submit한다.
+  · TEST_MODE 이메일 차단과 중복 PO 검사도 견적 기반 경로와 동일하게 적용한다.
+  · 긴급 건은 최근 거래 협력사가 없을 때만 표준 사유로 중단한다.
+  · 비긴급 신규거래는 중단하지 않고 비딩 및 신규 공급사 탐색으로 진행한다.
+  · 과거 catalog_purchase_required에서 끝난 케이스는 새 MR 생성 없이
+    비딩 판정 지점부터 다시 실행할 수 있게 했다.
+- 실제 ERP 읽기 검증:
+  · MAT-MR-2026-00305 → 대한안전산업 / 단가 2,000원 /
+    기준 PO PUR-ORD-2026-00171
+  · MAT-MR-2026-00306 → 동관닷컴 / 단가 3,900원 /
+    기준 PO PUR-ORD-2026-00202
+- 검증:
+  · 백엔드 전체 pytest 57개 통과
+  · compileall 및 git diff --check 통과
+- 2026-09-02 팀원 전달본 추가 확인:
+  · FINAL-docs/process_commands.py에는 not bidding → create_catalog_po →
+    po_approval → create_po 경로가 명시되어 있었다.
+  · 이는 당시 원격 저장소/Git 이력에는 반영되지 않은 별도 전달본이며,
+    현재 구현도 같은 업무 규칙을 유지하되 최근 PO·단가 근거, 중복 PO 방지,
+    작업 단계 분리와 재시도 안전성을 보강한 구조로 연결되어 있다.
+  · 팀원 전달본의 END는 비딩 불필요 자체가 아니라 최근 거래 협력사를
+    찾지 못했거나 PO 생성·승인에 실패한 예외 분기에만 해당한다.
+
+
+30. 입고·매입송장·대금결제 대사 및 00306 평가 단계 복구
+----------------------------------------------------------
+
+- 확인일: 2026-09-02
+- 원인:
+  · ERPNext에는 MAT-PRE-2026-00172 입고, ACC-PINV-2026-00171 매입송장,
+    ACC-PAY-2026-00106 결제가 모두 Submit되어 있었지만 PostgreSQL에는
+    PUR-ORD-2026-00202가 NOT_RECEIVED로 남아 있었다.
+  · 기존 폴링은 Material Request만 대사하고 Purchase Receipt 이후 문서는
+    웹훅 수신에만 의존해 서버 비접속 시간대 이벤트를 복구하지 못했다.
+  · 최초 복구 중 delivery_id UUID를 JSON payload로 변환하지 못해 이벤트가
+    FAILED가 됐고, 기존 멱등 처리기가 실패 이벤트도 재실행하지 않았다.
+- DB 안전 조치:
+  · procurement_backup_20260902_before_invoice_tracking 스키마에 기존 구매
+    케이스·작업·이벤트·알림·입고 테이블을 백업했다.
+  · 007_track_invoice_and_payment_progress.sql을 AWS PostgreSQL에 적용했다.
+- 구현:
+  · Purchase Receipt, Purchase Invoice, Payment Entry 웹훅 엔드포인트를 추가했다.
+  · 서버 시작 시 1회, polling 모드에서는 기본 15초마다 ERP 후속 문서를 대사한다.
+  · 부모 DocType의 자식 테이블 필터를 사용해 PO와 연결된 ERP 문서를 찾는다.
+  · 매입송장/결제 문서를 정규화 저장하고 PO별 미결제·부분결제·결제완료 상태를 집계한다.
+  · 실패한 integration_event는 같은 dedupe key로 안전하게 재시도할 수 있게 했다.
+  · UUID를 체크포인트/작업 JSON으로 직렬화하도록 보강했다.
+- 실제 00306 복구 결과:
+  · case 상태: WAITING_INPUT / SCORECARD
+  · 입고: 1000/1000, 2026-09-02 전체 입고
+  · 결제: 4,290,000원 전액 결제, 미결제 0원
+  · Supplier Scorecard PENDING 작업 생성 완료
+- 검증:
+  · 백엔드 전체 unittest 61개 통과
+  · 프론트 lint 및 production build 통과

@@ -6,8 +6,10 @@ nexterp 자동화 - ERPNext API 클라이언트
 """
 
 import os
+from functools import lru_cache
+
 import requests
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -38,10 +40,12 @@ class ERPNextAPIError(Exception):
 
 def is_test_mode() -> bool:
     """Return the single TEST_MODE policy used by every mail-sending node."""
-    return os.getenv("TEST_MODE", "false").strip().lower() == "true"
+    # 환경 변수가 누락되면 실제 발송보다 차단이 안전하다. 운영 전환은
+    # 반드시 TEST_MODE=false를 명시한 경우에만 허용한다.
+    return os.getenv("TEST_MODE", "true").strip().lower() != "false"
 
 
-def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None):
+def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None, start=None):
     """ERPNext에서 문서 목록 조회"""
     import json
     params = {}
@@ -53,6 +57,8 @@ def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None):
         params["order_by"] = order_by
     if limit is not None:
         params["limit_page_length"] = int(limit)
+    if start is not None:
+        params["limit_start"] = int(start)
 
     res = requests.get(f"{SITE_URL}/api/resource/{doctype}", headers=HEADERS, params=params)
     if res.status_code != 200:
@@ -66,6 +72,77 @@ def erp_get_one(doctype, name):
     if res.status_code != 200:
         raise ERPNextAPIError(f"GET {doctype}/{name}: {res.status_code} - {res.text[:300]}")
     return res.json().get("data")
+
+
+@router.get("/items")
+def list_registered_items(
+    limit: int = Query(default=500, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    """ERPNext에 실제 등록된 Item 목록을 프론트 조회용으로 반환한다.
+
+    신규 품목의 생성·규격 검증은 ERPNext 웹훅과 AI 검증기가 담당한다.
+    따라서 이 엔드포인트는 별도의 로컬 품목을 만들지 않고 ERPNext를
+    단일 원본(source of truth)으로 읽기만 한다.
+    """
+    try:
+        items = erp_get(
+            "Item",
+            fields=[
+                "item_code", "item_name", "item_group", "description",
+                "stock_uom", "is_stock_item", "is_fixed_asset", "disabled",
+                "brand", "creation", "modified",
+            ],
+            order_by="item_code asc",
+            limit=limit,
+            start=offset,
+        ) or []
+    except ERPNextAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"items": items, "count": len(items), "limit": limit, "offset": offset}
+
+
+@router.get("/items/{item_code}/specifications")
+def get_item_specifications(item_code: str):
+    """품목별 전체 규격 컬럼을 품목군 정의와 함께 프론트 계약으로 반환한다.
+
+    PostgreSQL 규격 정의 조회가 불가능하거나 아직 등록되지 않은 개발 환경은
+    ERPNext의 custom 필드와 Item Attribute를 대체 데이터로 사용한다.
+    """
+    from procurement_db.item_specifications import (
+        build_item_specification_response,
+        get_item_group_spec,
+    )
+
+    try:
+        item = erp_get_one("Item", item_code)
+    except ERPNextAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_code}을 찾을 수 없습니다.")
+
+    schema_warning = None
+    try:
+        required_specs = get_item_group_spec(item.get("item_group"))
+    except Exception:
+        # ERP 조회 자체는 성공했으므로 개발 중에는 커스텀 필드 대체 경로를 허용한다.
+        required_specs = None
+        schema_warning = "품목군 규격 정의를 읽지 못해 ERP custom 필드를 사용했습니다."
+
+    try:
+        metadata_fields = get_item_doctype_fields()
+    except ERPNextAPIError:
+        metadata_fields = []
+        schema_warning = (
+            schema_warning or "ERP Item 메타데이터를 읽지 못해 원본 필드명을 사용했습니다."
+        )
+
+    response = build_item_specification_response(
+        item, required_specs, metadata_fields=metadata_fields
+    )
+    if schema_warning:
+        response["warning"] = schema_warning
+    return response
 
 
 def erp_post(doctype, payload):
@@ -106,6 +183,36 @@ def erp_submit(doctype, name, max_retries=3):
             continue
 
         raise ERPNextAPIError(f"SUBMIT {doctype}/{name}: {res.status_code} - {res.text[:500]}")
+
+
+def erp_cancel(doctype, name):
+    """Submit된 ERPNext 문서를 표준 ``docstatus=2`` 경로로 취소한다."""
+    document = erp_get_one(doctype, name)
+    if document is None:
+        raise ERPNextAPIError(f"CANCEL {doctype}/{name}: 문서를 찾을 수 없습니다.")
+    docstatus = int(document.get("docstatus") or 0)
+    if docstatus == 2:
+        return document
+    if docstatus != 1:
+        raise ERPNextAPIError(
+            f"CANCEL {doctype}/{name}: Submit(docstatus=1) 문서만 취소할 수 있습니다. "
+            f"현재 docstatus={docstatus}"
+        )
+    res = requests.put(
+        f"{SITE_URL}/api/resource/{doctype}/{name}",
+        headers=HEADERS,
+        json={"docstatus": 2},
+    )
+    if res.status_code != 200:
+        raise ERPNextAPIError(f"CANCEL {doctype}/{name}: {res.status_code} - {res.text[:500]}")
+    return res.json().get("data")
+
+
+@lru_cache(maxsize=1)
+def get_item_doctype_fields():
+    """Return live Item field metadata for labels, types, and sections."""
+    metadata = erp_get_one("DocType", "Item") or {}
+    return metadata.get("fields") or []
 
 
 def erp_call(method, payload=None):
@@ -903,7 +1010,7 @@ def send_rfq_native(rfq_name):
     ⚠️ RFQ의 "Message for Supplier" 필드와 각 공급사의 email_id가 이미
     채워져 있어야 함 (create_rfq_from_material_request가 이미 처리함).
     """
-    if os.getenv("TEST_MODE", "false").lower() == "true":
+    if is_test_mode():
         print(f"[TEST_MODE] RFQ 자동발송 생략 — {rfq_name} (ERPNext 내장 send_supplier_emails)")
         return {"test_mode": True, "rfq_name": rfq_name}
 

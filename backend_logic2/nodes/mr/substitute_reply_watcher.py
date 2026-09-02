@@ -14,8 +14,9 @@ nodes/mr/substitute_reply_watcher.py — ERPNext MR 댓글로 온 대체품 선�
 동작:
   1. procurement.procurement_case에서 status='awaiting_substitute_selection'인
      MR 목록 조회 (지금 실제로 답장을 기다리는 중인 MR들).
-  2. 각 MR의 댓글 타임라인 조회 -> 우리가 마지막으로 단 "[AI Procurement]"
-     댓글(anchor) 다음에 새로 달린 댓글이 있으면 그게 사람의 답장.
+  2. 각 MR의 일반 댓글(Comment)만 조회 -> 우리가 마지막으로 단
+     "[AI Procurement]" 안내 뒤의 "[BiddingFlow 대체품 선택]" 댓글만
+     요청자의 명시적인 선택으로 인정.
   3. 답장을 파싱(숫자 -> 그 번호에 해당하는 item_code / '구매'·'구입'
      포함 -> new_purchase) -> process_graph 앱에 Command(resume=...)으로
      넣어줌.
@@ -43,6 +44,7 @@ from backend_logic2.nodes.mr.find_substitute import flatten_substitute_candidate
 from backend_logic2.workflow.process_graph import get_process_app
 
 ANCHOR_PREFIX = "[AI Procurement]"
+REPLY_PREFIX = "[BiddingFlow 대체품 선택]"
 
 
 def _config(thread_id: str) -> dict:
@@ -57,7 +59,11 @@ def _plain_text(content: str) -> str:
 
 
 def get_mrs_awaiting_substitute_selection() -> list:
-    """지금 답장을 기다리는 중(status='awaiting_substitute_selection')인 MR 목록."""
+    """ERP 댓글로 요청자 결정을 기다리는 MR 목록을 반환한다.
+
+    PostgreSQL 투영을 붙이기 전의 legacy status와 현재 표준
+    ``WAITING_INPUT/SUBSTITUTE_DECISION`` 조합을 모두 지원한다.
+    """
     try:
         from procurement_db import get_connection
     except ImportError:
@@ -67,7 +73,10 @@ def get_mrs_awaiting_substitute_selection() -> list:
         with get_connection(autocommit=True) as conn:
             rows = conn.execute(
                 "SELECT mr_name FROM procurement.procurement_case "
-                "WHERE status = 'awaiting_substitute_selection' AND mr_name IS NOT NULL"
+                "WHERE mr_name IS NOT NULL AND ("
+                "status = 'awaiting_substitute_selection' OR "
+                "(status = 'WAITING_INPUT' AND stage = 'SUBSTITUTE_DECISION')"
+                ")"
             ).fetchall()
     except Exception as e:
         print(f"[substitute_reply_watcher] 대기 MR 조회 실패: {e}")
@@ -76,47 +85,63 @@ def get_mrs_awaiting_substitute_selection() -> list:
 
 
 def _get_comments(mr_name: str) -> list:
+    """Return only user-authored timeline comments.
+
+    Frappe stores assignments and document status changes in the same Comment
+    DocType using ``comment_type=Assigned``/``Label``.  An assignment message
+    contains the word "구매", so treating every timeline row as a reply can
+    accidentally select ``new_purchase`` and submit a Draft MR immediately.
+    """
     comments = erp_get(
         "Comment",
         filters=[
             ["reference_doctype", "=", "Material Request"],
             ["reference_name", "=", mr_name],
+            ["comment_type", "=", "Comment"],
         ],
-        fields=["name", "content", "creation"],
+        fields=["name", "content", "creation", "comment_type", "comment_email"],
         order_by="creation asc",
     )
     return comments or []
 
 
 def _find_reply_after_anchor(comments: list):
-    """마지막 '[AI Procurement]' 댓글(anchor) 다음에 달린 첫 댓글을 답장으로 간주."""
+    """Return the first explicit BiddingFlow selection after the last anchor.
+
+    Besides filtering by Frappe's ``comment_type``, require the marker written
+    by our Client Script.  This prevents ordinary discussion comments and
+    future system-generated timeline entries from resuming the graph.
+    """
     anchor_idx = None
     for i, c in enumerate(comments):
         if _plain_text(c.get("content")).startswith(ANCHOR_PREFIX):
             anchor_idx = i
     if anchor_idx is None:
         return None
-    after = comments[anchor_idx + 1:]
-    return after[0] if after else None
+    return next(
+        (
+            comment
+            for comment in comments[anchor_idx + 1:]
+            if _plain_text(comment.get("content")).startswith(REPLY_PREFIX)
+        ),
+        None,
+    )
 
 
 def _parse_reply(content: str, flattened_candidates: list):
     """반환: process_cli._build_resume_data와 같은 형태의 dict, 인식 못하면 None."""
     plain = _plain_text(content)
+    if not plain.startswith(REPLY_PREFIX):
+        return None
+
+    # Parse only the value following our trusted marker. Quoted timeline text
+    # or unrelated numbers must not influence the decision.
+    plain = plain[len(REPLY_PREFIX):].strip()
     if not plain:
         return None
 
-    # ⚠️ 숫자를 '구매'/'구입' 키워드보다 먼저 확인함 - ERPNext 타임라인의
-    # "답장(Reply)" 기능으로 답하면 원본 댓글(우리가 단 안내문, "원래 품목을
-    # 그대로 구매하려면: '구매'"라는 문구가 들어있음)을 인용해서 같이 붙여
-    # 보내는 경우가 있어서, 순서를 반대로 하면 사람이 실제로 입력한 숫자는
-    # 보지도 않고 인용된 "구매" 문구에 먼저 걸려 오판정하는 버그가 있었음
-    # (실사용에서 확인됨: "1"이라고 답했는데 new_purchase로 파싱됨).
-    #
-    # 숫자도 "처음 나오는 것"이 아니라 "마지막에 나오는 것"을 씀 - 답장이
-    # 원본을 인용하면 보통 인용문이 위에 붙고 사람이 새로 쓴 내용이 그
-    # 아래(끝)에 오는 구조라서, 인용문 속 숫자(재고 수량 등)보다 실제 답이
-    # 뒤에 있을 가능성이 높음.
+    # Client Script writes exactly a candidate number or "구매" after the
+    # marker. Keep number-first parsing for backwards-compatible marked rows.
     matches = re.findall(r"\d+", plain)
     if matches:
         idx = int(matches[-1]) - 1
@@ -165,6 +190,20 @@ def process_mr(mr_name: str) -> None:
             erp_add_comment("Material Request", mr_name, f"{ANCHOR_PREFIX} {new_values['error']}")
         except ERPNextAPIError as e:
             print(f"    재안내 댓글 등록 실패: {e}")
+        return
+
+    # 댓글 결정도 직접 API 결정과 동일하게 PostgreSQL에 투영하고
+    # 알림/SSE로 구매 화면을 즉시 갱신한다.
+    try:
+        from backend_logic2.services.workflow_service import project_substitute_decision
+
+        project_substitute_decision(
+            mr_name,
+            new_purchase=parsed.get("decision") == "new_purchase",
+            selected_item_code=parsed.get("item_code"),
+        )
+    except Exception as exc:
+        print(f"  [{mr_name}] 댓글 결정의 구매 화면 투영 실패: {exc}")
 
 
 def run_once() -> None:

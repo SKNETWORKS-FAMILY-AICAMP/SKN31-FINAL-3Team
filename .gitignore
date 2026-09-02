@@ -228,3 +228,12 @@ __marimo__/
 !backend_logic2/evaluation/erpnext_stock_reconciliation_safety.csv
 backend_logic2/test.http
 backend_logic2/test_e2e_mock.py
+
+# Local secret backups must never be committed.
+.env.bak*
+
+# LangGraph/SQLite runtime state is machine-local and must not be shared.
+checkpoints.sqlite
+backend_logic2/process_checkpoints.sqlite
+*.sqlite-shm
+*.sqlite-wal

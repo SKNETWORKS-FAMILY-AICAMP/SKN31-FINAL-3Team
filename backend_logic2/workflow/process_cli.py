@@ -120,6 +120,16 @@ def main() -> None:
             "interrupts": [str(task.interrupts) for task in snapshot.tasks if task.interrupts],
         }
 
+    # CLI도 API와 같은 read-model 투영을 거친다. 그래프 로거가 내부 상태를
+    # procurement_case.status에 직접 쓰지 않으므로, start/resume 결과를
+    # 화면용 status/stage로 변환하는 책임은 이 진입점에도 명시적으로 있다.
+    if args.command in {"start", "resume"} and isinstance(result, dict):
+        case_id = result.get("case_id")
+        if case_id:
+            from backend_logic2.services.workflow_service import project_case_from_checkpoint
+
+            project_case_from_checkpoint(str(case_id))
+
     print(_render(to_checkpoint_data(result)))
 
 

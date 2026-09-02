@@ -1,0 +1,1 @@
+recursive-include biddingflow_rfq_portal *.css *.csv *.html *.ico *.js *.json *.md *.png *.py *.svg *.txt

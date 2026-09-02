@@ -1,0 +1,11 @@
+[Unit]
+Description=Run BiddingFlow RFQ reminders every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=biddingflow-rfq-reminder.service
+
+[Install]
+WantedBy=timers.target
