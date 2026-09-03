@@ -73,7 +73,7 @@ deploy_backend() {
   local remote_sha deployed_sha previous_sha
 
   as_ubuntu git -C "$backend_dir" fetch --quiet origin "$BACKEND_BRANCH"
-  remote_sha="$(git -C "$backend_dir" rev-parse "origin/$BACKEND_BRANCH")"
+  remote_sha="$(as_ubuntu git -C "$backend_dir" rev-parse "origin/$BACKEND_BRANCH")"
   deployed_sha="$(cat "$state_dir/backend.sha" 2>/dev/null || true)"
 
   if [[ "$remote_sha" == "$deployed_sha" ]]; then
@@ -81,7 +81,7 @@ deploy_backend() {
     return
   fi
 
-  previous_sha="$(git -C "$backend_dir" rev-parse HEAD)"
+  previous_sha="$(as_ubuntu git -C "$backend_dir" rev-parse HEAD)"
   echo "Deploying backend $previous_sha -> $remote_sha"
 
   as_ubuntu git -C "$backend_dir" checkout --quiet "$BACKEND_BRANCH"
@@ -121,7 +121,7 @@ deploy_frontend() {
   local remote_sha deployed_sha release_dir temporary_dir previous_target
 
   as_ubuntu git -C "$frontend_dir" fetch --quiet origin "$FRONTEND_BRANCH"
-  remote_sha="$(git -C "$frontend_dir" rev-parse "origin/$FRONTEND_BRANCH")"
+  remote_sha="$(as_ubuntu git -C "$frontend_dir" rev-parse "origin/$FRONTEND_BRANCH")"
   deployed_sha="$(cat "$state_dir/frontend.sha" 2>/dev/null || true)"
 
   if [[ "$remote_sha" == "$deployed_sha" ]]; then
