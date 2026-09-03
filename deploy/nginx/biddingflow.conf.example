@@ -3,6 +3,24 @@
 server {
     listen 80;
     listen [::]:80;
+    server_name biddingflow.kro.kr;
+
+    # Keep this available so a biddingflow.kro.kr certificate can be issued
+    # later without stopping Nginx.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Temporary redirect; use 302 so browsers do not cache it after kro.kr
+    # receives its own certificate.
+    location / {
+        return 302 https://biddingflow.13.209.103.102.nip.io$request_uri;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
     server_name biddingflow.13.209.103.102.nip.io;
 
     # Certbot renews through this path without stopping Nginx.
