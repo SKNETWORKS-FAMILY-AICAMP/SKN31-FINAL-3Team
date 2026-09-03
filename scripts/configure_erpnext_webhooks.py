@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -167,6 +168,37 @@ def _request(method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
     return response.json().get("data") or {}
 
 
+def _fetch_document(path: str) -> dict[str, Any]:
+    response = requests.get(
+        f"{SITE_URL.rstrip('/')}{path}",
+        headers=HEADERS,
+        timeout=35,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"ERPNext Webhook GET 실패: {response.status_code} - {response.text[:500]}"
+        )
+    return response.json().get("data") or {}
+
+
+def _write_backup(path: str, documents: list[dict[str, Any]]) -> None:
+    """Persist restorable webhook documents without exposing their secret headers."""
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {
+            "captured_at": datetime.now(UTC).isoformat(),
+            "documents": documents,
+        },
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8")
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
+    print(f"ERPNext 웹훅 백업 완료: {target} ({len(documents)}개)")
+
+
 def _managed_existing(rows: list[dict[str, Any]], spec: WebhookSpec) -> dict[str, Any] | None:
     for row in rows:
         if row.get("webhook_doctype") != spec.doctype or row.get("webhook_docevent") != spec.event:
@@ -182,7 +214,13 @@ def _managed_existing(rows: list[dict[str, Any]], spec: WebhookSpec) -> dict[str
     return None
 
 
-def configure(*, base_url: str, apply: bool, disable: bool) -> tuple[int, int]:
+def configure(
+    *,
+    base_url: str,
+    apply: bool,
+    disable: bool,
+    backup_file: str = "",
+) -> tuple[int, int]:
     secret = os.environ.get("ERPNEXT_WEBHOOK_SECRET", "").strip()
     if not secret:
         raise RuntimeError("ERPNEXT_WEBHOOK_SECRET이 설정되지 않았습니다.")
@@ -204,6 +242,19 @@ def configure(*, base_url: str, apply: bool, disable: bool) -> tuple[int, int]:
         ],
         limit=500,
     ) or []
+
+    if apply and backup_file:
+        existing_names = {
+            str(existing["name"])
+            for spec in _specs()
+            if (existing := _managed_existing(rows, spec)) is not None
+        }
+        existing_documents = [
+            _fetch_document(f"/api/resource/Webhook/{quote(name, safe='')}")
+            for name in sorted(existing_names)
+        ]
+        _write_backup(backup_file, existing_documents)
+
     created = 0
     updated = 0
     for spec in _specs():
@@ -251,8 +302,18 @@ def main() -> None:
     )
     parser.add_argument("--apply", action="store_true", help="ERPNext에 실제 반영")
     parser.add_argument("--disable", action="store_true", help="관리 웹훅 전체 비활성화")
+    parser.add_argument(
+        "--backup-file",
+        default="",
+        help="--apply 전에 기존 관리 웹훅 문서를 저장할 JSON 파일",
+    )
     args = parser.parse_args()
-    configure(base_url=args.base_url, apply=args.apply, disable=args.disable)
+    configure(
+        base_url=args.base_url,
+        apply=args.apply,
+        disable=args.disable,
+        backup_file=args.backup_file,
+    )
 
 
 if __name__ == "__main__":
