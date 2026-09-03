@@ -12,7 +12,10 @@ from backend_logic2.services.workflow_projection import (
     task_input_schema,
     task_presentation,
 )
-from backend_logic2.services.workflow_service import project_substitute_decision
+from backend_logic2.services.workflow_service import (
+    project_case_from_checkpoint,
+    project_substitute_decision,
+)
 from backend_logic2.workflow.process_commands import (
     _cancel_urgent_mr_without_supplier,
     _submit_mr_for_purchase,
@@ -87,8 +90,51 @@ class WorkflowIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             project_graph_status("urgent_no_supplier_cancelled"),
-            ("CANCELLED", "CANCELLED"),
+            ("REJECTED", "CANCELLED"),
         )
+
+    @patch("backend_logic2.services.workflow_service.task_repository.supersede_inactive_tasks")
+    @patch("backend_logic2.services.workflow_service._create_notification_safely")
+    @patch("backend_logic2.services.workflow_service.case_repository.transition_case")
+    @patch("backend_logic2.services.workflow_service.get_process_app")
+    @patch("backend_logic2.services.workflow_service.case_repository.get_case")
+    def test_urgent_supplier_failure_is_projected_as_rejection_and_notified(
+        self,
+        get_case,
+        get_app,
+        transition,
+        notify,
+        _supersede,
+    ):
+        from types import SimpleNamespace
+
+        get_case.return_value = {
+            "case_id": "case-1",
+            "mr_name": "MAT-MR-0001",
+            "thread_id": "MAT-MR-0001",
+            "status": "RUNNING",
+            "assigned_user_id": "buyer@example.com",
+        }
+        get_app.return_value.get_state.return_value = SimpleNamespace(
+            values={
+                "status": "urgent_no_supplier_cancelled",
+                "cancellation_reason": "최근 거래 협력사가 없어 자동 반려했습니다.",
+            },
+            next=(),
+            tasks=(),
+        )
+        transition.return_value = {
+            **get_case.return_value,
+            "status": "REJECTED",
+            "stage": "CANCELLED",
+        }
+
+        result = project_case_from_checkpoint("case-1")
+
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertEqual(transition.call_args.kwargs["reason"], "최근 거래 협력사가 없어 자동 반려했습니다.")
+        self.assertEqual(notify.call_args.kwargs["notification_type"], "URGENT_MR_REJECTED")
+        self.assertEqual(notify.call_args.kwargs["payload"]["reason"], "최근 거래 협력사가 없어 자동 반려했습니다.")
 
     @patch("backend_logic2.integrations.erp_client.erp_submit")
     @patch("backend_logic2.integrations.erp_client.erp_get_one")
@@ -134,6 +180,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         notify_requester.assert_called_once_with(material_request, substitutes)
         submit_mr.assert_not_called()
 
+    @patch("backend_logic2.services.workflow_service._delete_case_notifications_safely")
     @patch("backend_logic2.services.workflow_service._create_notification_safely")
     @patch("backend_logic2.services.workflow_service.project_case_from_checkpoint")
     @patch("backend_logic2.services.workflow_service.case_repository.get_case_by_mr")
@@ -142,6 +189,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         get_case,
         project_case,
         notify,
+        delete_notifications,
     ):
         get_case.return_value = {
             "case_id": "case-1",
@@ -155,9 +203,11 @@ class WorkflowIntegrationTests(unittest.TestCase):
         )
 
         project_case.assert_called_once_with("case-1")
+        delete_notifications.assert_called_once_with("case-1")
         self.assertEqual(notify.call_args.kwargs["notification_type"], "SUBSTITUTE_SELECTED")
         self.assertEqual(notify.call_args.kwargs["payload"]["stage"], "SUBSTITUTE_SELECTED")
 
+    @patch("backend_logic2.services.workflow_service._delete_case_notifications_safely")
     @patch("backend_logic2.services.workflow_service._create_notification_safely")
     @patch("backend_logic2.services.workflow_service.project_case_from_checkpoint")
     @patch("backend_logic2.services.workflow_service.case_repository.get_case_by_mr")
@@ -166,6 +216,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         get_case,
         project_case,
         notify,
+        delete_notifications,
     ):
         get_case.return_value = {
             "case_id": "case-1",
@@ -176,6 +227,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         project_substitute_decision("MAT-MR-0001", new_purchase=True)
 
         project_case.assert_called_once_with("case-1")
+        delete_notifications.assert_called_once_with("case-1")
         self.assertEqual(
             notify.call_args.kwargs["notification_type"],
             "SUBSTITUTE_NEW_PURCHASE_REQUESTED",

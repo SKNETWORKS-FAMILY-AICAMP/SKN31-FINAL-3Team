@@ -480,8 +480,34 @@ def get_material_request_detail(mr_name):
     """
     [조회] 특정 Material Request 하나를 통째로 가져옴 (품목 목록까지 포함).
     감지된 MR을 실제로 처리(RFQ 생성 등)하기 전에 상세정보 필요할 때 사용.
+
+    Frappe의 ``/api/resource/Material Request/{name}`` 응답은 Desk 화면의
+    첨부파일 목록(``_attachments``)을 포함하지 않는다. 첨부는 ``File``
+    DocType에 별도 행으로 저장되므로 함께 조회해 하나의 안정된 계약으로
+    반환한다. 이렇게 해야 부모 MR의 modified가 변하지 않는 첨부 추가/삭제도
+    폴링과 웹훅 양쪽에서 감지할 수 있다.
     """
-    return erp_get_one("Material Request", mr_name)
+    material_request = erp_get_one("Material Request", mr_name)
+    if material_request is None:
+        return None
+
+    attachments = erp_get(
+        "File",
+        filters=[
+            ["attached_to_doctype", "=", "Material Request"],
+            ["attached_to_name", "=", mr_name],
+            ["is_folder", "=", 0],
+        ],
+        fields=[
+            "name", "file_name", "file_url", "is_private",
+            "attached_to_field", "creation", "modified",
+        ],
+        order_by="creation asc",
+        limit=500,
+    ) or []
+    result = dict(material_request)
+    result["_attachments"] = attachments
+    return result
 
 
 # ============================================================

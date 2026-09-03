@@ -112,6 +112,11 @@ def _unique_quotation_names(rows: list[dict[str, Any]]) -> list[str]:
 def _normalize_item(detail: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
     transaction_date = detail.get("transaction_date")
     lead_time_days = item.get("lead_time_days")
+    expected_delivery_date = (
+        item.get("expected_delivery_date")
+        or item.get("schedule_date")
+        or item.get("delivery_date")
+    )
     return {
         # Supplier Quotation 헤더
         "quotation_name": detail.get("name"),
@@ -142,10 +147,10 @@ def _normalize_item(detail: dict[str, Any], item: dict[str, Any]) -> dict[str, A
         "net_amount": item.get("net_amount"),
         "lead_time_days": lead_time_days,
         "schedule_date": (
-            item.get("expected_delivery_date")
+            expected_delivery_date
             or _calculate_schedule_date(transaction_date, lead_time_days)
         ),
-        "expected_delivery_date": item.get("expected_delivery_date"),
+        "expected_delivery_date": expected_delivery_date,
         "warehouse": item.get("warehouse"),
         "item_tax_rate": _parse_json_object(item.get("item_tax_rate")),
         "request_for_quotation": item.get("request_for_quotation"),
@@ -224,6 +229,8 @@ def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation
             "amount": net_amount if net_amount is not None else item.get("amount"),
             "delivery_date": (
                 item.get("expected_delivery_date")
+                or item.get("schedule_date")
+                or item.get("delivery_date")
                 or _calculate_schedule_date(transaction_date, item.get("lead_time_days"))
             ),
             "lead_time_days": item.get("lead_time_days"),

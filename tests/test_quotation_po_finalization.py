@@ -5,11 +5,38 @@ from backend_logic2.nodes.po.create_and_send_po import (
     create_and_send_direct_po,
     create_and_send_po,
 )
-from backend_logic2.nodes.quotation.sq_evaluation import submit_finalized_quotations
+from backend_logic2.nodes.quotation.sq_evaluation import (
+    _enrich_ranking_with_prices,
+    submit_finalized_quotations,
+)
 from backend_logic2.workflow.process_commands import check_quotations_command
 
 
 class QuotationAndPurchaseOrderFinalizationTests(unittest.TestCase):
+    def test_ranking_keeps_supplier_quotation_prices_for_frontend(self):
+        ranking = [{"name": "SUP-QTN-0001", "supplier": "공급사 A", "rank": 1}]
+        quotations = [{
+            "name": "SUP-QTN-0001",
+            "supplier": "공급사 A",
+            "currency": "KRW",
+            "transaction_date": "2026-09-03",
+            "grand_total": 220000,
+            "items": [{
+                "qty": 2,
+                "rate": 100000,
+                "amount": 200000,
+                "expected_delivery_date": "2026-09-10",
+            }],
+        }]
+
+        enriched = _enrich_ranking_with_prices(ranking, quotations)
+
+        self.assertEqual(enriched[0]["rate"], 100000)
+        self.assertEqual(enriched[0]["amount"], 200000)
+        self.assertEqual(enriched[0]["total_amount"], 220000)
+        self.assertEqual(enriched[0]["expected_delivery_date"], "2026-09-10")
+        self.assertEqual(enriched[0]["transaction_date"], "2026-09-03")
+
     @patch("backend_logic2.nodes.quotation.sq_evaluation.submit_finalized_quotations")
     @patch("backend_logic2.nodes.quotation.sq_evaluation.print_evaluation")
     @patch("backend_logic2.nodes.quotation.sq_evaluation.evaluate_quotations")

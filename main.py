@@ -55,6 +55,16 @@ def _mr_poll_interval_seconds() -> float:
     return max(2.0, configured)
 
 
+def _mr_full_reconcile_interval_seconds() -> float:
+    """Interval for refreshing edits/attachments on already-known open MRs."""
+
+    try:
+        configured = float(os.getenv("MR_FULL_RECONCILE_INTERVAL_SECONDS", "30"))
+    except ValueError:
+        configured = 30.0
+    return max(_mr_poll_interval_seconds(), configured)
+
+
 def _purchase_document_poll_interval_seconds() -> float:
     try:
         configured = float(os.getenv("PURCHASE_DOCUMENT_POLL_INTERVAL_SECONDS", "15"))
@@ -66,26 +76,48 @@ def _purchase_document_poll_interval_seconds() -> float:
 async def _poll_material_requests() -> None:
     """Discover ERPNext Draft MRs while direct webhooks are unavailable.
 
-    The first pass performs a full reconciliation so deleted/cancelled ERP
-    documents cannot remain as active PostgreSQL cases. Later passes use the
-    lightweight path and only discover/upsert current Draft MRs.
+    The first pass and a slower periodic pass fully refresh already-known MRs,
+    including File attachments whose changes do not touch the parent MR's
+    ``modified`` timestamp. Faster passes discover/update current Draft MRs.
     """
 
-    reconcile_existing = True
     interval = _mr_poll_interval_seconds()
+    full_interval = _mr_full_reconcile_interval_seconds()
+    last_full_reconcile_at = 0.0
     while True:
+        now = asyncio.get_running_loop().time()
+        reconcile_existing = (
+            last_full_reconcile_at == 0.0
+            or now - last_full_reconcile_at >= full_interval
+        )
         try:
             await asyncio.to_thread(
                 workflow_service.sync_draft_material_requests,
                 reconcile_existing=reconcile_existing,
             )
-            reconcile_existing = False
+            if reconcile_existing:
+                last_full_reconcile_at = now
         except asyncio.CancelledError:
             raise
         except Exception:
             # A temporary ERP/DB outage must not stop later polling attempts.
             LOGGER.exception("ERPNext MR polling failed; retrying in %.1f seconds", interval)
         await asyncio.sleep(interval)
+
+
+async def _reconcile_material_requests_once() -> None:
+    """Recover MR changes missed while a webhook-mode API was offline."""
+
+    try:
+        await asyncio.to_thread(
+            workflow_service.sync_draft_material_requests,
+            reconcile_existing=True,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Webhooks remain usable even if the optional startup recovery pass fails.
+        LOGGER.exception("ERPNext MR startup reconciliation failed")
 
 
 async def _poll_substitute_decisions() -> None:
@@ -137,6 +169,7 @@ async def _poll_purchase_documents(*, continuous: bool) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     polling_task: asyncio.Task[None] | None = None
+    startup_reconciliation_task: asyncio.Task[None] | None = None
     substitute_task = asyncio.create_task(
         _poll_substitute_decisions(),
         name="erpnext-substitute-decision-poller",
@@ -153,6 +186,12 @@ async def lifespan(app: FastAPI):
             name="erpnext-material-request-poller",
         )
         app.state.mr_polling_task = polling_task
+    else:
+        startup_reconciliation_task = asyncio.create_task(
+            _reconcile_material_requests_once(),
+            name="erpnext-material-request-startup-reconciler",
+        )
+        app.state.mr_startup_reconciliation_task = startup_reconciliation_task
     try:
         yield
     finally:
@@ -160,6 +199,11 @@ async def lifespan(app: FastAPI):
             polling_task.cancel()
             with suppress(asyncio.CancelledError):
                 await polling_task
+        if startup_reconciliation_task is not None:
+            if not startup_reconciliation_task.done():
+                startup_reconciliation_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await startup_reconciliation_task
         substitute_task.cancel()
         with suppress(asyncio.CancelledError):
             await substitute_task
@@ -225,11 +269,18 @@ def health_check():
     polling_task = getattr(app.state, "mr_polling_task", None)
     substitute_task = getattr(app.state, "substitute_polling_task", None)
     purchase_document_task = getattr(app.state, "purchase_document_polling_task", None)
+    startup_reconciliation_task = getattr(
+        app.state, "mr_startup_reconciliation_task", None
+    )
     return {
         "status": "ok",
         "message": "FastAPI server is running properly.",
         "mr_ingest_mode": _mr_ingest_mode(),
         "mr_polling_active": bool(polling_task and not polling_task.done()),
+        "mr_startup_reconciliation_active": bool(
+            startup_reconciliation_task
+            and not startup_reconciliation_task.done()
+        ),
         "substitute_polling_active": bool(
             substitute_task and not substitute_task.done()
         ),

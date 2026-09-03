@@ -122,3 +122,22 @@ def delete_all_notifications(recipient_id: str) -> int:
             {"recipient_id": recipient_id},
         )
     return cursor.rowcount
+
+
+def delete_case_notifications(case_id: str) -> int:
+    """Remove stale inbox rows belonging to one procurement case.
+
+    A successful workflow action supersedes every earlier notice for the same
+    MR. Filtering by ``case_id`` also covers PO/receipt notifications whose
+    visible reference is a PO number rather than the original MR number.
+    """
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM procurement.notification
+            WHERE case_id = %(case_id)s
+            """,
+            {"case_id": case_id},
+        )
+    return cursor.rowcount

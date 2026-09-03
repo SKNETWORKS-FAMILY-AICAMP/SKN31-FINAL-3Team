@@ -99,19 +99,6 @@ def _normalize_name(value):
     return str(value).strip().casefold() if value else ""
 
 
-def _find_brand_supplier(item):
-    brand = item.get("brand")
-    if not brand:
-        return None
-
-    normalized_brand = _normalize_name(brand)
-    for row in item.get("supplier_items") or []:
-        supplier_name = row.get("supplier")
-        if supplier_name and _normalize_name(supplier_name) == normalized_brand:
-            return supplier_name
-    return None
-
-
 def _direct_purchase_fields(purchases, *, supplier=None):
     """Return the traceable source needed to create a non-bidding PO.
 
@@ -145,7 +132,10 @@ def _decide_one_item(line):
     item_code, qty = line["item_code"], line["qty"]
     print(f"  [{item_code}] 판정 시작 (요청수량: {qty})")
 
-    item = erp_get_one("Item", item_code) or {}
+    # 과거 거래 여부와 즉시구매 근거는 Item 마스터의 ``supplier_items``가
+    # 아니라, 이 품목이 실제로 포함된 제출 완료 Purchase Order만으로
+    # 판단한다. Item에 공급사가 연결되어 있어도 거래·확정단가가 없으면
+    # 직접구매 근거가 될 수 없다.
     purchases = _get_past_purchases(item_code)
     print(f"    -> 과거 확정구매 이력: {len(purchases)}건")
 
@@ -166,23 +156,7 @@ def _decide_one_item(line):
         print(f"    -> 판정: 비딩 필요 | {reason}")
         return item_code, {"needs_bidding": True, "reasons": [reason]}
 
-    # 2. 제조사 직거래 (Brand == Supplier)
-    brand_supplier = _find_brand_supplier(item)
-    if brand_supplier:
-        direct_fields = _direct_purchase_fields(purchases, supplier=brand_supplier)
-        if not direct_fields:
-            reason = "제조사 직거래 공급사의 확정 구매단가가 없어 경쟁견적 필요"
-            print(f"    -> 판정: 비딩 필요 | {reason}")
-            return item_code, {"needs_bidding": True, "reasons": [reason]}
-        reason = f"제조사 직거래 (Brand '{item.get('brand')}' = Supplier '{brand_supplier}')"
-        print(f"    -> 판정: 비딩 불필요 | {reason}")
-        return item_code, {
-            "needs_bidding": False,
-            "reasons": [reason],
-            **direct_fields,
-        }
-
-    # 3. 긴급발주
+    # 2. 긴급발주
     if remaining_days is not None:
         print(f"    -> 납기일까지 남은 기간: {remaining_days}일")
         if remaining_days <= URGENT_LEAD_TIME_DAYS:
@@ -201,7 +175,7 @@ def _decide_one_item(line):
     else:
         print("    -> 납기일 정보 없음: 긴급발주 판단 생략")
 
-    # 4. 고액구매
+    # 3. 고액구매
     amount = qty * (purchases[-1].get("rate") or 0)
     print(f"    -> 최근단가 기준 예상금액: {amount:,.0f}원")
     if amount >= AMOUNT_THRESHOLD:
@@ -209,7 +183,7 @@ def _decide_one_item(line):
         print(f"    -> 판정: 비딩 필요 | {reason}")
         return item_code, {"needs_bidding": True, "reasons": [reason]}
 
-    # 5. 구매패턴 분석
+    # 4. 구매패턴 분석
     pattern = _analyze_purchase_pattern(purchases)
     days_since_last = _days_since_last_purchase(purchases)
 

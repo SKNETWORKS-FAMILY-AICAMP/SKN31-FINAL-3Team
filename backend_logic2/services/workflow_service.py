@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 
 from langgraph.types import Command
 
-from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_get_one
+from backend_logic2.integrations.erp_client import (
+    ERPNextAPIError,
+    get_material_request_detail,
+)
 from backend_logic2.nodes.mr.read_material_request import get_pending_material_requests
 from backend_logic2.nodes.mr.reject_material_request import reject_material_request
 from backend_logic2.repositories import cases as case_repository
@@ -51,6 +54,80 @@ def _create_notification_safely(**kwargs: Any) -> None:
         print(f"[workflow notification] 알림 생성 실패: {exc}")
 
 
+def _delete_case_notifications_safely(case_id: str) -> None:
+    """Discard notices superseded by a successful workflow action.
+
+    Notification storage is an auxiliary channel, so cleanup failure must not
+    roll back an ERP or LangGraph transition that already succeeded.
+    """
+
+    try:
+        notification_repository.delete_case_notifications(case_id)
+    except Exception as exc:  # 알림 정리는 본 업무 트랜잭션과 분리한다.
+        print(f"[workflow notification] 이전 알림 정리 실패: {exc}")
+
+
+def _material_request_changed_fields(
+    previous_case: dict[str, Any] | None,
+    current_case: dict[str, Any],
+) -> list[str]:
+    """Return ERP projection keys changed by an MR edit or attachment event."""
+
+    if previous_case is None:
+        return []
+    previous = previous_case.get("summary") or {}
+    current = current_case.get("summary") or {}
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        return ["summary"] if previous != current else []
+    ignored = {"modified"}
+    return sorted(
+        key
+        for key in set(previous) | set(current)
+        if key not in ignored and previous.get(key) != current.get(key)
+    )
+
+
+def _notify_material_request_update(
+    previous_case: dict[str, Any] | None,
+    current_case: dict[str, Any],
+) -> None:
+    """Publish one durable notification only when the ERP projection changed."""
+
+    if previous_case is None or str(previous_case.get("case_id")) != str(
+        current_case.get("case_id")
+    ):
+        return
+    changed_fields = _material_request_changed_fields(previous_case, current_case)
+    if not changed_fields:
+        return
+
+    summary = current_case.get("summary") or {}
+    attachments = summary.get("attachments") if isinstance(summary, dict) else []
+    attachment_count = len(attachments) if isinstance(attachments, list) else 0
+    mr_name = str(current_case.get("mr_name") or "MR")
+    attachment_changed = "attachments" in changed_fields
+    title = "MR 첨부파일이 갱신되었습니다" if attachment_changed else "MR 내용이 변경되었습니다"
+    message = (
+        f"{mr_name} · 현재 첨부파일 {attachment_count}개"
+        if attachment_changed
+        else f"{mr_name} · ERPNext 변경 항목 {len(changed_fields)}개를 반영했습니다"
+    )
+    _create_notification_safely(
+        case_id=str(current_case["case_id"]),
+        recipient_id=current_case.get("assigned_user_id"),
+        notification_type="MATERIAL_REQUEST_UPDATED",
+        title=title,
+        message=message,
+        payload={
+            "mr_name": mr_name,
+            "item_code": current_case.get("item_code"),
+            "stage": current_case.get("stage"),
+            "changed_fields": changed_fields,
+            "attachment_count": attachment_count,
+        },
+    )
+
+
 def _config(thread_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": thread_id}}
 
@@ -70,7 +147,7 @@ def _interrupt_payloads(snapshot: Any) -> list[dict[str, Any]]:
 def _validate_erp_mr(
     mr_name: str, *, allow_submitted: bool = False
 ) -> dict[str, Any]:
-    material_request = erp_get_one("Material Request", mr_name)
+    material_request = get_material_request_detail(mr_name)
     if material_request is None:
         raise LookupError(f"Material Request를 찾을 수 없습니다: {mr_name}")
     docstatus = int(material_request.get("docstatus") or 0)
@@ -105,6 +182,7 @@ def _close_case_missing_in_erp(case: dict[str, Any], *, triggered_by: str) -> di
         triggered_by=triggered_by,
     )
     task_repository.cancel_pending_tasks(case_id, reason=reason)
+    _delete_case_notifications_safely(case_id)
     return closed
 
 
@@ -148,6 +226,8 @@ def sync_draft_material_requests(*, reconcile_existing: bool = True) -> list[dic
                         "stage": case.get("stage"),
                     },
                 )
+            else:
+                _notify_material_request_update(existing_case, case)
         except (ERPNextAPIError, LookupError, ValueError):
             # One malformed document must not prevent other pending MRs from
             # appearing.  The caller receives all successfully reconciled rows.
@@ -164,7 +244,7 @@ def sync_draft_material_requests(*, reconcile_existing: bool = True) -> list[dic
         if not mr_name or mr_name in cases_by_mr:
             continue
         try:
-            material_request = erp_get_one("Material Request", mr_name)
+            material_request = get_material_request_detail(mr_name)
         except ERPNextAPIError as exc:
             # Authentication/network failures must never be mistaken for a
             # deletion. Only an explicit ERP 404 closes the cached case.
@@ -185,14 +265,17 @@ def sync_draft_material_requests(*, reconcile_existing: bool = True) -> list[dic
                 triggered_by="reconciliation",
             )
             task_repository.cancel_pending_tasks(str(persisted_case["case_id"]), reason=reason)
+            _delete_case_notifications_safely(str(persisted_case["case_id"]))
             cases_by_mr[mr_name] = closed
             continue
         if len(material_request.get("items") or []) == 1:
             # ON CONFLICT refreshes the ERP projection while preserving the
             # workflow status of already-running/submitted cases.
-            cases_by_mr[mr_name] = case_repository.upsert_case_from_material_request(
+            refreshed_case = case_repository.upsert_case_from_material_request(
                 material_request
             )
+            cases_by_mr[mr_name] = refreshed_case
+            _notify_material_request_update(persisted_case, refreshed_case)
     return list(cases_by_mr.values())
 
 
@@ -221,7 +304,7 @@ def register_material_request_event(
     try:
         existing_case = case_repository.get_case_by_mr(mr_name)
         try:
-            current = erp_get_one("Material Request", mr_name)
+            current = get_material_request_detail(mr_name)
         except ERPNextAPIError as exc:
             # An optional ERP on_trash webhook reaches the same endpoint after
             # the document has disappeared. Close its read model instead of
@@ -264,6 +347,8 @@ def register_material_request_event(
                         "stage": case.get("stage"),
                     },
                 )
+            else:
+                _notify_material_request_update(existing_case, case)
         else:
             # Webhook은 Insert뿐 아니라 Submit/Cancel 갱신에도 올 수 있다.
             # 이미 실행 중인 케이스를 Draft 초기 상태로 되돌리지 않는다.
@@ -282,11 +367,110 @@ def register_material_request_event(
                 task_repository.cancel_pending_tasks(
                     str(case["case_id"]), reason=cancel_reason
                 )
+                _delete_case_notifications_safely(str(case["case_id"]))
     except Exception as exc:
         event_repository.fail_event(str(event["event_id"]), str(exc))
         raise
     event_repository.complete_event(str(event["event_id"]))
     return case, True
+
+
+def register_material_request_attachment_event(
+    payload: dict[str, Any], *, event_id: str | None = None
+) -> tuple[dict[str, Any], bool]:
+    """Refresh an MR when its separately stored ERPNext ``File`` row changes.
+
+    Adding an attachment does not update the parent Material Request's
+    ``modified`` timestamp and therefore cannot be detected reliably by an MR
+    webhook alone. ERPNext should send File after_insert/on_update/on_trash
+    events to the dedicated endpoint; this handler then re-reads both the MR
+    and its current File rows before updating the PostgreSQL read model.
+    """
+
+    document = payload.get("doc") or payload.get("document") or payload.get("data") or payload
+    if not isinstance(document, dict):
+        raise ValueError("ERPNext File webhook document payload가 필요합니다.")
+    if str(document.get("attached_to_doctype") or "").strip() != "Material Request":
+        return {"ignored": True, "reason": "Material Request 첨부파일이 아닙니다."}, True
+
+    mr_name = str(document.get("attached_to_name") or "").strip()
+    if not mr_name:
+        raise ValueError("File.attached_to_name에 Material Request 이름이 필요합니다.")
+    file_name = str(document.get("name") or document.get("file_name") or "unknown")
+    modified = document.get("modified") or document.get("creation") or "unknown"
+    event_kind = str(payload.get("event") or payload.get("method") or "changed")
+    dedupe_key = event_id or f"erpnext:material_request_file:{file_name}:{modified}:{event_kind}"
+    event, created = event_repository.begin_event(
+        source="ERPNEXT",
+        event_type="MATERIAL_REQUEST_ATTACHMENT_CHANGED",
+        external_id=mr_name,
+        dedupe_key=dedupe_key,
+        payload=payload,
+    )
+    if not created:
+        existing = case_repository.get_case_by_mr(mr_name)
+        return existing or {"mr_name": mr_name}, False
+
+    try:
+        existing_case = case_repository.get_case_by_mr(mr_name)
+        current = get_material_request_detail(mr_name)
+        if current is None:
+            raise LookupError(f"Material Request를 찾을 수 없습니다: {mr_name}")
+        # Frappe의 ``on_trash`` 훅은 실제 DELETE 직전에 호출될 수 있습니다.
+        # 그 순간 REST로 File 목록을 다시 읽으면 삭제 예정 행이 아직 보이므로,
+        # 이벤트 원문의 File을 결과에서 한 번 더 제외해 제거도 즉시 반영합니다.
+        if event_kind.strip().lower() in {
+            "on_trash", "after_delete", "delete", "deleted"
+        }:
+            current = dict(current)
+            current["_attachments"] = [
+                attachment
+                for attachment in current.get("_attachments") or []
+                if str(attachment.get("name") or attachment.get("file_name"))
+                != file_name
+            ]
+        if len(current.get("items") or []) != 1:
+            raise ValueError(
+                f"MR당 품목은 정확히 1개여야 합니다: {mr_name} "
+                f"(현재 {len(current.get('items') or [])}개)"
+            )
+
+        docstatus = int(current.get("docstatus") or 0)
+        if existing_case is None and not (
+            docstatus == 0 and current.get("status") == "Draft"
+        ):
+            result = {
+                "ignored": True,
+                "mr_name": mr_name,
+                "reason": "BiddingFlow에 등록되지 않은 비Draft MR입니다.",
+            }
+        else:
+            result = case_repository.upsert_case_from_material_request(current)
+            if existing_case is None:
+                summary = result.get("summary") or {}
+                _create_notification_safely(
+                    case_id=str(result["case_id"]),
+                    recipient_id=result.get("assigned_user_id"),
+                    notification_type="MATERIAL_REQUEST_CREATED",
+                    title="신규 MR이 도착했습니다",
+                    message=(
+                        f"{mr_name} · "
+                        f"{result.get('item_name') or summary.get('item_name') or '품목명 미지정'}"
+                    ),
+                    payload={
+                        "mr_name": mr_name,
+                        "item_code": result.get("item_code"),
+                        "stage": result.get("stage"),
+                    },
+                )
+            else:
+                _notify_material_request_update(existing_case, result)
+    except Exception as exc:
+        event_repository.fail_event(str(event["event_id"]), str(exc))
+        raise
+
+    event_repository.complete_event(str(event["event_id"]))
+    return result, True
 
 
 def queue_case_start(case_id: str, *, triggered_by: str) -> dict[str, Any]:
@@ -319,7 +503,7 @@ def queue_case_start(case_id: str, *, triggered_by: str) -> dict[str, Any]:
     workflow_snapshot = dict(case.get("workflow_snapshot") or {})
     workflow_snapshot["retry_from_checkpoint"] = retry_from_checkpoint
     workflow_snapshot["restart_from_bidding"] = restart_from_bidding
-    return case_repository.transition_case(
+    updated = case_repository.transition_case(
         case_id,
         status="QUEUED",
         stage=(
@@ -338,6 +522,8 @@ def queue_case_start(case_id: str, *, triggered_by: str) -> dict[str, Any]:
         workflow_snapshot=workflow_snapshot,
         expected_version=int(case["version"]),
     )
+    _delete_case_notifications_safely(case_id)
+    return updated
 
 
 def run_queued_case(case_id: str, *, triggered_by: str) -> None:
@@ -506,6 +692,24 @@ def project_case_from_checkpoint(case_id: str) -> dict[str, Any]:
 
         ensure_delivery_for_po(case_id, str(values["po_name"]))
 
+    if graph_status == "urgent_no_supplier_cancelled":
+        rejection_reason = str(
+            values.get("cancellation_reason")
+            or "긴급 구매 요청에 사용할 최근 거래 협력사가 없어 자동 반려되었습니다."
+        )
+        _create_notification_safely(
+            case_id=case_id,
+            recipient_id=updated.get("assigned_user_id"),
+            notification_type="URGENT_MR_REJECTED",
+            title="긴급 MR이 자동 반려되었습니다",
+            message=f"{case['mr_name']} · {rejection_reason}",
+            payload={
+                "mr_name": case["mr_name"],
+                "stage": stage,
+                "reason": rejection_reason,
+            },
+        )
+
     active_task_types = {
         task_presentation(payload)["task_type"]
         for payload in snapshot_data["interrupts"]
@@ -560,10 +764,12 @@ def project_substitute_decision(
     if case is None:
         return None
 
-    projected = project_case_from_checkpoint(str(case["case_id"]))
+    case_id = str(case["case_id"])
+    _delete_case_notifications_safely(case_id)
+    projected = project_case_from_checkpoint(case_id)
     if new_purchase:
         _create_notification_safely(
-            case_id=str(case["case_id"]),
+            case_id=case_id,
             recipient_id=case.get("assigned_user_id"),
             notification_type="SUBSTITUTE_NEW_PURCHASE_REQUESTED",
             title="신규구매가 요청되었습니다",
@@ -572,7 +778,7 @@ def project_substitute_decision(
         )
     elif selected_item_code:
         _create_notification_safely(
-            case_id=str(case["case_id"]),
+            case_id=case_id,
             recipient_id=case.get("assigned_user_id"),
             notification_type="SUBSTITUTE_SELECTED",
             title="대체품 사용이 확정되었습니다",
@@ -641,6 +847,7 @@ def resume_task(
         task_repository.complete_claimed_task(
             task_id, claimed_version=int(claimed["version"])
         )
+        _delete_case_notifications_safely(str(case["case_id"]))
         return case_repository.transition_case(
             str(case["case_id"]),
             status="COMPLETED",
@@ -681,6 +888,7 @@ def resume_task(
         task_repository.complete_claimed_task(
             task_id, claimed_version=int(claimed["version"])
         )
+        _delete_case_notifications_safely(str(case["case_id"]))
         projected = project_case_from_checkpoint(str(case["case_id"]))
 
         # The frontend quotation modal intentionally offers one human action:
@@ -719,6 +927,9 @@ def resume_task(
                     str(final_task["task_id"]),
                     claimed_version=int(final_claim["version"]),
                 )
+                # The short-lived final-selection notice was superseded by
+                # this automatic second resume. Keep only the next-stage one.
+                _delete_case_notifications_safely(str(case["case_id"]))
                 projected = project_case_from_checkpoint(str(case["case_id"]))
         return projected
 
@@ -729,6 +940,7 @@ def reject_case(case_id: str, *, reason: str, rejected_by: str) -> dict[str, Any
         raise LookupError(case_id)
     reject_material_request(case["mr_name"], reason, reason_code="BUYER_REJECTED")
     task_repository.cancel_pending_tasks(case_id, reason=reason)
+    _delete_case_notifications_safely(case_id)
     return case_repository.transition_case(
         case_id,
         status="CANCELLED",
@@ -757,6 +969,7 @@ def extend_quotation_deadline(
     updated = case_repository.update_quotation_deadline(case_id, deadline_at)
     from backend_logic2.repositories.notifications import create_notification
 
+    _delete_case_notifications_safely(case_id)
     create_notification(
         case_id=case_id,
         recipient_id=case.get("assigned_user_id"),

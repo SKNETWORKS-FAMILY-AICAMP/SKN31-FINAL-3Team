@@ -23,7 +23,7 @@ class WorkflowReconciliationTests(unittest.TestCase):
     @patch.object(workflow_service.task_repository, "cancel_pending_tasks")
     @patch.object(workflow_service.case_repository, "transition_case")
     @patch.object(workflow_service.case_repository, "list_open_case_references")
-    @patch.object(workflow_service, "erp_get_one")
+    @patch.object(workflow_service, "get_material_request_detail")
     @patch.object(workflow_service, "get_pending_material_requests")
     def test_deleted_erp_mr_closes_cached_case(
         self, pending, get_one, open_cases, transition, cancel_tasks
@@ -63,7 +63,7 @@ class WorkflowReconciliationTests(unittest.TestCase):
     @patch.object(workflow_service.task_repository, "cancel_pending_tasks")
     @patch.object(workflow_service.case_repository, "transition_case")
     @patch.object(workflow_service.case_repository, "list_open_case_references")
-    @patch.object(workflow_service, "erp_get_one")
+    @patch.object(workflow_service, "get_material_request_detail")
     @patch.object(workflow_service, "get_pending_material_requests")
     def test_temporary_erp_failure_does_not_close_case(
         self, pending, get_one, open_cases, transition, cancel_tasks

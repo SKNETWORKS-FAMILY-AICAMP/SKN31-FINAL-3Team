@@ -323,6 +323,29 @@ def material_request_webhook(
     return {"accepted": True, "duplicate": not created, "case": case}
 
 
+@webhook_router.post("/material-request-file")
+def material_request_file_webhook(
+    payload: dict[str, Any] = Body(...),
+    x_erpnext_webhook_secret: Optional[str] = Header(default=None),
+    x_erpnext_event_id: Optional[str] = Header(default=None),
+):
+    """Refresh an MR projection after an attached ERPNext File changes."""
+
+    _require_webhook_secret(x_erpnext_webhook_secret)
+    try:
+        case, created = workflow_service.register_material_request_attachment_event(
+            payload,
+            event_id=x_erpnext_event_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (ERPNextAPIError, psycopg.Error) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"accepted": True, "duplicate": not created, "case": case}
+
+
 @webhook_router.post("/purchase-receipt")
 def purchase_receipt_webhook(
     payload: dict[str, Any] = Body(...),

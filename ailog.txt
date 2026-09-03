@@ -707,3 +707,88 @@ ERPNext RFQ 포털 보강 준비
 - 검증:
   · 백엔드 전체 unittest 61개 통과
   · 프론트 lint 및 production build 통과
+
+
+31. PO 거래이력·긴급 자동 반려·견적 금액 투영 보강
+-------------------------------------------------------
+
+- 확인일: 2026-09-03
+- 과거 거래 판단:
+  · Item.supplier_items/Brand 연결을 직접구매 근거로 사용하던 잔여 분기를 제거했다.
+  · 같은 item_code가 포함된 Submit 완료 Purchase Order(docstatus=1)를 조회하고,
+    실제 PO의 supplier·rate·거래일·PO 번호만 재사용하도록 단일화했다.
+  · ERP 실데이터 SF-001을 읽기 전용으로 조회해 Submit PO 2건과 최근 거래처
+    대한안전산업, 기준 PO PUR-ORD-2026-00203이 반환되는 것을 확인했다.
+- 긴급 MR 자동 반려:
+  · 납기가 임박했지만 최근 거래 PO 공급사가 없는 경우 ERP MR 반려/코멘트 후
+    PostgreSQL 상태를 REJECTED로 투영한다.
+  · 반려 사유를 workflow_snapshot과 상태 이력에 보존하고 URGENT_MR_REJECTED
+    알림을 생성해 프론트 MR 목록과 알림함에서 확인할 수 있게 했다.
+- Supplier Quotation 금액:
+  · AI ranking에 빠져 있던 ERP 견적의 rate, amount, grand_total, 통화, 납기
+    정보를 문서명/공급사명 기준으로 결합해 체크포인트에 저장한다.
+  · ERP 실데이터 5건을 읽기 전용으로 확인해 grand_total/rate/amount 값이
+    실제 문서에 존재하며 기존 0원 표시는 투영 누락이 원인이었음을 검증했다.
+- DB 정합성:
+  · 원격 procurement 전체 15개 테이블을
+    procurement_backup_20260903_before_status_default에 백업했다.
+  · 008_align_procurement_case_status_default.sql을 적용해 status 기본값을
+    created에서 AWAITING_MR_REVIEW로 교정했다.
+- 검증:
+  · 백엔드 전체 pytest 107개 통과
+  · 프론트 lint 및 production build 통과
+
+
+32. SQ 제시 납기 보존 및 MR별 알림 수명주기 정리
+---------------------------------------------------
+
+- 확인일: 2026-09-03
+- Supplier Quotation 납기:
+  · AI 순위 결과에 SQ 품목의 expected_delivery_date와 거래일을 보존한다.
+  · 구형/커스텀 필드 호환을 위해 schedule_date, delivery_date 순으로 보조 조회한다.
+  · 기존 체크포인트 3건(00302, 00306, 00312)은 ERPNext 원문과 대조해
+    누락된 날짜만 멱등 보정했으며 상태·단계·task는 변경하지 않았다.
+  · 실제 SQ에서 납기를 입력하지 않은 PUR-SQTN-2026-00293은 임의 추정하지 않는다.
+- 알림 수명주기:
+  · procurement.notification을 case_id로 정리하는 repository 함수를 추가했다.
+  · MR 시작/반려, 인터럽트 응답, 대체품 결정, 견적 마감 연장 시 이전 알림을
+    정리하고, 투영 결과가 만든 현재 단계 알림만 inbox에 남긴다.
+  · ERPNext에서 MR이 취소되는 경로도 pending task와 과거 알림을 함께 정리한다.
+- 유지보수 도구:
+  · `python -m procurement_db.backfill_quotation_delivery_dates`는 미리보기,
+    `--apply`는 기존 snapshot의 누락 날짜만 보정한다.
+- 검증:
+  · 백엔드 전체 pytest 107개 통과
+  · 프론트 lint 및 production build 통과
+
+
+33. 기존 MR 수정·첨부파일 증분 동기화
+---------------------------------------
+
+- 확인일: 2026-09-03
+- ERPNext 원본 조회:
+  · Material Request 상세 API에는 첨부파일 목록이 포함되지 않으므로, 연결된
+    File 문서를 별도 조회해 `_attachments`로 합친 일관된 MR 원문을 사용한다.
+  · 실제 ERPNext Draft MR을 읽기 전용으로 확인해 연결 File 1건이 함께 조회됨을
+    검증했다.
+- polling 모드:
+  · 빠른 주기는 신규/수정 Draft MR을 확인하고, 별도 전체 정합성 주기는 이미
+    워크플로우에 들어온 MR까지 다시 읽어 본문과 첨부파일 변경을 반영한다.
+  · `MR_FULL_RECONCILE_INTERVAL_SECONDS`로 전체 정합성 주기를 조절한다.
+- webhook 모드:
+  · 기존 Material Request 웹훅에 더해 File 전용
+    `/api/webhooks/erpnext/material-request-file` 엔드포인트를 추가했다.
+  · File 이벤트는 Material Request 첨부만 수용하고 integration_event의 dedupe
+    key로 재전송을 멱등 처리한다.
+  · on_trash가 실제 삭제 전에 호출되어도 이벤트 원문의 File을 제외해 첨부 제거를
+    즉시 투영한다.
+  · 서버 재시작 시 한 차례 전체 MR 정합성 검사를 실행해 비접속 중 누락된
+    변경도 복구한다.
+- DB/프론트 반영:
+  · 실제 투영 데이터가 달라졌을 때만 case를 갱신해 반복 polling의 불필요한
+    version 증가와 DB 쓰기를 막는다.
+  · 변경 시 MATERIAL_REQUEST_UPDATED 알림을 영속 저장하고 PostgreSQL NOTIFY →
+    SSE를 통해 접속 중인 프론트 목록과 알림을 즉시 갱신한다.
+- 검증:
+  · 백엔드 전체 pytest 112개 통과
+  · 프론트 lint 및 production build 통과

@@ -77,6 +77,7 @@ class WorkflowTaskConcurrencyTests(unittest.TestCase):
         release.assert_called_once_with("task-1", claimed_version=2)
         complete.assert_not_called()
 
+    @patch.object(workflow_service, "_delete_case_notifications_safely")
     @patch.object(workflow_service, "project_case_from_checkpoint")
     @patch.object(workflow_service.task_repository, "complete_claimed_task")
     @patch.object(workflow_service.task_repository, "claim_task")
@@ -86,7 +87,7 @@ class WorkflowTaskConcurrencyTests(unittest.TestCase):
     @patch.object(workflow_service.task_repository, "get_task")
     def test_success_completes_claim_before_returning_projection(
         self, get_task, get_case, get_app, interrupt_payloads,
-        claim, complete, project
+        claim, complete, project, delete_notifications
     ):
         get_task.return_value = self._task("check_quotations")
         get_case.return_value = self._case("QUOTATION_COLLECTION")
@@ -109,6 +110,7 @@ class WorkflowTaskConcurrencyTests(unittest.TestCase):
         )
 
         complete.assert_called_once_with("task-1", claimed_version=2)
+        delete_notifications.assert_called_once_with("case-1")
         project.assert_called_once_with("case-1")
         self.assertEqual(result["case_id"], "case-1")
 

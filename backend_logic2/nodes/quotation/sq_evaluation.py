@@ -32,6 +32,75 @@ from backend_logic2.integrations.erp_client import erp_get, erp_get_one, erp_sub
 REQUEST_FOR_QUOTATION_LINK_FIELD = "request_for_quotation"
 
 
+def _number(value) -> float:
+    """ERPNext 숫자/문자열 값을 화면 투영에 안전한 숫자로 바꾼다."""
+
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _first_non_zero(*values) -> float:
+    for value in values:
+        number = _number(value)
+        if number:
+            return number
+    return 0.0
+
+
+def _enrich_ranking_with_prices(ranking: list[dict], quotations: list[dict]) -> list[dict]:
+    """AI 순위에 ERP 견적 금액을 합쳐 체크포인트/UI까지 보존한다.
+
+    AI 응답은 순위와 이유만 반환하므로, 그대로 저장하면 프론트에서는
+    Supplier Quotation이 존재해도 단가·총액이 0원으로 보인다. ERP 원문을
+    문서명(우선) 또는 공급사명으로 다시 결합해 숫자 필드를 함께 저장한다.
+    """
+
+    by_name = {str(row.get("name") or "").strip(): row for row in quotations}
+    by_supplier = {str(row.get("supplier") or "").strip(): row for row in quotations}
+    enriched: list[dict] = []
+    for ranked in ranking:
+        quotation = (
+            by_name.get(str(ranked.get("name") or "").strip())
+            or by_supplier.get(str(ranked.get("supplier") or "").strip())
+            or {}
+        )
+        items = quotation.get("items") or []
+        first_item = items[0] if items else {}
+        expected_delivery_date = (
+            first_item.get("expected_delivery_date")
+            or first_item.get("schedule_date")
+            or first_item.get("delivery_date")
+        )
+        total_amount = _first_non_zero(
+            quotation.get("grand_total"),
+            quotation.get("rounded_total"),
+            quotation.get("net_total"),
+            sum(_number(item.get("amount")) for item in items),
+        )
+        enriched.append({
+            **ranked,
+            "name": ranked.get("name") or quotation.get("name"),
+            "supplier": ranked.get("supplier") or quotation.get("supplier"),
+            "currency": quotation.get("currency") or "KRW",
+            "rate": _first_non_zero(first_item.get("rate"), first_item.get("net_rate")),
+            "amount": _first_non_zero(
+                first_item.get("amount"),
+                first_item.get("net_amount"),
+                _number(first_item.get("qty")) * _number(first_item.get("rate")),
+            ),
+            "total_amount": total_amount,
+            "grand_total": total_amount,
+            # 실제 SQ 품목에 제시된 날짜를 UI 체크포인트까지 보존한다.
+            # lead_time_days는 구형 포털 데이터에만 사용하는 보조 값이다.
+            "expected_delivery_date": expected_delivery_date,
+            "lead_time_days": first_item.get("lead_time_days"),
+            "transaction_date": quotation.get("transaction_date"),
+        })
+    return enriched
+
+
 def get_rfq_requirements(rfq_name: str) -> dict:
     """RFQ 원본 요청내용(품목/수량/희망납기/설명)을 조회"""
     rfq = erp_get_one("Request for Quotation", rfq_name)
@@ -80,6 +149,51 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
         doc = erp_get_one("Supplier Quotation", row["name"])
         if not doc:
             continue
+        normalized_items = []
+        for item in doc.get("items", []):
+            rate = _first_non_zero(item.get("rate"), item.get("net_rate"))
+            amount = _first_non_zero(
+                item.get("amount"),
+                item.get("net_amount"),
+                _number(item.get("qty")) * rate,
+            )
+            normalized_items.append({
+                "name": item.get("name"),
+
+                "request_for_quotation_item":
+                    item.get("request_for_quotation_item"),
+                "request_for_quotation":
+                    item.get("request_for_quotation"),
+                "material_request": item.get("material_request"),
+                "material_request_item": item.get("material_request_item"),
+
+                "item_code": item.get("item_code"),
+                "item_name": item.get("item_name"),
+                "description": item.get("description"),
+
+                "qty": item.get("qty"),
+                "uom": item.get("uom"),
+
+                "rate": rate,
+                "amount": amount,
+                "base_rate": item.get("base_rate"),
+                "base_amount": item.get("base_amount"),
+
+                "expected_delivery_date": (
+                    item.get("expected_delivery_date")
+                    or item.get("schedule_date")
+                    or item.get("delivery_date")
+                ),
+
+                "lead_time_days":
+                    item.get("lead_time_days"),
+            })
+        grand_total = _first_non_zero(
+            doc.get("grand_total"),
+            doc.get("rounded_total"),
+            doc.get("net_total"),
+            sum(_number(item.get("amount")) for item in normalized_items),
+        )
         quotations.append({
             "name": doc.get("name"),
             "supplier": doc.get("supplier"),
@@ -90,40 +204,11 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
 
             "currency": doc.get("currency"),
             "conversion_rate": doc.get("conversion_rate"),
-            "grand_total": doc.get("grand_total"),
+            "grand_total": grand_total,
+            "rounded_total": doc.get("rounded_total"),
+            "net_total": doc.get("net_total"),
             "base_grand_total": doc.get("base_grand_total"),
-
-            "items": [
-                {
-                    "name": item.get("name"),
-
-                    "request_for_quotation_item":
-                        item.get("request_for_quotation_item"),
-                    "request_for_quotation":
-                        item.get("request_for_quotation"),
-                    "material_request": item.get("material_request"),
-                    "material_request_item": item.get("material_request_item"),
-
-                    "item_code": item.get("item_code"),
-                    "item_name": item.get("item_name"),
-                    "description": item.get("description"),
-
-                    "qty": item.get("qty"),
-                    "uom": item.get("uom"),
-
-                    "rate": item.get("rate"),
-                    "amount": item.get("amount"),
-                    "base_rate": item.get("base_rate"),
-                    "base_amount": item.get("base_amount"),
-
-                    "expected_delivery_date":
-                        item.get("expected_delivery_date"),
-
-                    "lead_time_days":
-                        item.get("lead_time_days"),
-                }
-                for item in doc.get("items", [])
-            ],
+            "items": normalized_items,
         })
     return quotations
 
@@ -255,7 +340,7 @@ def evaluate_quotations(rfq_name: str) -> dict:
             f"AI 비교분석을 수행하지 않습니다."
         )
 
-        ranking = [
+        ranking = _enrich_ranking_with_prices([
             {
                 "name": quotation.get("name"),
                 "supplier": quotation.get("supplier"),
@@ -268,7 +353,7 @@ def evaluate_quotations(rfq_name: str) -> dict:
                 "reason": "제출된 견적이 1건뿐이므로 비교평가를 생략했습니다.",
                 "issues": [],
             }
-        ]
+        ], quotations)
 
         return {
             "requirements": requirements,
@@ -279,8 +364,8 @@ def evaluate_quotations(rfq_name: str) -> dict:
     # 2건 이상일 때만 AI 비교평가
     print(f"[AI 견적 비교] {len(quotations)}건 비교분석 시작")
 
-    ranking = _ai_rank_quotations(
-        requirements,
+    ranking = _enrich_ranking_with_prices(
+        _ai_rank_quotations(requirements, quotations),
         quotations,
     )
 

@@ -47,7 +47,11 @@ def project_graph_status(graph_status: str | None) -> tuple[str, str]:
     stage = STATUS_TO_STAGE.get(value, "PROCESSING")
     if value == "po_sent":
         return "RUNNING", stage
-    if value in {"substitute_selected", "urgent_no_supplier_cancelled"}:
+    if value == "urgent_no_supplier_cancelled":
+        # 공급사 근거가 없는 긴급 MR은 단순 취소가 아니라 자동 반려다.
+        # 이 구분을 유지해야 MR 목록의 반려 이력과 사유로 노출할 수 있다.
+        return "REJECTED", stage
+    if value == "substitute_selected":
         return "CANCELLED", stage
     if value in {"human_review", "catalog_purchase_required"}:
         return "FAILED", stage

@@ -168,8 +168,7 @@ def upsert_case_from_material_request(material_request: dict[str, Any]) -> dict[
     with get_connection() as connection:
         existing_case = connection.execute(
             """
-            SELECT case_id, mr_name, thread_id, status, updated_at,
-                   completed_at, cancelled_at
+            SELECT *
             FROM procurement.procurement_case
             WHERE mr_name = %(mr_name)s
             FOR UPDATE
@@ -181,6 +180,19 @@ def upsert_case_from_material_request(material_request: dict[str, Any]) -> dict[
             dict(existing_case) if existing_case else None,
             material_request,
         )
+        if existing_case and not recreated:
+            existing = dict(existing_case)
+            # 짧은 주기의 폴링은 같은 Draft MR을 계속 발견합니다. ERP의
+            # 실제 필드/첨부파일 투영이 같으면 updated_at과 version을 불필요하게
+            # 올리지 않아 SSE 재조회·행 점멸·DB 쓰기 증폭을 막습니다.
+            if (
+                existing.get("summary") == summary
+                and existing.get("item_code") == item.get("item_code")
+                and existing.get("item_name")
+                == (item.get("item_name") or item.get("item_code"))
+                and existing.get("requester_id") == requester_id
+            ):
+                return existing
         if recreated:
             # Frappe can reuse the last naming-series number after a test MR is
             # deleted. Keep the previous workflow/audit rows addressable, but
@@ -286,7 +298,8 @@ def list_open_case_references() -> list[dict[str, Any]]:
     with get_connection() as connection:
         rows = connection.execute(
             """
-            SELECT case_id, mr_name, status, stage
+            SELECT case_id, mr_name, status, stage, item_code, item_name,
+                   requester_id, assigned_user_id, summary, erp_modified_at
             FROM procurement.procurement_case
             WHERE mr_name IS NOT NULL
               AND status NOT IN ('COMPLETED', 'CANCELLED', 'REJECTED')

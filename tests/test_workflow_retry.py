@@ -6,12 +6,13 @@ from backend_logic2.services import workflow_service
 
 
 class WorkflowRetryTests(unittest.TestCase):
+    @patch.object(workflow_service, "_delete_case_notifications_safely")
     @patch.object(workflow_service.case_repository, "transition_case")
     @patch.object(workflow_service, "_validate_erp_mr")
     @patch.object(workflow_service, "get_process_app")
     @patch.object(workflow_service.case_repository, "get_case")
     def test_failed_submitted_case_queues_checkpoint_retry(
-        self, get_case, get_app, validate, transition
+        self, get_case, get_app, validate, transition, delete_notifications
     ):
         get_case.return_value = {
             "case_id": "case-1",
@@ -36,6 +37,7 @@ class WorkflowRetryTests(unittest.TestCase):
         self.assertEqual(
             transition.call_args.kwargs["stage"], "SUPPLIER_RECOMMENDATION"
         )
+        delete_notifications.assert_called_once_with("case-1")
 
     @patch.object(workflow_service, "project_case_from_checkpoint")
     @patch.object(workflow_service.case_repository, "transition_case")
@@ -77,12 +79,13 @@ class WorkflowRetryTests(unittest.TestCase):
         )
         project.assert_called_once_with("case-1")
 
+    @patch.object(workflow_service, "_delete_case_notifications_safely")
     @patch.object(workflow_service, "get_process_app")
     @patch.object(workflow_service.case_repository, "get_case")
     @patch.object(workflow_service, "_validate_erp_mr")
     @patch.object(workflow_service.case_repository, "transition_case")
     def test_catalog_terminal_checkpoint_queues_bidding_recheck(
-        self, transition, validate, get_case, get_app
+        self, transition, validate, get_case, get_app, delete_notifications
     ):
         get_case.return_value = {
             "case_id": "case-1",
@@ -106,6 +109,7 @@ class WorkflowRetryTests(unittest.TestCase):
             transition.call_args.kwargs["workflow_snapshot"]["restart_from_bidding"]
         )
         self.assertEqual(transition.call_args.kwargs["stage"], "BIDDING_DECISION")
+        delete_notifications.assert_called_once_with("case-1")
 
     @patch.object(workflow_service, "project_case_from_checkpoint")
     @patch.object(workflow_service.case_repository, "transition_case")
