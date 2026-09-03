@@ -5,7 +5,14 @@ server {
     listen [::]:80;
     server_name biddingflow.13.209.103.102.nip.io;
 
-    return 301 https://$host$request_uri;
+    # Certbot renews through this path without stopping Nginx.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {
