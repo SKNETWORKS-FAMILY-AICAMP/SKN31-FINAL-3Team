@@ -105,7 +105,9 @@ deploy_backend() {
     return 1
   fi
 
-  if ! curl --fail --silent --show-error --retry 10 --retry-delay 2 \
+  # systemd restart 직후에는 소켓이 열리기 전 잠깐 connection refused가 날 수 있다.
+  # 일반 --retry는 이 오류를 재시도하지 않으므로 명시적으로 허용한다.
+  if ! curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-connrefused \
     http://127.0.0.1:8000/api/health >/dev/null; then
     as_ubuntu git -C "$backend_dir" checkout --quiet "$previous_sha"
     systemctl restart biddingflow-api || true
