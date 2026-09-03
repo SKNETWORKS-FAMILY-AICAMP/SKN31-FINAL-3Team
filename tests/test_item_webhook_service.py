@@ -38,7 +38,61 @@ class ItemWebhookServiceTests(unittest.TestCase):
 
         self.assertEqual(result["skipped"], "already_active")
         validate.assert_not_called()
-        notify.assert_called_once()
+        notify.assert_not_called()
+
+    @patch("backend_logic2.services.item_service.register_item_event")
+    @patch("backend_logic2.services.item_service.erp_get")
+    def test_reconcile_disabled_items_uses_modified_for_idempotent_events(
+        self, get_items, register
+    ):
+        from backend_logic2.services.item_service import reconcile_disabled_items
+
+        get_items.return_value = [
+            {
+                "name": "ITEM-001",
+                "item_code": "ITEM-001",
+                "modified": "2026-09-03 12:00:00",
+                "disabled": 1,
+            }
+        ]
+        register.return_value = ({"item_code": "ITEM-001"}, True)
+
+        result = reconcile_disabled_items()
+
+        self.assertEqual(result, {"inspected": 1, "processed": 1, "failed": 0})
+        register.assert_called_once_with(
+            {
+                "event": "reconcile",
+                "doc": {
+                    "name": "ITEM-001",
+                    "item_code": "ITEM-001",
+                    "modified": "2026-09-03 12:00:00",
+                    "disabled": 1,
+                },
+            }
+        )
+
+    @patch("backend_logic2.services.item_service.register_item_event")
+    @patch("backend_logic2.services.item_service.erp_get")
+    def test_reconcile_continues_after_one_item_fails(self, get_items, register):
+        from backend_logic2.services.item_service import reconcile_disabled_items
+
+        get_items.return_value = [
+            {"item_code": "ITEM-BAD", "modified": "1", "disabled": 1},
+            {"item_code": "ITEM-GOOD", "modified": "2", "disabled": 1},
+        ]
+        register.side_effect = [
+            RuntimeError("temporary failure"),
+            ({"item_code": "ITEM-GOOD"}, True),
+        ]
+
+        with self.assertLogs(
+            "backend_logic2.services.item_service", level="ERROR"
+        ):
+            result = reconcile_disabled_items()
+
+        self.assertEqual(result, {"inspected": 2, "processed": 1, "failed": 1})
+        self.assertEqual(register.call_count, 2)
 
 
 if __name__ == "__main__":

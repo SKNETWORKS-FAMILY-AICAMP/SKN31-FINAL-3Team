@@ -1,0 +1,16 @@
+[Unit]
+Description=Configure ERPNext webhooks for BiddingFlow
+After=network-online.target biddingflow-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/biddingflow/SKN31-FINAL-3Team
+EnvironmentFile=/opt/biddingflow/SKN31-FINAL-3Team/.env
+ExecStart=/opt/biddingflow/SKN31-FINAL-3Team/.venv/bin/python scripts/configure_erpnext_webhooks.py --apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

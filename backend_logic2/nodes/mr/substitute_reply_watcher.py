@@ -208,7 +208,10 @@ def process_mr(mr_name: str) -> None:
 
 def run_once() -> None:
     mr_names = get_mrs_awaiting_substitute_selection()
-    print(f"[substitute_reply_watcher] 대기중인 MR {len(mr_names)}건: {mr_names}")
+    # 정상적인 유휴 상태(0건)는 주기마다 출력하지 않는다. 실제 처리 대상이
+    # 있을 때만 한 줄 남겨 개발 서버 로그가 heartbeat 메시지로 묻히지 않게 한다.
+    if mr_names:
+        print(f"[substitute_reply_watcher] 대기중인 MR {len(mr_names)}건: {mr_names}")
     for mr_name in mr_names:
         process_mr(mr_name)
 

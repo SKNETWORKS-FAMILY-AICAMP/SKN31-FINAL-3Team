@@ -326,6 +326,103 @@ def get_case_by_po(po_name: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def get_case_by_rfq(rfq_name: str) -> dict[str, Any] | None:
+    """Resolve the active procurement case that created one ERPNext RFQ."""
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM procurement.procurement_case
+            WHERE workflow_snapshot #>> '{values,rfq_name}' = %(rfq_name)s
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            {"rfq_name": rfq_name},
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_case_by_supplier_quotation(quotation_name: str) -> dict[str, Any] | None:
+    """Resolve a case from a previously projected SQ, including delete events."""
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM procurement.procurement_case pc
+            WHERE EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(
+                    COALESCE(pc.quotation_snapshot->'quotations', '[]'::jsonb)
+                ) AS quotation
+                WHERE quotation->>'name' = %(quotation_name)s
+            )
+               OR EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(
+                    COALESCE(
+                        pc.workflow_snapshot->'values'->'quotation_ranking',
+                        '[]'::jsonb
+                    )
+                ) AS quotation
+                WHERE quotation->>'name' = %(quotation_name)s
+            )
+            ORDER BY pc.updated_at DESC
+            LIMIT 1
+            """,
+            {"quotation_name": quotation_name},
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_cases_for_quotation_reconciliation() -> list[dict[str, Any]]:
+    """Return cases whose live Supplier Quotation responses can still change."""
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM procurement.procurement_case
+            WHERE status NOT IN ('COMPLETED', 'CANCELLED', 'REJECTED')
+              AND stage IN ('QUOTATION_COLLECTION', 'SUPPLIER_SELECTION', 'ORDER_START')
+              AND workflow_snapshot #>> '{values,rfq_name}' IS NOT NULL
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def update_quotation_snapshot(
+    case_id: str, quotation_snapshot: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Update the live quotation read model only when its business data changed."""
+
+    serialized = Jsonb(_json_value(quotation_snapshot))
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            UPDATE procurement.procurement_case
+            SET quotation_snapshot = %(quotation_snapshot)s,
+                updated_at = now(),
+                version = version + 1
+            WHERE case_id = %(case_id)s
+              AND quotation_snapshot IS DISTINCT FROM %(quotation_snapshot)s
+            RETURNING *
+            """,
+            {"case_id": case_id, "quotation_snapshot": serialized},
+        ).fetchone()
+        if row:
+            return dict(row), True
+        current = connection.execute(
+            "SELECT * FROM procurement.procurement_case WHERE case_id = %(case_id)s",
+            {"case_id": case_id},
+        ).fetchone()
+    if current is None:
+        raise LookupError(case_id)
+    return dict(current), False
+
+
 def list_cases(
     *,
     status: str | None = None,

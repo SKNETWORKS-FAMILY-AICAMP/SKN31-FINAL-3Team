@@ -6,9 +6,8 @@ nodes/item/item_spec_validation.py — item_group별 필수규격 정의 + 신�
 파이프라인(process_graph.py)과는 완전히 별개임. 기존 "품목 신규등록 승인"
 흐름(item_validation.py — ERPNext에서 Item 만들면 자동 disabled=1로
 생성되고, 구매부서가 목록보고 수동승인)에 규격 사전검증을 얹는 용도.
-실제로 언제/어떻게 이 검증을 실행시킬지(웹훅이든 폴링스크립트든)는 아직
-안 정해짐 - 여기는 순수 판단 로직(validate_new_item 하나 호출하면 끝)만
-담당. 트리거는 나중에 붙이면 됨.
+실행 트리거는 Item 생성·수정 웹훅이며, 로컬 polling 모드와 서버 재시작
+복구에서는 item_service.reconcile_disabled_items가 같은 진입점을 호출함.
 
 설계 결정(사용자 확인, 2026-09-01):
   - item_group 최초 정의: AI(gpt-4o-mini, temperature=0 - 일관성 우선)한테
@@ -27,8 +26,9 @@ nodes/item/item_spec_validation.py — item_group별 필수규격 정의 + 신�
   - AI 판단 이유는 기존 case_logging.log_ai_decision() 그대로 재사용
     (case_id=None으로 - 이 프로세스는 MR 케이스가 없음).
 
-폴더 구조: backend_logic2/erp_client.py, backend_logic2/nodes/item/이 파일
-DB 테이블: create_item_group_spec_table.py(레포 루트)로 최초 1회 생성 필요.
+연동 코드: backend_logic2/integrations/erp_client.py,
+backend_logic2/services/item_service.py
+DB 테이블: migrations/010_create_item_group_spec_requirements.sql로 관리.
 
 실행: python -m backend_logic2.nodes.item.item_spec_validation
 """
@@ -36,6 +36,8 @@ DB 테이블: create_item_group_spec_table.py(레포 루트)로 최초 1회 생�
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
+from urllib.parse import quote
 
 from backend_logic2.integrations.erp_client import (
     erp_get_one,
@@ -45,68 +47,126 @@ from backend_logic2.integrations.erp_client import (
     HEADERS,
 )
 from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
+from procurement_db import get_connection
 
 # description이 이 길이(문자수) 미만이면 AI 호출 없이 바로 "전부 미기재"로
 # 처리 - 판단할 것도 없는 뻔한 케이스에 API 비용 쓰지 않으려는 사전필터.
 EMPTY_DESCRIPTION_MIN_LENGTH = 10
 
 
-def _get_conn_or_none():
-    try:
-        from procurement_db import get_connection
-    except ImportError:
-        print("    [item_spec_validation] procurement_db 모듈을 못 찾음, DB 조회/저장 건너뜀")
-        return None
-    return get_connection
+class ItemSpecificationPolicyError(RuntimeError):
+    """품목군 규격 정책을 만들거나 영속화할 수 없을 때 발생한다.
+
+    정책을 저장하지 못한 채 일회성 AI 결과만으로 Item을 활성화하면 다음
+    요청에서 판정 기준이 달라질 수 있다. 따라서 이 오류는 웹훅을 실패로
+    남기고 Item은 disabled 상태로 유지하도록 호출부까지 전파한다.
+    """
+
+
+def _normalize_required_spec_names(value: object) -> list[str]:
+    """과거 문자열 목록과 구조화된 규격 정의를 짧은 항목명 목록으로 통일한다."""
+
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ItemSpecificationPolicyError(
+                "품목군 필수 규격 데이터가 올바른 JSON이 아닙니다."
+            ) from exc
+
+    if isinstance(value, Mapping):
+        value = value.get("fields", value)
+        if isinstance(value, Mapping):
+            value = [
+                (
+                    {"fieldname": fieldname, **metadata}
+                    if isinstance(metadata, Mapping)
+                    else {"fieldname": fieldname, "label": metadata}
+                )
+                for fieldname, metadata in value.items()
+            ]
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ItemSpecificationPolicyError("품목군 필수 규격은 목록 형식이어야 합니다.")
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if isinstance(entry, Mapping):
+            raw_name = entry.get("label") or entry.get("fieldname") or entry.get("name")
+        else:
+            raw_name = entry
+        name = str(raw_name or "").strip()
+        key = name.casefold()
+        if name and key not in seen:
+            names.append(name)
+            seen.add(key)
+    if not names:
+        raise ItemSpecificationPolicyError("품목군 필수 규격이 비어 있습니다.")
+    return names
 
 
 def get_group_requirements(item_group: str) -> dict | None:
     """DB에 이미 저장된 이 item_group의 필수규격을 조회. 없으면 None."""
-    get_connection = _get_conn_or_none()
-    if get_connection is None:
-        return None
-    try:
-        with get_connection(autocommit=True) as conn:
-            row = conn.execute(
-                "SELECT item_group, required_specs, reason "
-                "FROM procurement.item_group_spec_requirements WHERE item_group = %(item_group)s",
-                {"item_group": item_group},
-            ).fetchone()
-    except Exception as e:
-        print(f"    [item_spec_validation] item_group 조회 실패: {e}")
-        return None
+    with get_connection(autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT item_group, required_specs, reason "
+            "FROM procurement.item_group_spec_requirements WHERE item_group = %(item_group)s",
+            {"item_group": item_group},
+        ).fetchone()
     if not row:
         return None
     return {
         "item_group": row["item_group"],
-        "required_specs": json.loads(row["required_specs"]),
+        "required_specs": _normalize_required_spec_names(row["required_specs"]),
         "reason": row["reason"],
     }
 
 
-def _save_group_requirements(item_group: str, required_specs: list, reason: str) -> None:
-    get_connection = _get_conn_or_none()
-    if get_connection is None:
-        return
-    try:
-        with get_connection(autocommit=True) as conn:
-            conn.execute(
-                """
-                INSERT INTO procurement.item_group_spec_requirements (item_group, required_specs, reason)
-                VALUES (%(item_group)s, %(required_specs)s, %(reason)s)
-                ON CONFLICT (item_group) DO UPDATE
-                    SET required_specs = EXCLUDED.required_specs,
-                        reason = EXCLUDED.reason,
-                        updated_at = now()
-                """,
-                {
-                    "item_group": item_group,
-                    "required_specs": json.dumps(required_specs, ensure_ascii=False),
-                    "reason": reason,
-                },
+def _save_group_requirements(
+    item_group: str, required_specs: list[str], reason: str
+) -> dict:
+    """최초 생성자가 만든 정책을 저장하고 DB에 확정된 값을 반환한다.
+
+    같은 품목군의 웹훅이 동시에 도착할 수 있으므로 기존 행은 덮어쓰지
+    않는다. 경합 시 먼저 저장된 정책을 다시 읽어 모든 요청이 같은 기준을
+    사용하게 한다.
+    """
+
+    normalized_specs = _normalize_required_spec_names(required_specs)
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO procurement.item_group_spec_requirements (
+                item_group, required_specs, reason
+            ) VALUES (
+                %(item_group)s, %(required_specs)s, %(reason)s
             )
-    except Exception as e:
-        print(f"    [item_spec_validation] item_group 저장 실패, 이번 판단만 메모리로 사용: {e}")
+            ON CONFLICT (item_group) DO NOTHING
+            """,
+            {
+                "item_group": item_group,
+                "required_specs": json.dumps(normalized_specs, ensure_ascii=False),
+                "reason": reason,
+            },
+        )
+        row = conn.execute(
+            """
+            SELECT item_group, required_specs, reason
+            FROM procurement.item_group_spec_requirements
+            WHERE item_group = %(item_group)s
+            """,
+            {"item_group": item_group},
+        ).fetchone()
+    if not row:
+        raise ItemSpecificationPolicyError(
+            f"'{item_group}' 품목군 필수 규격을 DB에 저장하지 못했습니다."
+        )
+    return {
+        "item_group": row["item_group"],
+        "required_specs": _normalize_required_spec_names(row["required_specs"]),
+        "reason": row["reason"],
+    }
 
 
 def _parse_ai_json(raw: str) -> dict:
@@ -153,14 +213,21 @@ def get_or_create_group_requirements(item_group: str) -> dict:
 
     print(f"    [신규 item_group] '{item_group}' 처음 보는 카테고리, AI로 필수규격 정의 중...")
     defined = _ai_define_required_specs(item_group)
-    _save_group_requirements(item_group, defined["required_specs"], defined["reason"])
+    required_specs = _normalize_required_spec_names(defined.get("required_specs"))
+    persisted = _save_group_requirements(item_group, required_specs, defined["reason"])
     log_ai_decision(
         case_id=None,
         node="item_group_spec_definition",
-        reason=f"[{item_group}] 필수규격 {defined['required_specs']} 정의 - {defined['reason']}",
+        reason=(
+            f"[{item_group}] 필수규격 {persisted['required_specs']} 정의 - "
+            f"{persisted.get('reason') or ''}"
+        ),
     )
-    print(f"    -> 필수규격: {defined['required_specs']} ({defined['reason']})")
-    return {"item_group": item_group, **defined}
+    print(
+        f"    -> 필수규격: {persisted['required_specs']} "
+        f"({persisted.get('reason') or ''})"
+    )
+    return persisted
 
 
 def _ai_check_completeness(item_group: str, description: str, required_specs: list) -> list:
@@ -191,7 +258,8 @@ def _ai_check_completeness(item_group: str, description: str, required_specs: li
         "required_specs": ", ".join(required_specs),
     }).content
     parsed = _parse_ai_json(result)
-    return parsed.get("results", [])
+    results = parsed.get("results", [])
+    return results if isinstance(results, list) else []
 
 
 def check_item_spec_completeness(item_group: str, description: str) -> dict:
@@ -200,9 +268,6 @@ def check_item_spec_completeness(item_group: str, description: str) -> dict:
     """
     requirements = get_or_create_group_requirements(item_group)
     required_specs = requirements["required_specs"]
-
-    if not required_specs:
-        return {"complete": True, "missing": [], "checked": [], "requirements_reason": requirements.get("reason")}
 
     description = (description or "").strip()
     if len(description) < EMPTY_DESCRIPTION_MIN_LENGTH:
@@ -214,8 +279,29 @@ def check_item_spec_completeness(item_group: str, description: str) -> dict:
             "requirements_reason": requirements.get("reason"),
         }
 
-    results = _ai_check_completeness(item_group, description, required_specs)
-    missing = [r["spec"] for r in results if not r.get("present")]
+    ai_results = _ai_check_completeness(item_group, description, required_specs)
+    by_spec = {
+        str(result.get("spec") or "").strip().casefold(): result
+        for result in ai_results
+        if isinstance(result, Mapping) and result.get("spec")
+    }
+    # AI가 필수 항목 하나를 응답에서 빼먹은 경우 이를 기재 완료로 오인하지
+    # 않는다. 명시적으로 present=true인 항목만 통과시킨다.
+    results = []
+    for spec in required_specs:
+        ai_result = by_spec.get(spec.casefold())
+        results.append(
+            {
+                "spec": spec,
+                "present": bool(ai_result and ai_result.get("present") is True),
+                "reason": (
+                    str(ai_result.get("reason") or "")
+                    if ai_result
+                    else "AI 응답에 해당 필수 항목 판정이 없습니다."
+                ),
+            }
+        )
+    missing = [result["spec"] for result in results if not result["present"]]
     reasons = "; ".join(
         f"{r.get('spec')}: {'기재됨' if r.get('present') else '미기재'}({r.get('reason', '')})"
         for r in results
@@ -240,9 +326,10 @@ def _activate_item(item_code: str) -> None:
     import requests
 
     res = requests.put(
-        f"{SITE_URL}/api/resource/Item/{item_code}",
+        f"{SITE_URL}/api/resource/Item/{quote(item_code, safe='')}",
         headers=HEADERS,
         json={"disabled": 0},
+        timeout=30,
     )
     if res.status_code != 200:
         raise ERPNextAPIError(f"승인(활성화) 실패: {res.status_code} - {res.text[:300]}")
@@ -257,15 +344,23 @@ def validate_new_item(item_code: str) -> dict:
     """
     item = erp_get_one("Item", item_code)
     if not item:
-        print(f"[item_spec_validation] Item을 찾을 수 없습니다: {item_code}")
-        return {"item_code": item_code, "approved": False, "missing": [], "error": "not_found"}
+        raise LookupError(f"Item을 찾을 수 없습니다: {item_code}")
 
     item_group = item.get("item_group")
     description = item.get("description") or ""
 
     if not item_group:
-        print(f"[item_spec_validation] '{item_code}'에 item_group이 없어 검증을 건너뜁니다.")
-        return {"item_code": item_code, "approved": False, "missing": [], "error": "no_item_group"}
+        comment = (
+            "필수 정보(품목 그룹)가 누락되었습니다. 품목 그룹을 지정한 뒤 "
+            "다시 요청해주세요."
+        )
+        erp_add_comment("Item", item_code, comment)
+        return {
+            "item_code": item_code,
+            "approved": False,
+            "missing": ["품목 그룹"],
+            "error": "no_item_group",
+        }
 
     print(f"\n[규격검증] {item_code} (분류: {item_group})")
     result = check_item_spec_completeness(item_group, description)
@@ -277,10 +372,10 @@ def validate_new_item(item_code: str) -> dict:
 
     missing_text = ", ".join(result["missing"])
     comment = f"필수 규격사항({missing_text})이 누락되었습니다. 채워서 다시 요청해주세요."
-    try:
-        erp_add_comment("Item", item_code, comment)
-    except ERPNextAPIError as e:
-        print(f"  -> 코멘트 등록 실패: {e}")
+    # 댓글 등록도 업무 결과의 일부다. 실패를 숨기면 사용자는 왜 Item이
+    # 비활성인지 알 수 없으므로 예외를 전파해 integration_event를 FAILED로
+    # 남기고 같은 웹훅/대사에서 재시도할 수 있게 한다.
+    erp_add_comment("Item", item_code, comment)
     print(f"  -> 미기재 항목: {result['missing']} -> 코멘트 등록, 보류 상태 유지")
     return {"item_code": item_code, "approved": False, "missing": result["missing"]}
 

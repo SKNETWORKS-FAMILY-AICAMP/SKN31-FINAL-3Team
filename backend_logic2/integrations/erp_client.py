@@ -7,6 +7,7 @@ nexterp 자동화 - ERPNext API 클라이언트
 
 import os
 from functools import lru_cache
+from urllib.parse import urljoin, urlparse
 
 import requests
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
@@ -74,20 +75,77 @@ def erp_get_one(doctype, name):
     return res.json().get("data")
 
 
+def erp_download_file(file_id, *, expected_attached_to_doctype=None):
+    """ERPNext ``File`` 문서를 조회한 뒤 API 자격증명으로 원본 파일을 받는다.
+
+    브라우저에는 ERPNext API Secret을 절대 전달하지 않습니다. 공개 파일과
+    ``/private/files`` 파일 모두 백엔드가 인증해서 가져오며, 외부 호스트 URL은
+    SSRF를 막기 위해 허용하지 않습니다.
+    """
+    file_document = erp_get_one("File", file_id)
+    if not file_document:
+        raise ERPNextAPIError(f"File {file_id} 문서를 찾을 수 없습니다.")
+    if (
+        expected_attached_to_doctype
+        and file_document.get("attached_to_doctype") != expected_attached_to_doctype
+    ):
+        raise PermissionError(
+            f"{expected_attached_to_doctype} 첨부파일만 다운로드할 수 있습니다."
+        )
+
+    file_url = str(file_document.get("file_url") or "").strip()
+    if not file_url:
+        raise ERPNextAPIError(f"File {file_id}에 file_url이 없습니다.")
+
+    site = urlparse(SITE_URL)
+    parsed = urlparse(file_url)
+    if parsed.scheme or parsed.netloc:
+        if parsed.scheme not in {"http", "https"} or parsed.netloc != site.netloc:
+            raise ERPNextAPIError("ERPNext 사이트 외부의 첨부 URL은 다운로드할 수 없습니다.")
+        download_url = file_url
+    else:
+        download_url = urljoin(f"{SITE_URL.rstrip('/')}/", file_url.lstrip("/"))
+
+    # Frappe의 비공개 파일 경로는 일반 정적 URL 요청이 아니라 권한 검사를
+    # 수행하는 whitelisted download_file 메서드를 통해 받아야 API Token
+    # 인증이 안정적으로 적용됩니다.
+    if int(file_document.get("is_private") or 0) == 1:
+        response = requests.get(
+            f"{SITE_URL.rstrip('/')}/api/method/frappe.utils.file_manager.download_file",
+            headers=HEADERS,
+            params={"file_url": file_url},
+            timeout=60,
+        )
+    else:
+        response = requests.get(download_url, headers=HEADERS, timeout=60)
+    if response.status_code != 200:
+        raise ERPNextAPIError(
+            f"DOWNLOAD File/{file_id}: {response.status_code} - {response.text[:300]}"
+        )
+    return {
+        "document": file_document,
+        "content": response.content,
+        "content_type": response.headers.get("Content-Type") or "application/octet-stream",
+    }
+
+
 @router.get("/items")
 def list_registered_items(
     limit: int = Query(default=500, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    include_disabled: bool = Query(default=True),
 ):
     """ERPNext에 실제 등록된 Item 목록을 프론트 조회용으로 반환한다.
 
     신규 품목의 생성·규격 검증은 ERPNext 웹훅과 AI 검증기가 담당한다.
     따라서 이 엔드포인트는 별도의 로컬 품목을 만들지 않고 ERPNext를
-    단일 원본(source of truth)으로 읽기만 한다.
+    단일 원본(source of truth)으로 읽기만 한다. 기본값은 disabled=1인
+    승인·AI 검증 대기 품목까지 포함한다.
     """
     try:
         items = erp_get(
             "Item",
+            filters=None if include_disabled else [["disabled", "=", 0]],
             fields=[
                 "item_code", "item_name", "item_group", "description",
                 "stock_uom", "is_stock_item", "is_fixed_asset", "disabled",
@@ -99,7 +157,16 @@ def list_registered_items(
         ) or []
     except ERPNextAPIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"items": items, "count": len(items), "limit": limit, "offset": offset}
+    return {
+        "items": items,
+        "count": len(items),
+        "disabled_count": sum(
+            1 for item in items if int(item.get("disabled") or 0) == 1
+        ),
+        "include_disabled": include_disabled,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/items/{item_code}/specifications")

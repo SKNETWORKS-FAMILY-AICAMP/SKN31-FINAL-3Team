@@ -26,10 +26,12 @@ nodes/sq_evaluation.py - RFQ에 대해 포털로 들어온 Supplier Quotation을
 
 import json
 import argparse
+import logging
 from backend_logic2.integrations.erp_client import erp_get, erp_get_one, erp_submit
 
 # 확인 필요: Supplier Quotation Item에서 RFQ를 연결하는 실제 필드명.
 REQUEST_FOR_QUOTATION_LINK_FIELD = "request_for_quotation"
+LOGGER = logging.getLogger(__name__)
 
 
 def _number(value) -> float:
@@ -129,7 +131,7 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
     이 RFQ에 대해 제출된 Supplier Quotation 전부 조회.
     반환: [{"name":..., "supplier":..., "items": [...], "grand_total":...}, ...]
     """
-    print(f"[DEBUG] 찾는 RFQ: {rfq_name}")
+    LOGGER.debug("Supplier Quotations 조회 RFQ=%s", rfq_name)
     rows = erp_get(
         "Supplier Quotation",
         filters=[
@@ -194,10 +196,13 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
             doc.get("net_total"),
             sum(_number(item.get("amount")) for item in normalized_items),
         )
+        first_item = normalized_items[0] if normalized_items else {}
         quotations.append({
             "name": doc.get("name"),
             "supplier": doc.get("supplier"),
             "docstatus": doc.get("docstatus"),
+            "status": doc.get("status"),
+            "modified": doc.get("modified"),
 
             "transaction_date": doc.get("transaction_date"),
             "valid_till": doc.get("valid_till"),
@@ -208,6 +213,12 @@ def get_quotations_for_rfq(rfq_name: str) -> list:
             "rounded_total": doc.get("rounded_total"),
             "net_total": doc.get("net_total"),
             "base_grand_total": doc.get("base_grand_total"),
+            # Live webhook/polling projection uses these flattened values so
+            # the frontend need not understand ERPNext child-table internals.
+            "rate": first_item.get("rate"),
+            "amount": first_item.get("amount"),
+            "expected_delivery_date": first_item.get("expected_delivery_date"),
+            "lead_time_days": first_item.get("lead_time_days"),
             "items": normalized_items,
         })
     return quotations

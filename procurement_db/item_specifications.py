@@ -25,24 +25,30 @@ def get_item_group_spec(item_group: str | None) -> Any | None:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT CASE
-                    WHEN to_regclass('procurement.item_group_spec') IS NOT NULL
-                        THEN 'item_group_spec'
-                    WHEN to_regclass('procurement.item_group_spec_requirements') IS NOT NULL
-                        THEN 'item_group_spec_requirements'
-                    ELSE NULL
-                END AS table_name
+                SELECT
+                    to_regclass('procurement.item_group_spec_requirements') IS NOT NULL
+                        AS has_requirements,
+                    to_regclass('procurement.item_group_spec') IS NOT NULL
+                        AS has_legacy
                 """
             )
-            table_row = cursor.fetchone()
-            table_name = table_row["table_name"] if table_row else None
-            if not table_name:
-                return None
-            cursor.execute(
-                f"SELECT required_specs FROM procurement.{table_name} WHERE item_group = %s",
-                (item_group,),
-            )
-            row = cursor.fetchone()
+            table_row = cursor.fetchone() or {}
+            # 새 검증기가 쓰는 requirements 테이블을 우선하되, 해당 품목군
+            # 행이 아직 없으면 과거 item_group_spec 데이터까지 조회한다.
+            table_names = []
+            if table_row.get("has_requirements"):
+                table_names.append("item_group_spec_requirements")
+            if table_row.get("has_legacy"):
+                table_names.append("item_group_spec")
+            row = None
+            for table_name in table_names:
+                cursor.execute(
+                    f"SELECT required_specs FROM procurement.{table_name} WHERE item_group = %s",
+                    (item_group,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    break
     if not row:
         return None
     value = row["required_specs"]

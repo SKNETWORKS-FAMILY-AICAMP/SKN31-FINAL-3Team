@@ -5,17 +5,19 @@ from __future__ import annotations
 import os
 import asyncio
 import json
+import secrets
 from contextlib import suppress
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import quote
 
 import psycopg
 from fastapi import APIRouter, BackgroundTasks, Body, Header, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth_service.dependencies import CurrentUser
-from backend_logic2.integrations.erp_client import ERPNextAPIError
+from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_download_file
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.repositories import tasks as task_repository
 from backend_logic2.repositories import deliveries as delivery_repository
@@ -23,6 +25,7 @@ from backend_logic2.repositories import notifications as notification_repository
 from backend_logic2.services import workflow_service
 from backend_logic2.services import receipt_service
 from backend_logic2.services import item_service
+from backend_logic2.services import quotation_service
 from procurement_db.config import require_database_url
 
 
@@ -111,6 +114,39 @@ def get_case(case_id: str, current_user: CurrentUser):
     row["tasks"] = task_repository.list_tasks(case_id=case_id)
     row["delivery"] = delivery_repository.get_delivery_by_case(case_id)
     return row
+
+
+@router.get("/attachments/download")
+def download_material_request_attachment(
+    current_user: CurrentUser,
+    file_id: str = Query(..., min_length=1),
+):
+    """JWT 인증 사용자를 대신해 ERPNext MR 첨부파일을 내려준다.
+
+    ERPNext API 자격증명은 서버에만 두며, 다른 DocType에 붙은 파일을 File ID만
+    추측해 다운로드하지 못하도록 Material Request 첨부 여부를 재검증합니다.
+    """
+    del current_user  # FastAPI 의존성 검증 자체가 이 엔드포인트의 접근 제어입니다.
+    try:
+        downloaded = erp_download_file(
+            file_id,
+            expected_attached_to_doctype="Material Request",
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ERPNextAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    document = downloaded["document"]
+    filename = str(document.get("file_name") or file_id)
+    return Response(
+        content=downloaded["content"],
+        media_type=downloaded["content_type"],
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/cases/{case_id}/start", status_code=status.HTTP_202_ACCEPTED)
@@ -298,7 +334,7 @@ def _require_webhook_secret(value: Optional[str]) -> None:
     expected = os.environ.get("ERPNEXT_WEBHOOK_SECRET", "").strip()
     if not expected:
         raise HTTPException(status_code=500, detail="ERPNEXT_WEBHOOK_SECRET이 설정되지 않았습니다.")
-    if value != expected:
+    if not value or not secrets.compare_digest(value, expected):
         raise HTTPException(status_code=401, detail="웹훅 인증에 실패했습니다.")
 
 
@@ -355,6 +391,27 @@ def purchase_receipt_webhook(
     _require_webhook_secret(x_erpnext_webhook_secret)
     try:
         projections, created = receipt_service.register_purchase_receipt_event(
+            payload,
+            event_id=x_erpnext_event_id,
+        )
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (ERPNextAPIError, psycopg.Error) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"accepted": True, "duplicate": not created, "items": projections}
+
+
+@webhook_router.post("/supplier-quotation")
+def supplier_quotation_webhook(
+    payload: dict[str, Any] = Body(...),
+    x_erpnext_webhook_secret: Optional[str] = Header(default=None),
+    x_erpnext_event_id: Optional[str] = Header(default=None),
+):
+    """Refresh quote response rate and wake the frontend without auto-finalizing."""
+
+    _require_webhook_secret(x_erpnext_webhook_secret)
+    try:
+        projections, created = quotation_service.register_supplier_quotation_event(
             payload,
             event_id=x_erpnext_event_id,
         )
@@ -425,7 +482,7 @@ def item_webhook(
     x_erpnext_webhook_secret: Optional[str] = Header(default=None),
     x_erpnext_event_id: Optional[str] = Header(default=None),
 ):
-    """Validate newly-created disabled Items without a CLI/manual trigger."""
+    """Validate a newly-created or specification-updated disabled Item."""
     _require_webhook_secret(x_erpnext_webhook_secret)
     try:
         result, created = item_service.register_item_event(

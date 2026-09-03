@@ -792,3 +792,46 @@ ERPNext RFQ 포털 보강 준비
 - 검증:
   · 백엔드 전체 pytest 112개 통과
   · 프론트 lint 및 production build 통과
+
+
+34. ERPNext 웹훅 전환·로컬 터널·Supplier Quotation 실시간 동기화
+---------------------------------------------------------------------
+
+- 확인일: 2026-09-03
+- 환경 전환:
+  · `MR_INGEST_MODE=polling|webhook` 하나로 로컬 polling과 서버 webhook을
+    전환하고, webhook 모드에서도 시작 시 1회 ERPNext 대사를 유지했다.
+  · `PUBLIC_WEBHOOK_BASE_URL`, `QUOTATION_POLL_INTERVAL_SECONDS` 예시를 추가했다.
+- ERPNext 웹훅 자동 구성:
+  · Material Request, File, Item, Supplier Quotation, Purchase Order,
+    Purchase Receipt, Purchase Invoice, Payment Entry의 문서 이벤트 26개를
+    멱등 생성·갱신하는 `scripts/configure_erpnext_webhooks.py`를 추가했다.
+  · 웹훅에는 문서 식별자·상태·수정시각과 필요한 연결 필드만 전송하고,
+    금액·수량 등 원문은 받은 뒤 ERPNext API로 다시 조회한다.
+  · 공유 비밀 헤더 비교는 `secrets.compare_digest`로 보강했다.
+- Supplier Quotation:
+  · `/api/webhooks/erpnext/supplier-quotation` 엔드포인트와 누락 복구용 대사를
+    추가했다.
+  · 실제 RFQ 발송 협력사를 분모로 회신율을 계산하고, 견적 금액·납기와 함께
+    `procurement_case.quotation_snapshot`에 저장한다.
+  · 체크포인트와 실시간 견적 투영을 분리해 견적 도착이 사람 승인 단계를
+    자동 통과시키지 않도록 했다.
+  · 신규/변경/취소 견적은 PostgreSQL 알림과 SSE로 프론트에 전달한다.
+- 로컬 웹훅 실험:
+  · 로그인·작업 API 전체가 아니라 웹훅 라우터만 제공하는 `webhook_gateway.py`
+    를 추가하고 `127.0.0.1:18000`만 Cloudflare Quick Tunnel로 공개한다.
+  · `webhook-dev.bat`은 외부 전송 범위를 표시하고 사용자가 `YES`를 입력한
+    뒤에만 ERPNext 웹훅을 임시 주소로 바꾼다.
+  · 실험 종료 시 생성·갱신한 웹훅을 비활성화하고 터널·게이트웨이를 정리한다.
+- 배포 준비:
+  · `deploy/.env.webhook.example`, 동일 도메인 Nginx 예시, ERPNext Webhook
+    구성용 systemd oneshot 예시를 추가했다.
+  · 상세 절차를 `FINAL-docs/ERPNext_웹훅_배포_및_로컬테스트.md`에 기록했다.
+- DB:
+  · `009_add_live_quotation_snapshot.sql`을 공유 PostgreSQL에 적용했다.
+- 검증:
+  · 로컬 웹훅 게이트웨이 health 응답 확인
+  · 임시 공개 URL에 잘못된 비밀값으로 호출 시 401 반환 확인
+  · Supplier Quotation·웹훅 구성 테스트 포함 백엔드 전체 pytest 118개 통과
+  · 프론트 lint 및 production build 통과
+  · 실제 ERPNext 웹훅 등록은 외부 터널 전송 동의 전에는 수행하지 않았다.

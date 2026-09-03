@@ -237,3 +237,6 @@ checkpoints.sqlite
 backend_logic2/process_checkpoints.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Local webhook tunnel process logs
+.runtime/

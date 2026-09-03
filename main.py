@@ -34,7 +34,12 @@ from backend_logic2.nodes.mr.reject_material_request import (
 from backend_logic2.nodes.mr.substitute_reply_watcher import (
     run_once as process_substitute_replies,
 )
-from backend_logic2.services import receipt_service, workflow_service
+from backend_logic2.services import (
+    item_service,
+    quotation_service,
+    receipt_service,
+    workflow_service,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -43,7 +48,10 @@ LOGGER = logging.getLogger(__name__)
 def _mr_ingest_mode() -> str:
     """Return the configured MR discovery mode with a safe default."""
 
-    value = os.getenv("MR_INGEST_MODE", "webhook").strip().lower()
+    # A fresh local checkout must still discover ERPNext work even when the
+    # developer has not added the optional mode variable yet. Production sets
+    # this explicitly to ``webhook`` after the public endpoint is configured.
+    value = os.getenv("MR_INGEST_MODE", "polling").strip().lower()
     return "polling" if value == "polling" else "webhook"
 
 
@@ -68,6 +76,22 @@ def _mr_full_reconcile_interval_seconds() -> float:
 def _purchase_document_poll_interval_seconds() -> float:
     try:
         configured = float(os.getenv("PURCHASE_DOCUMENT_POLL_INTERVAL_SECONDS", "15"))
+    except ValueError:
+        configured = 15.0
+    return max(5.0, configured)
+
+
+def _quotation_poll_interval_seconds() -> float:
+    try:
+        configured = float(os.getenv("QUOTATION_POLL_INTERVAL_SECONDS", "10"))
+    except ValueError:
+        configured = 10.0
+    return max(5.0, configured)
+
+
+def _item_poll_interval_seconds() -> float:
+    try:
+        configured = float(os.getenv("ITEM_POLL_INTERVAL_SECONDS", "15"))
     except ValueError:
         configured = 15.0
     return max(5.0, configured)
@@ -123,10 +147,9 @@ async def _reconcile_material_requests_once() -> None:
 async def _poll_substitute_decisions() -> None:
     """Consume requester decisions recorded as ERPNext Comments.
 
-    MR creation can switch to a webhook after deployment, but requester-side
-    decisions intentionally stay same-origin in ERPNext. This small poller is
-    therefore independent from ``MR_INGEST_MODE`` and does not require the
-    requester's browser to reach the BiddingFlow backend directly.
+    Polling mode stores requester decisions in ERPNext Comments, so the local
+    backend must inspect them periodically. Webhook mode uses the direct
+    substitute-response API and must not start this legacy comment watcher.
     """
 
     interval = _mr_poll_interval_seconds()
@@ -166,21 +189,77 @@ async def _poll_purchase_documents(*, continuous: bool) -> None:
         await asyncio.sleep(interval)
 
 
+async def _poll_supplier_quotations(*, continuous: bool) -> None:
+    """Refresh SQ responses continuously in polling mode, once in webhook mode."""
+
+    interval = _quotation_poll_interval_seconds()
+    while True:
+        try:
+            await asyncio.to_thread(
+                quotation_service.reconcile_supplier_quotations,
+                notify=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception(
+                "ERPNext Supplier Quotation reconciliation failed; "
+                "retrying in %.1f seconds",
+                interval,
+            )
+        if not continuous:
+            return
+        await asyncio.sleep(interval)
+
+
+async def _poll_disabled_items(*, continuous: bool) -> None:
+    """Validate disabled Items and recover Item webhooks missed while offline."""
+
+    interval = _item_poll_interval_seconds()
+    while True:
+        try:
+            await asyncio.to_thread(item_service.reconcile_disabled_items)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception(
+                "ERPNext disabled Item reconciliation failed; "
+                "retrying in %.1f seconds",
+                interval,
+            )
+        if not continuous:
+            return
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ingest_mode = _mr_ingest_mode()
     polling_task: asyncio.Task[None] | None = None
     startup_reconciliation_task: asyncio.Task[None] | None = None
-    substitute_task = asyncio.create_task(
-        _poll_substitute_decisions(),
-        name="erpnext-substitute-decision-poller",
-    )
-    app.state.substitute_polling_task = substitute_task
+    substitute_task: asyncio.Task[None] | None = None
+    if ingest_mode == "polling":
+        substitute_task = asyncio.create_task(
+            _poll_substitute_decisions(),
+            name="erpnext-substitute-decision-poller",
+        )
+        app.state.substitute_polling_task = substitute_task
     purchase_document_task = asyncio.create_task(
-        _poll_purchase_documents(continuous=_mr_ingest_mode() == "polling"),
+        _poll_purchase_documents(continuous=ingest_mode == "polling"),
         name="erpnext-purchase-document-reconciler",
     )
     app.state.purchase_document_polling_task = purchase_document_task
-    if _mr_ingest_mode() == "polling":
+    quotation_task = asyncio.create_task(
+        _poll_supplier_quotations(continuous=ingest_mode == "polling"),
+        name="erpnext-supplier-quotation-reconciler",
+    )
+    app.state.quotation_polling_task = quotation_task
+    item_task = asyncio.create_task(
+        _poll_disabled_items(continuous=ingest_mode == "polling"),
+        name="erpnext-disabled-item-reconciler",
+    )
+    app.state.item_polling_task = item_task
+    if ingest_mode == "polling":
         polling_task = asyncio.create_task(
             _poll_material_requests(),
             name="erpnext-material-request-poller",
@@ -204,13 +283,22 @@ async def lifespan(app: FastAPI):
                 startup_reconciliation_task.cancel()
             with suppress(asyncio.CancelledError):
                 await startup_reconciliation_task
-        substitute_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await substitute_task
+        if substitute_task is not None:
+            substitute_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await substitute_task
         if not purchase_document_task.done():
             purchase_document_task.cancel()
         with suppress(asyncio.CancelledError):
             await purchase_document_task
+        if not quotation_task.done():
+            quotation_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await quotation_task
+        if not item_task.done():
+            item_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await item_task
 
 
 app = FastAPI(title="SKN31 Purchasing Agent API", lifespan=lifespan)
@@ -269,6 +357,8 @@ def health_check():
     polling_task = getattr(app.state, "mr_polling_task", None)
     substitute_task = getattr(app.state, "substitute_polling_task", None)
     purchase_document_task = getattr(app.state, "purchase_document_polling_task", None)
+    quotation_task = getattr(app.state, "quotation_polling_task", None)
+    item_task = getattr(app.state, "item_polling_task", None)
     startup_reconciliation_task = getattr(
         app.state, "mr_startup_reconciliation_task", None
     )
@@ -287,6 +377,10 @@ def health_check():
         "purchase_document_reconciliation_active": bool(
             purchase_document_task and not purchase_document_task.done()
         ),
+        "supplier_quotation_reconciliation_active": bool(
+            quotation_task and not quotation_task.done()
+        ),
+        "item_reconciliation_active": bool(item_task and not item_task.done()),
     }
 
 
