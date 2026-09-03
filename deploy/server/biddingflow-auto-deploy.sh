@@ -91,14 +91,13 @@ deploy_backend() {
     --index-url https://download.pytorch.org/whl/cpu torch
   "$backend_dir/.venv/bin/python" -m pip install --quiet \
     -r "$backend_dir/requirements.txt" pytest
-  "$backend_dir/.venv/bin/python" -m compileall -q \
-    "$backend_dir/main.py" \
-    "$backend_dir/auth_service" \
-    "$backend_dir/backend_logic2" \
-    "$backend_dir/procurement_db" \
-    "$backend_dir/scripts"
-  "$backend_dir/.venv/bin/python" -m pytest -q "$backend_dir/tests"
-  "$backend_dir/.venv/bin/python" -m procurement_db.migrate
+  (
+    cd "$backend_dir"
+    .venv/bin/python -m compileall -q \
+      main.py auth_service backend_logic2 procurement_db scripts
+    .venv/bin/python -m pytest -q
+    .venv/bin/python -m procurement_db.migrate
+  )
 
   if ! systemctl restart biddingflow-api; then
     as_ubuntu git -C "$backend_dir" checkout --quiet "$previous_sha"
