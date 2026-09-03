@@ -13,6 +13,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Unit tests mock all ERP I/O, but the legacy ERP adapter validates these
+    # names while modules are imported. Keep harmless CI-only values here;
+    # production credentials remain exclusively in the server EnvironmentFile.
+    env:
+      SITE_URL: http://erp.example.test
+      API_KEY: ci-test-key
+      API_SECRET: ci-test-secret
 
     steps:
       - name: Check out source
