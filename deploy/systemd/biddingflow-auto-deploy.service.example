@@ -1,0 +1,9 @@
+[Unit]
+Description=Check and deploy BiddingFlow Git revisions
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/biddingflow-auto-deploy
+TimeoutStartSec=20min

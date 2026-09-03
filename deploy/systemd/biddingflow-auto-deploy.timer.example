@@ -1,0 +1,12 @@
+[Unit]
+Description=Check BiddingFlow Git revisions every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=biddingflow-auto-deploy.service
+
+[Install]
+WantedBy=timers.target
