@@ -20,6 +20,20 @@ def create_notification(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with get_connection() as connection:
+        if case_id:
+            # ``notification`` is an actionable inbox, not the audit log. Keep
+            # only the latest notice for one procurement case while the full
+            # transition history remains in workflow_status_history. The
+            # transaction-scoped advisory lock also prevents two concurrent
+            # webhook workers from inserting duplicate inbox rows.
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%(case_id)s, 0))",
+                {"case_id": case_id},
+            )
+            connection.execute(
+                "DELETE FROM procurement.notification WHERE case_id = %(case_id)s",
+                {"case_id": case_id},
+            )
         row = connection.execute(
             """
             INSERT INTO procurement.notification (
