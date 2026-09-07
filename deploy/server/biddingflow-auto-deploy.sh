@@ -10,7 +10,7 @@ log_dir=/var/log/biddingflow
 config_file=/etc/biddingflow/deploy.conf
 
 BACKEND_BRANCH=main
-FRONTEND_BRANCH=feat/adopt-procurement-mock
+FRONTEND_BRANCH=main
 
 if [[ -r "$config_file" ]]; then
   # shellcheck disable=SC1090
