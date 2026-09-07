@@ -14,6 +14,13 @@ separate directories and serves the frontend build through Nginx.
 - Deployment state: `/var/lib/biddingflow/deployment-status.json`
 - Deployment log: `/var/log/biddingflow/deploy.log`
 
+The production defaults track the `main` branch of both the backend and
+frontend repositories. `/etc/biddingflow/deploy.conf` can override either
+branch temporarily when a staged deployment is required.
+The deploy script fetches the selected branch with an explicit refspec, so a
+repository originally cloned with `--single-branch` can also change its tracked
+branch safely.
+
 ## Commands
 
 ```bash
