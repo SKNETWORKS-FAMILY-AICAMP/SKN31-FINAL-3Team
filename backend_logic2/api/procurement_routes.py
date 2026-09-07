@@ -264,6 +264,29 @@ def delete_all_notifications(current_user: CurrentUser):
     return {"success": True, "deleted_count": deleted_count}
 
 
+@router.get("/item-groups/{item_group}/required-specs")
+def get_item_group_required_specs_for_frontend(
+    item_group: str,
+    current_user: CurrentUser,
+):
+    """프론트엔드 규격 모달이 '요청 규격' 항목 중 실제 필수 항목에만
+    빨간색 필수 태그를 붙이기 위해 호출하는 인증 전용 엔드포인트.
+
+    ERPNext Item 폼의 Client Script가 쓰는 웹훅 엔드포인트와
+    동일한 get_or_create_group_requirements를 재사용하므로, 두 화면이 같은
+    필수 규격 목록을 기준으로 동작한다.
+    """
+    del current_user  # 인증만 필요, 값 자체는 응답에 사용하지 않는다.
+    try:
+        requirements = get_or_create_group_requirements(item_group)
+    except ItemSpecificationPolicyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "item_group": requirements["item_group"],
+        "required_specs": requirements["required_specs"],
+    }
+
+
 @router.get("/events")
 async def stream_procurement_events(current_user: CurrentUser):
     """Authenticated SSE bridge backed by PostgreSQL LISTEN/NOTIFY."""
