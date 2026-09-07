@@ -72,7 +72,8 @@ trap 'on_error "$LINENO"' ERR
 deploy_backend() {
   local remote_sha deployed_sha previous_sha
 
-  as_ubuntu git -C "$backend_dir" fetch --quiet origin "$BACKEND_BRANCH"
+  as_ubuntu git -C "$backend_dir" fetch --quiet origin \
+    "+refs/heads/$BACKEND_BRANCH:refs/remotes/origin/$BACKEND_BRANCH"
   remote_sha="$(as_ubuntu git -C "$backend_dir" rev-parse "origin/$BACKEND_BRANCH")"
   deployed_sha="$(cat "$state_dir/backend.sha" 2>/dev/null || true)"
 
@@ -121,7 +122,8 @@ deploy_backend() {
 deploy_frontend() {
   local remote_sha deployed_sha release_dir temporary_dir previous_target
 
-  as_ubuntu git -C "$frontend_dir" fetch --quiet origin "$FRONTEND_BRANCH"
+  as_ubuntu git -C "$frontend_dir" fetch --quiet origin \
+    "+refs/heads/$FRONTEND_BRANCH:refs/remotes/origin/$FRONTEND_BRANCH"
   remote_sha="$(as_ubuntu git -C "$frontend_dir" rev-parse "origin/$FRONTEND_BRANCH")"
   deployed_sha="$(cat "$state_dir/frontend.sha" 2>/dev/null || true)"
 
