@@ -176,6 +176,17 @@ def _extract_company_names_llm(item_name, text, case_id=None):
         "규칙:\n"
         "- 확실히 회사명으로 보이는 것만 뽑으세요 (개인 블로그, 커뮤니티, 뉴스매체 이름 등은 제외)\n"
         "- 잡코리아, 사람인 등 제3자 채용/중개 사이트 자체는 회사명으로 뽑지 마세요\n"
+        "- ⚠️ 중요: 브랜드/제조사명과 실제 거래 상대방(회사명)을 구분하세요. "
+        "'체인', '베어링' 같은 산업부품은 텍스트에 츠바키(Tsubaki), 레놀드(Renold), "
+        "렉스노드(Rexnord), 다이아몬드체인(Diamond Chain), 이위스(iwis) 같은 해외 "
+        "제조사/브랜드명이 자주 언급되는데, 이건 '취급하는 제품의 브랜드'일 뿐 "
+        "우리가 실제로 견적요청을 보낼 회사가 아닙니다. 이런 브랜드명 자체를 "
+        "회사명으로 뽑지 마세요 - 대신 그 브랜드 제품을 국내에서 판매/유통하는 "
+        "총판·대리점·유통업체명(보통 '~산업', '~상사', '~코퍼레이션', "
+        "'(주)~' 형태로 텍스트에 별도로 등장함)을 찾아서 그걸 회사명으로 뽑으세요. "
+        "텍스트에 브랜드명만 있고 그 브랜드를 취급하는 국내 업체명이 전혀 "
+        "안 나오면(예: 그 브랜드 본사의 해외 공식사이트 내용만 있는 경우), "
+        "그 항목에서는 회사명을 뽑지 마세요.\n"
         "- 중복은 하나로 합치세요\n\n"
         '반드시 이 JSON 형식으로만 답하세요: {{"company_names": ["회사명1", "회사명2", ...]}}'
     )
@@ -220,7 +231,7 @@ def tavily_collect_candidate_names(item_name, target_count=10, max_results_per_q
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-    query_suffixes = ["공식 홈페이지", "제조 전문 주식회사", "납품 공급 업체"]
+    query_suffixes = ["국내 총판 대리점", "국내 제조 전문 주식회사", "국내 납품 공급 업체"]
 
     def _search_only(suffix):
         query = f"{item_name} {suffix}"
@@ -228,6 +239,12 @@ def tavily_collect_candidate_names(item_name, target_count=10, max_results_per_q
             response = client.search(
                 query=query, max_results=max_results_per_query, include_raw_content=True,
                 country="South Korea", exclude_domains=_BLACKLISTED_DOMAINS,
+                # 2026-09-07 추가: country는 지역 우선순위 힌트일 뿐이라 SKF, 중국
+                # 부품업체(허베이 등)처럼 국내 사이트에 언급된 외국계 회사가
+                # 그대로 후보로 잡히는 게 확인됨. language+filter_by_language는
+                # 힌트가 아니라 실제로 그 언어가 아닌 페이지를 걸러내는 강한
+                # 필터라서 이거로 외국계 유입을 줄임.
+                language="ko", filter_by_language=True,
             )
         except Exception as e:
             print(f"  [Tavily] '{query}' 실패: {e}")
