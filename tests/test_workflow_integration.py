@@ -292,6 +292,17 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(order_command.update["status"], "awaiting_pr_request")
         self.assertTrue(order_command.update["order_started"])
 
+    def test_legacy_new_purchase_direct_route_returns_to_bidding(self):
+        command = await_order_start_command({
+            "mr_name": "MAT-MR-0001",
+            "direct_purchase": True,
+            "substitute_results": {"ITEM-001": {"substitutes": [{"item_code": "SUB-1"}]}},
+        })
+        self.assertEqual(command.goto, "decide_bidding_choice")
+        self.assertEqual(command.update["status"], "checking_bidding")
+        self.assertTrue(command.update["force_bidding"])
+        self.assertFalse(command.update["direct_purchase"])
+
     def test_supplier_pr_acceptance_continues_to_po_creation(self):
         state = {
             "case_id": "case-1",

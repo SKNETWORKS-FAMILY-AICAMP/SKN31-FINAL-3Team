@@ -70,6 +70,26 @@ class DirectPurchaseDecisionTests(unittest.TestCase):
         self.assertEqual(command.update["selected_supplier"], "공급사 A")
         self.assertTrue(command.update["direct_purchase"])
 
+    @patch("backend_logic2.nodes.mr.decide_bidding.decide_bidding")
+    def test_new_purchase_forces_supplier_recommendation_and_rfq(self, decide_bidding):
+        decide_bidding.return_value = {
+            "ITEM-001": {
+                "needs_bidding": False,
+                "reasons": ["최근 거래 반복구매"],
+                "direct_supplier": "공급사 A",
+                "last_rate": 1500,
+            }
+        }
+
+        command = decide_bidding_choice_command({
+            "mr_name": "MAT-MR-0001",
+            "force_bidding": True,
+        })
+
+        self.assertEqual(command.goto, "resolve_suppliers_choice")
+        self.assertEqual(command.update["status"], "resolving_suppliers")
+        self.assertEqual(command.update["bidding_items"], ["ITEM-001"])
+
 
 if __name__ == "__main__":
     unittest.main()
