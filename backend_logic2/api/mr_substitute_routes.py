@@ -40,6 +40,8 @@ from backend_logic2.workflow.process_commands import to_checkpoint_data
 from backend_logic2.workflow.process_graph import get_process_app
 from backend_logic2.integrations.erp_client import get_material_requests_with_items
 from backend_logic2.integrations.assignment_config import can_access_category
+from backend_logic2.integrations.erp_client import erp_get, erp_get_one
+
 
 router = APIRouter(prefix="/api/mr", tags=["MR Substitute Decision"])
 
@@ -50,7 +52,19 @@ def get_assigned_mr_list(
     """
     ERPNext에서 MR을 조회한 뒤 로그인 사용자의 카테고리(Item Group)에 해당하는 건만 필터링하여 반환
     """
-    raw_mrs = get_material_requests_with_items(limit=100)
+    summaries = erp_get(
+        "Material Request",
+        fields=["name"],
+        order_by="modified desc",
+        limit=100,
+    )
+    raw_mrs = [
+        document
+        for row in summaries
+        if row.get("name")
+        for document in [erp_get_one("Material Request", str(row["name"]))]
+        if document
+    ]
     filtered = []
 
     for doc in raw_mrs:

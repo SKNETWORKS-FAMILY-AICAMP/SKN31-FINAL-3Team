@@ -89,3 +89,83 @@ jobs:
 
           echo "Timed out waiting for $DEPLOY_COMPONENT deployment: $DEPLOY_SHA"
           exit 1
+
+      - name: Notify Discord
+        if: always()
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
+          DEPLOY_JOB_STATUS: ${{ job.status }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
+            echo "Discord deployment webhook is not configured; skipping notification."
+            exit 0
+          fi
+
+          deploy_sha="${DEPLOY_SHA:-unknown}"
+          short_sha="${deploy_sha:0:7}"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          changed_files="변경 파일을 확인할 수 없습니다."
+          if commit_json="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/commits/${deploy_sha}")"; then
+            file_count="$(jq -r '.files | length' <<<"$commit_json")"
+            changed_files="$(jq -r '.files[0:8] | map("• `" + .filename + "`") | join("\n")' <<<"$commit_json")"
+            if (( file_count > 8 )); then
+              changed_files="${changed_files}"$'\n'"• 외 $((file_count - 8))개"
+            fi
+            if [[ -z "$changed_files" ]]; then
+              changed_files="변경 파일 없음"
+            fi
+            changed_files="${changed_files:0:950}"
+          fi
+
+          if [[ "$DEPLOY_JOB_STATUS" == "success" ]]; then
+            title="✅ BiddingFlow 백엔드 배포 완료"
+            description=$'운영 서버에 최신 main이 반영되었습니다. 작업을 이어가기 전에 로컬 저장소를 pull해 주세요.\n\n`git pull --ff-only origin main`'
+            color=5763719
+          else
+            title="❌ BiddingFlow 백엔드 배포 실패"
+            description="운영 배포를 완료하지 못했습니다. GitHub Actions 실행 로그를 확인해 주세요."
+            color=15548997
+          fi
+
+          payload="$(jq -n \
+            --arg title "$title" \
+            --arg description "$description" \
+            --arg status "$DEPLOY_JOB_STATUS" \
+            --arg commit "$short_sha" \
+            --arg actor "$GITHUB_ACTOR" \
+            --arg changed_files "$changed_files" \
+            --arg run_url "$run_url" \
+            --arg timestamp "$timestamp" \
+            --argjson color "$color" \
+            '{
+              username: "BiddingFlow Deploy",
+              allowed_mentions: {parse: []},
+              embeds: [{
+                title: $title,
+                description: $description,
+                url: $run_url,
+                color: $color,
+                fields: [
+                  {name: "상태", value: $status, inline: true},
+                  {name: "대상", value: "Backend · Production", inline: true},
+                  {name: "커밋", value: $commit, inline: true},
+                  {name: "실행자", value: $actor, inline: true},
+                  {name: "변경 파일", value: $changed_files, inline: false}
+                ],
+                timestamp: $timestamp
+              }]
+            }')"
+
+          curl --fail --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --data-binary "$payload" \
+            "${DISCORD_WEBHOOK_URL}?wait=true" >/dev/null
