@@ -117,3 +117,19 @@ def get_process_app():
         _CONNECTION = sqlite3.connect(checkpoint_path, check_same_thread=False)
         _APP = build_process_graph(checkpointer=SqliteSaver(_CONNECTION))
     return _APP
+
+
+def delete_thread_checkpoints(thread_id: str) -> None:
+    """이 thread_id의 체크포인트를 process_checkpoints.sqlite에서 완전히 지운다.
+
+    ERPNext에서 Material Request가 삭제돼도 이 SQLite는 별도 저장소라
+    자동으로 같이 지워지지 않는다 - 방치하면 파일이 계속 커지고, 나중에
+    같은 MR 번호가 재사용될 때 옛 실행의 흔적과 혼동될 여지도 남는다
+    (실제로는 material_request_thread_id()가 recreated 케이스에 새
+    thread_id를 발급해 그 혼동 자체는 막아주지만, 옛 thread_id의
+    체크포인트는 여전히 안 지워진 채로 남는다). 호출하는 쪽
+    (workflow_service._close_case_missing_in_erp)에서 "ERPNext에 더 이상
+    이 MR이 없다"고 확인한 시점에만 불러야 한다.
+    """
+    app = get_process_app()
+    app.checkpointer.delete_thread(str(thread_id))

@@ -1,8 +1,8 @@
 """
 nodes/create_and_send_rfq.py — 6번 모듈: RFQ 생성 + 발송
 
-⚠️ .env에 TEST_MODE=true면 실제 발송 안 하고 콘솔에만 "발송했을 내용"을
-보여줌. 진짜 발송하려면 .env에서 TEST_MODE=false로 바꿔야 함.
+⚠️ .env의 TEST_MODE=true면 실제 발송을 차단하고, custom_only면 UI에서 직접
+추가한 공급사 RFQ만 발송한다. 전체 발송은 TEST_MODE=false에서만 허용한다.
 
 발송은 ERPNext 내장기능(send_supplier_emails)에 맡김 — 계정생성·Contact
 연결·포털권한을 우리가 직접 API로 흉내내다가 여러 번 문제(500 에러) 생겨서,
@@ -22,6 +22,7 @@ from backend_logic2.integrations.erp_client import (
     SITE_URL,
     erp_discard_draft,
     erp_get_one,
+    is_test_mode,
     erp_post,
     erp_submit,
 )
@@ -40,6 +41,7 @@ def create_rfq(
     message: str = DEFAULT_MESSAGE,
     *,
     send_email: bool = True,
+    email_supplier_names: list[str] | None = None,
     submit: bool = True,
 ):
     """
@@ -98,10 +100,12 @@ def create_rfq(
     # .env에 TEST_RECIPIENT_OVERRIDE 설정되어 있으면, 실제 벤더 이메일 대신 강제 교체
     test_override = os.getenv("TEST_RECIPIENT_OVERRIDE")
     suppliers_payload = []
+    email_targets = set(email_supplier_names) if email_supplier_names is not None else None
     
     for s in supplier_names:
         # ERPNext는 Submit 시 이 child-row 체크값을 보고 공급사 메일을 보낸다.
-        row = {"supplier": s, "send_email": 1 if send_email else 0}
+        should_send_email = send_email and (email_targets is None or s in email_targets)
+        row = {"supplier": s, "send_email": 1 if should_send_email else 0}
         supplier_doc = erp_get_one("Supplier", s)
         if supplier_doc:
             if supplier_doc.get("supplier_primary_contact"):
@@ -160,7 +164,7 @@ def send_rfq(rfq_name: str):
     # 실패해서 TEST_MODE 값을 아예 못 읽는 상황이면, "안전하게 멈추는 쪽"이
     # 맞지 "일단 진짜로 보내는 쪽"으로 가면 안 됨 — 실제로 이거 때문에
     # 실제 벤더한테 잘못 나간 사고가 있었음.
-    if os.getenv("TEST_MODE", "true").lower() != "false":
+    if is_test_mode():
         print(f"[TEST_MODE] 실제 발송 생략 — {rfq_name}")
         print(f"  (진짜 발송이었다면 send_supplier_emails가 호출되어, "
               f"RFQ의 Suppliers 목록 전체에게 계정생성+포털링크 메일이 나갔을 것)")
@@ -181,6 +185,7 @@ def create_and_send_rfq(
     supplier_names: list,
     *,
     send_email: bool = True,
+    email_supplier_names: list[str] | None = None,
     submit: bool = True,
 ):
     """
@@ -193,6 +198,7 @@ def create_and_send_rfq(
         mr_name,
         supplier_names,
         send_email=send_email,
+        email_supplier_names=email_supplier_names,
         submit=submit,
     )
     if not rfq:
@@ -201,8 +207,13 @@ def create_and_send_rfq(
 
     if not submit:
         print(f"[create_and_send_rfq] RFQ Draft 생성 완료: {rfq['name']} (Submit/메일 발송 안 함)")
-    elif not send_email:
+    elif not send_email or email_supplier_names == []:
         print(f"[create_and_send_rfq] RFQ 생성+Submit 완료: {rfq['name']} (공급사 메일 발송 안 함)")
+    elif email_supplier_names is not None:
+        print(
+            f"[create_and_send_rfq] RFQ 생성+Submit 완료: {rfq['name']} "
+            f"(직접 추가 공급사 {len(email_supplier_names)}곳만 이메일 발송)"
+        )
     else:
         print(f"[create_and_send_rfq] RFQ 생성+발송 완료: {rfq['name']} "
               f"(Submit 시 Suppliers의 'Send Email' 체크로 이미 자동 발송됨)")

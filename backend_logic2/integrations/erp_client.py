@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Literal, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -39,11 +39,24 @@ class ERPNextAPIError(Exception):
     pass
 
 
+EmailDeliveryPolicy = Literal["block_all", "custom_only", "send_all"]
+
+
+def get_email_delivery_policy() -> EmailDeliveryPolicy:
+    """Resolve the three-state, fail-closed outbound email policy."""
+    value = os.getenv("TEST_MODE", "true").strip().lower()
+    if value == "false":
+        return "send_all"
+    if value in {"custom_only", "custom-only", "manual_only", "manual-only"}:
+        return "custom_only"
+    return "block_all"
+
+
 def is_test_mode() -> bool:
-    """Return the single TEST_MODE policy used by every mail-sending node."""
+    """Return True unless unrestricted production email is explicitly enabled."""
     # 환경 변수가 누락되면 실제 발송보다 차단이 안전하다. 운영 전환은
     # 반드시 TEST_MODE=false를 명시한 경우에만 허용한다.
-    return os.getenv("TEST_MODE", "true").strip().lower() != "false"
+    return get_email_delivery_policy() != "send_all"
 
 
 def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None, start=None):

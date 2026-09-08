@@ -25,6 +25,10 @@ from backend_logic2.repositories import notifications as notification_repository
 from backend_logic2.services import workflow_service
 from backend_logic2.services import receipt_service
 from backend_logic2.services import item_service
+from backend_logic2.nodes.item.item_spec_validation import (
+    ItemSpecificationPolicyError,
+    get_or_create_group_requirements,
+)
 from backend_logic2.services import quotation_service
 from procurement_db.config import require_database_url
 
@@ -260,6 +264,29 @@ def delete_all_notifications(current_user: CurrentUser):
     return {"success": True, "deleted_count": deleted_count}
 
 
+@router.get("/item-groups/{item_group}/required-specs")
+def get_item_group_required_specs_for_frontend(
+    item_group: str,
+    current_user: CurrentUser,
+):
+    """프론트엔드 규격 모달이 '요청 규격' 항목 중 실제 필수 항목에만
+    빨간색 필수 태그를 붙이기 위해 호출하는 인증 전용 엔드포인트.
+
+    ERPNext Item 폼의 Client Script가 쓰는 웹훅 엔드포인트와
+    동일한 get_or_create_group_requirements를 재사용하므로, 두 화면이 같은
+    필수 규격 목록을 기준으로 동작한다.
+    """
+    del current_user  # 인증만 필요, 값 자체는 응답에 사용하지 않는다.
+    try:
+        requirements = get_or_create_group_requirements(item_group)
+    except ItemSpecificationPolicyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "item_group": requirements["item_group"],
+        "required_specs": requirements["required_specs"],
+    }
+
+
 @router.get("/events")
 async def stream_procurement_events(current_user: CurrentUser):
     """Authenticated SSE bridge backed by PostgreSQL LISTEN/NOTIFY."""
@@ -474,6 +501,31 @@ def payment_entry_webhook(
     except (ERPNextAPIError, psycopg.Error) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"accepted": True, "duplicate": not created, "items": projections}
+
+
+@webhook_router.get("/item-groups/{item_group}/required-specs")
+def get_item_group_required_specs(
+    item_group: str,
+    x_erpnext_webhook_secret: Optional[str] = Header(default=None),
+):
+    """ERPNext Item 폼(Client Script)이 item_group 선택 시 description
+    placeholder를 채우기 위해 호출하는 조회 전용 엔드포인트.
+
+    get_or_create_group_requirements는 처음 보는 item_group이라도 AI로
+    즉시 필수 규격을 정의해 DB에 저장하고 반환한다(자가치유) - 그래서
+    "한 번 실패해야 AI가 규격을 정의한다"는 별도 단계 없이, 이 호출
+    한 번으로 바로 최신 필수 규격을 돌려줄 수 있다.
+    """
+    _require_webhook_secret(x_erpnext_webhook_secret)
+    try:
+        requirements = get_or_create_group_requirements(item_group)
+    except ItemSpecificationPolicyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "item_group": requirements["item_group"],
+        "required_specs": requirements["required_specs"],
+        "reason": requirements.get("reason"),
+    }
 
 
 @webhook_router.post("/item")

@@ -298,7 +298,7 @@ def list_open_case_references() -> list[dict[str, Any]]:
     with get_connection() as connection:
         rows = connection.execute(
             """
-            SELECT case_id, mr_name, status, stage, item_code, item_name,
+            SELECT case_id, mr_name, thread_id, status, stage, item_code, item_name,
                    requester_id, assigned_user_id, summary, erp_modified_at
             FROM procurement.procurement_case
             WHERE mr_name IS NOT NULL

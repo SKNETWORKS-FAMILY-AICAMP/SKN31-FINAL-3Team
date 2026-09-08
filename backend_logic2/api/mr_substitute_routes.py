@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from langgraph.types import Command
 
 from backend_logic2.nodes.mr.find_substitute import flatten_substitute_candidates
+from backend_logic2.repositories import cases as case_repository
 from backend_logic2.workflow.process_commands import to_checkpoint_data
 from backend_logic2.workflow.process_graph import get_process_app
 
@@ -91,6 +92,23 @@ def _config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
+def _resolve_thread_id(mr_name: str) -> str:
+    """이 MR의 실제 LangGraph thread_id를 찾는다.
+
+    보통 thread_id는 mr_name과 같지만, 같은 MR 번호가 재사용(recreated)된
+    경우 workflow_service.py가 procurement_case.thread_id에 다른 값을 저장
+    해둔다(material_request_thread_id 참고). 여기서 그걸 확인 안 하고
+    mr_name을 그대로 thread_id로 쓰면, recreated된 MR에서는 항상 빈
+    체크포인트를 조회해 "지금 대체품 확인이 필요한 상태가 아닙니다"가
+    잘못 뜬다. workflow_service.py와 항상 같은 thread_id를 보도록 이 조회를
+    거친다.
+    """
+    case = case_repository.get_case_by_mr(mr_name)
+    if case and case.get("thread_id"):
+        return str(case["thread_id"])
+    return mr_name
+
+
 class SubstituteDecisionRequest(BaseModel):
     item_code: Optional[str] = None
     decision: Optional[str] = None
@@ -106,7 +124,8 @@ def get_substitutes(mr_name: str, _auth=Depends(_require_client_script_secret)):
     실제로 resume될 때와 항상 정확히 같은 후보/번호를 보장하기 위해서.
     """
     app = get_process_app()
-    snapshot = app.get_state(_config(mr_name))
+    thread_id = _resolve_thread_id(mr_name)
+    snapshot = app.get_state(_config(thread_id))
     values = snapshot.values or {}
 
     if values.get("status") != "awaiting_substitute_selection":
@@ -177,15 +196,16 @@ def submit_substitute_decision(
         }
 
     app = get_process_app()
+    thread_id = _resolve_thread_id(mr_name)
     resume_data = {}
     if body.decision:
         resume_data["decision"] = body.decision
     if body.item_code:
         resume_data["item_code"] = body.item_code
 
-    app.invoke(Command(resume=resume_data), config=_config(mr_name))
+    app.invoke(Command(resume=resume_data), config=_config(thread_id))
 
-    new_values = (app.get_state(_config(mr_name)).values) or {}
+    new_values = (app.get_state(_config(thread_id)).values) or {}
     still_waiting = new_values.get("status") == "awaiting_substitute_selection"
 
     # ERPNext 요청자가 선택한 결과를 PostgreSQL에 투영하고 알림/SSE로
