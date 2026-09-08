@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { VendorSelectionGroup } from '../types';
+import type { VendorSelectionGroup, WorkflowTask } from '../types';
 import { 
   Bot, 
   Sparkles, 
@@ -20,12 +20,18 @@ interface VendorSelectionViewProps {
   onSelectSupplier: (groupId: string, supplierId: string) => void;
   onOpenSpecModalByItemCode: (itemCode: string) => void;
   onExtendDeadline: (groupId: string, newDate: string, newTime: string) => void;
+  onProceedOrder: (groupId: string) => Promise<void>;
+  orderStartTasks: WorkflowTask[];
+  onProceedOrderTask: (task: WorkflowTask) => Promise<void>;
 }
 
 export const VendorSelectionView: React.FC<VendorSelectionViewProps> = ({
   vendorGroups,
   onSelectSupplier,
   onExtendDeadline,
+  onProceedOrder,
+  orderStartTasks,
+  onProceedOrderTask,
 }) => {
   // Active selected MR Group
   const [selectedGroup, setSelectedGroup] = useState<VendorSelectionGroup | null>(vendorGroups[0] || null);
@@ -55,6 +61,19 @@ export const VendorSelectionView: React.FC<VendorSelectionViewProps> = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {orderStartTasks.map((task) => (
+        <div key={task.task_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 18px', border: '1px solid rgba(59, 130, 246, 0.35)', borderRadius: '8px', background: 'rgba(59, 130, 246, 0.08)' }}>
+          <div>
+            <strong>{String(task.payload.selected_supplier ?? '선정 공급사')}</strong>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              {String(task.payload.mr_name ?? '')} · 협력사 선정 완료
+            </div>
+          </div>
+          <button className="btn-primary" onClick={() => void onProceedOrderTask(task)}>
+            발주 진행
+          </button>
+        </div>
+      ))}
       <div 
         style={{
           backgroundColor: 'rgba(59, 130, 246, 0.08)',
@@ -433,7 +452,7 @@ export const VendorSelectionView: React.FC<VendorSelectionViewProps> = ({
         </div>
       )}
 
-      {/* 5-1-2) 견적 순위 (AI 추천 및 업체 선정 + PR 자동 전송) Modal */}
+      {/* 5-1-2) 견적 순위 (AI 추천 및 업체 선정) Modal */}
       {showRankModal && selectedGroup && (
         <div className="modal-overlay" onClick={() => setShowRankModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: '740px' }}>
@@ -486,7 +505,7 @@ export const VendorSelectionView: React.FC<VendorSelectionViewProps> = ({
                       <div>
                         {selectedGroup.selectedSupplierId === q.supplierId ? (
                           <span className="badge badge-green" style={{ padding: '8px 12px', fontSize: '12px' }}>
-                            ✓ 업체 선정완료 (PR 전송됨)
+                            ✓ 업체 선정 완료
                           </span>
                         ) : (
                           <button
@@ -494,11 +513,10 @@ export const VendorSelectionView: React.FC<VendorSelectionViewProps> = ({
                             style={{ padding: '8px 14px', fontSize: '12px' }}
                             onClick={() => {
                               onSelectSupplier(selectedGroup.id, q.supplierId);
-                              alert(`[${q.supplierName}]이(가) 최종 업체로 선정되었습니다!\nPR-2025-${selectedGroup.mrNo.split('-')[2]}가 ERPNext 시스템으로 자동 전송되었습니다.`);
-                              setShowRankModal(false);
+                              setSelectedGroup({ ...selectedGroup, selectedSupplierId: q.supplierId });
                             }}
                           >
-                            업체 선정 및 PR 자동 전송
+                            업체 선정
                           </button>
                         )}
                       </div>
@@ -511,6 +529,16 @@ export const VendorSelectionView: React.FC<VendorSelectionViewProps> = ({
               <button className="btn-outline" onClick={() => setShowRankModal(false)}>
                 닫기
               </button>
+              {selectedGroup.selectedSupplierId && (
+                <button
+                  className="btn-primary"
+                  onClick={() => {
+                    void onProceedOrder(selectedGroup.id).then(() => setShowRankModal(false));
+                  }}
+                >
+                  발주 진행
+                </button>
+              )}
             </div>
           </div>
         </div>

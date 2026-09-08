@@ -30,14 +30,18 @@ from langgraph.graph import START, StateGraph
 
 from .process_commands import (
     PurchaseProcessState,
+    await_supplier_pr_response_command,
     await_order_start_command,
     check_mr_item_command,
     check_quotations_command,
     create_po_command,
+    create_pr_command,
     create_rfq_command,
     decide_bidding_choice_command,
     final_selection_command,
+    handle_pr_rejection_command,
     po_approval_command,
+    request_pr_command,
     resolve_suppliers_choice_command,
     route_entrypoint_command,
     search_new_suppliers_command,
@@ -101,6 +105,10 @@ def build_process_graph(*, checkpointer: Any = None):
     graph.add_node("final_selection", _with_status_log("final_selection", final_selection_command))
     graph.add_node("await_order_start", _with_status_log("await_order_start", await_order_start_command))
     graph.add_node("po_approval", _with_status_log("po_approval", po_approval_command))
+    graph.add_node("request_pr", _with_status_log("request_pr", request_pr_command))
+    graph.add_node("create_pr", _with_status_log("create_pr", create_pr_command))
+    graph.add_node("await_supplier_pr_response", _with_status_log("await_supplier_pr_response", await_supplier_pr_response_command))
+    graph.add_node("handle_pr_rejection", _with_status_log("handle_pr_rejection", handle_pr_rejection_command))
     graph.add_node("create_po", _with_status_log("create_po", create_po_command))
     graph.add_edge(START, "route_entrypoint")
     return graph.compile(checkpointer=checkpointer)

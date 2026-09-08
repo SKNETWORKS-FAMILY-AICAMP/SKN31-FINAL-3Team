@@ -51,6 +51,10 @@ class PurchaseProcessState(TypedDict, total=False):
     quotation_ranking: list[dict[str, Any]]
     requested_supplier: str
     selected_supplier: str
+    pr_id: str
+    pr_status: str
+    pr_rejection_reason: str
+    pr_supplier_email: str
     po_name: str
     cancellation_reason: str
     error: str
@@ -319,10 +323,10 @@ def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
                 "direct_purchase": True,
                 "direct_purchase_items": direct_purchase_items,
                 "selected_supplier": next(iter(direct_suppliers)),
-                "status": "awaiting_po_approval",
+                "status": "awaiting_pr_request",
                 "error": "",
             },
-            goto="po_approval",
+            goto="request_pr",
         )
 
     return Command(
@@ -676,14 +680,14 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
 
 
 def await_order_start_command(state: PurchaseProcessState) -> Command:
-    """협력사 선정 화면에서 사용자가 '발주 시작'을 누를 때까지 대기."""
+    """Wait for 발주 진행, then move the case to PO management."""
 
     answer = interrupt({
         "type": "order_start",
         "mr_name": state["mr_name"],
         "rfq_name": state.get("rfq_name"),
         "selected_supplier": state.get("selected_supplier"),
-        "instructions": "선정 결과를 확인한 뒤 발주 시작을 눌러 PO 승인 단계로 이동하세요.",
+        "instructions": "선정 결과를 확인한 뒤 발주 진행을 눌러 PO 관리 화면으로 이동하세요.",
     })
     decision = _decision_value(answer)
     if decision != "start_order":
@@ -692,8 +696,8 @@ def await_order_start_command(state: PurchaseProcessState) -> Command:
             goto="await_order_start",
         )
     return Command(
-        update={"status": "awaiting_po_approval", "error": ""},
-        goto="po_approval",
+        update={"status": "awaiting_pr_request", "error": ""},
+        goto="request_pr",
     )
 
 
@@ -712,7 +716,7 @@ def po_approval_command(state: PurchaseProcessState) -> Command:
     })
     decision = _decision_value(answer)
     if decision == "approve":
-        return Command(update={"status": "creating_po", "error": ""}, goto="create_po")
+        return Command(update={"status": "creating_pr", "error": ""}, goto="create_pr")
     if decision == "reject":
         return Command(
             update={"status": "human_review", "error": "PO 발송 전 최종 승인에서 반려되었습니다."},
@@ -722,6 +726,130 @@ def po_approval_command(state: PurchaseProcessState) -> Command:
         update={"status": "awaiting_po_approval", "error": "approve 또는 reject를 선택하세요."},
         goto="po_approval",
     )
+
+
+def request_pr_command(state: PurchaseProcessState) -> Command:
+    """Wait for the buyer to send the supplier PR from PO management."""
+    answer = interrupt({
+        "type": "pr_request",
+        "case_id": state["case_id"],
+        "mr_name": state["mr_name"],
+        "rfq_name": state.get("rfq_name"),
+        "selected_supplier": state.get("selected_supplier"),
+        "quotation_ranking": state.get("quotation_ranking") or [],
+        "purchase_mode": "direct" if state.get("direct_purchase") else "quotation",
+        "direct_purchase_items": state.get("direct_purchase_items") or {},
+    })
+    if _decision_value(answer) == "request_pr":
+        return Command(update={"status": "creating_pr", "error": ""}, goto="create_pr")
+    return Command(
+        update={"status": "awaiting_pr_request", "error": "PR 요청을 눌러 주세요."},
+        goto="request_pr",
+    )
+
+
+def create_pr_command(state: PurchaseProcessState) -> Command:
+    """Send a supplier acceptance request after internal PO approval."""
+    from backend_logic2.integrations.erp_client import erp_get_one
+    from backend_logic2.pr.service import create_and_send_pr
+
+    supplier_id = str(state.get("selected_supplier") or "").strip()
+    if not supplier_id:
+        raise RuntimeError("PR을 발송할 선정 공급사가 없습니다.")
+    supplier = erp_get_one("Supplier", supplier_id)
+    supplier_email = str(
+        (supplier or {}).get("email_id")
+        or (supplier or {}).get("email")
+        or (supplier or {}).get("supplier_email")
+        or ""
+    ).strip()
+    if not supplier_email:
+        raise RuntimeError(f"공급사 '{supplier_id}'에 등록된 이메일이 없습니다.")
+
+    ranking = state.get("quotation_ranking") or []
+    quotation_name = next((
+        str(row.get("name") or "").strip()
+        for row in ranking
+        if str(row.get("supplier") or "").strip() == supplier_id
+    ), "")
+    pr = create_and_send_pr(
+        case_id=state["case_id"], mr_name=state["mr_name"],
+        supplier_id=supplier_id, supplier_email=supplier_email,
+        rfq_name=state.get("rfq_name"), supplier_quotation=quotation_name or None,
+        purchase_mode="direct" if state.get("direct_purchase") else "quotation",
+        direct_purchase_items=state.get("direct_purchase_items") or {},
+        expires_in_hours=72,
+    )
+    return Command(
+        update={
+            "pr_id": str(pr["pr_id"]), "pr_status": str(pr["status"]),
+            "pr_supplier_email": supplier_email, "pr_rejection_reason": "",
+            "status": "awaiting_supplier_pr_response", "error": "",
+        },
+        goto="await_supplier_pr_response",
+    )
+
+
+def await_supplier_pr_response_command(state: PurchaseProcessState) -> Command:
+    """Pause until the supplier submits the signed email response form."""
+    answer = interrupt({
+        "type": "supplier_pr_response", "case_id": state["case_id"],
+        "pr_id": state["pr_id"], "mr_name": state["mr_name"],
+        "selected_supplier": state.get("selected_supplier"),
+        "supplier_email": state.get("pr_supplier_email"),
+    })
+    decision = _decision_value(answer)
+    reason = str(answer.get("reason") or "").strip() if isinstance(answer, dict) else ""
+    if decision == "accept":
+        return Command(
+            update={"pr_status": "ACCEPTED", "pr_rejection_reason": "", "status": "creating_po", "error": ""},
+            goto="create_po",
+        )
+    if decision == "reject" and len(reason) >= 2:
+        return Command(
+            update={"pr_status": "REJECTED", "pr_rejection_reason": reason, "status": "supplier_pr_rejected", "error": ""},
+            goto="handle_pr_rejection",
+        )
+    return Command(
+        update={"status": "awaiting_supplier_pr_response", "error": "공급사 응답 또는 거절 사유가 올바르지 않습니다."},
+        goto="await_supplier_pr_response",
+    )
+
+
+def handle_pr_rejection_command(state: PurchaseProcessState) -> Command:
+    """Let the buyer choose another ranked supplier, rebid, or stop."""
+    rejected = str(state.get("selected_supplier") or "").strip()
+    remaining = [row for row in state.get("quotation_ranking") or [] if str(row.get("supplier") or "").strip() != rejected]
+    answer = interrupt({
+        "type": "pr_rejection_review", "pr_id": state.get("pr_id"),
+        "mr_name": state["mr_name"], "rejected_supplier": rejected,
+        "rejection_reason": state.get("pr_rejection_reason"),
+        "remaining_suppliers": remaining,
+        "allowed": ["select_next_supplier", "rebid", "cancel"],
+    })
+    decision = _decision_value(answer)
+    if decision == "select_next_supplier":
+        supplier = str(answer.get("supplier") or "").strip() if isinstance(answer, dict) else ""
+        valid = {str(row.get("supplier") or "").strip() for row in remaining}
+        if supplier not in valid:
+            return Command(update={"status": "supplier_pr_rejected", "error": "차순위 공급사를 선택해 주세요."}, goto="handle_pr_rejection")
+        return Command(
+            update={"selected_supplier": supplier, "pr_id": "", "pr_status": "", "pr_supplier_email": "", "status": "awaiting_pr_request", "error": ""},
+            goto="request_pr",
+        )
+    if decision == "rebid":
+        return Command(
+            update={
+                "entrypoint": "bidding_recheck", "selected_supplier": "", "pr_id": "", "pr_status": "",
+                "pr_supplier_email": "", "rfq_name": "", "quotation_ranking": [], "requested_supplier": "",
+                "selected_suppliers": [], "supplier_registration_results": [], "quotation_deadline": "",
+                "status": "checking_bidding", "error": "",
+            },
+            goto="decide_bidding_choice",
+        )
+    if decision == "cancel":
+        return Command(update={"status": "human_review", "error": "공급사가 수주를 거절하여 구매 담당자 확인이 필요합니다."}, goto=END)
+    return Command(update={"status": "supplier_pr_rejected", "error": "차순위 선정, 재비딩 또는 종료를 선택해 주세요."}, goto="handle_pr_rejection")
 
 
 def create_po_command(state: PurchaseProcessState) -> Command:
@@ -739,16 +867,21 @@ def create_po_command(state: PurchaseProcessState) -> Command:
     막음(send_email=not test_mode) - erp_send_email 자체도 TEST_MODE를
     다시 확인하지만, 이중 안전장치로 여기서도 명시적으로 막음.
     """
+    if str(state.get("pr_status") or "").upper() != "ACCEPTED":
+        raise RuntimeError("공급사가 PR을 수락하지 않아 PO를 생성할 수 없습니다.")
+
     from backend_logic2.integrations.erp_client import is_test_mode
     from backend_logic2.nodes.po.create_and_send_po import (
         create_and_send_direct_po,
         create_and_send_po,
     )
+    from backend_logic2.pr import repository as pr_repository
 
     direct_purchase = bool(state.get("direct_purchase"))
     rfq_name = state.get("rfq_name")
     supplier = state.get("selected_supplier")
     test_mode = is_test_mode()
+    pr_id = str(state.get("pr_id") or "").strip()
 
     print(
         f"\n[PO 생성] '{state['mr_name']}' "
@@ -775,14 +908,33 @@ def create_po_command(state: PurchaseProcessState) -> Command:
                 send_email=not test_mode,
             )
     except SystemExit as exc:
+        if pr_id:
+            pr_repository.record_po_result(
+                pr_id,
+                po_name=None,
+                error=str(exc) or "PO 생성이 중단되었습니다.",
+            )
         print("  -> PO 생성/발송 중단됨 (사유는 위 콘솔 출력 참고)")
         raise RuntimeError(
             "PO 생성 또는 발송이 중단되었습니다. 서버 로그를 확인해 주세요."
         ) from exc
+    except Exception as exc:
+        if pr_id:
+            pr_repository.record_po_result(pr_id, po_name=None, error=str(exc))
+        raise
 
     if not po or not po.get("name"):
+        if pr_id:
+            pr_repository.record_po_result(
+                pr_id,
+                po_name=None,
+                error="ERPNext가 PO 번호를 반환하지 않았습니다.",
+            )
         print("  -> PO 생성 실패")
         raise RuntimeError("PO 생성에 실패했습니다.")
+
+    if pr_id:
+        pr_repository.record_po_result(pr_id, po_name=str(po["name"]))
 
     print(f"  -> PO 처리 완료: {po['name']} (이메일 발송: {'예' if po.get('email_sent') else '아니오'})\n")
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { SpecModal } from './components/SpecModal';
@@ -15,7 +15,9 @@ import type {
   Item, 
   MaterialRequest, 
   VendorSelectionGroup, 
-  POItem
+  POItem,
+  SupplierPRResponse,
+  WorkflowTask
 } from './types';
 
 import { 
@@ -38,6 +40,7 @@ export function App() {
   const [requests, setRequests] = useState<MaterialRequest[]>(initialMaterialRequests);
   const [vendorGroups, setVendorGroups] = useState<VendorSelectionGroup[]>(initialVendorGroups);
   const [poItems, setPoItems] = useState<POItem[]>(initialPOItems);
+  const [pendingTasks, setPendingTasks] = useState<WorkflowTask[]>([]);
 
   // Modals state
   const [activeSpecItem, setActiveSpecItem] = useState<Item | null>(null);
@@ -45,11 +48,153 @@ export function App() {
   const [activeAttachmentFiles, setActiveAttachmentFiles] = useState<string[] | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!['vendor-select', 'po-manage'].includes(currentTab)) return;
+    let cancelled = false;
+
+    const loadSupplierPRs = async () => {
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+      const accessToken = localStorage.getItem('access_token');
+      const headers: Record<string, string> = accessToken
+        ? { Authorization: `Bearer ${accessToken}` }
+        : {};
+      const [prResponse, taskResponse] = await Promise.all([
+        fetch(`${apiBaseUrl}/api/procurement/pr`, { credentials: 'include', headers }),
+        fetch(`${apiBaseUrl}/api/procurement/tasks?status=PENDING`, { credentials: 'include', headers }),
+      ]);
+      if (!prResponse.ok || !taskResponse.ok) throw new Error('PR 작업을 불러오지 못했습니다.');
+      const data: { items: SupplierPRResponse[]; count: number } = await prResponse.json();
+      const taskData: { items: WorkflowTask[]; count: number } = await taskResponse.json();
+      if (cancelled) return;
+      setPendingTasks(taskData.items);
+
+      const prItems: POItem[] = data.items.map((pr) => {
+        const request = requests.find((row) => row.mrNo === pr.mr_name);
+        const vendorGroup = vendorGroups.find((row) => row.mrNo === pr.mr_name);
+        const quotation = vendorGroup?.quotations.find(
+          (row) => row.supplierId === pr.supplier_id || row.supplierName === pr.supplier_id,
+        );
+        return {
+          id: pr.pr_id,
+          caseId: pr.case_id,
+          prNo: pr.pr_id,
+          mrNo: pr.mr_name,
+          itemName: request?.itemName ?? vendorGroup?.itemName ?? '-',
+          itemCode: request?.itemCode ?? vendorGroup?.itemCode ?? '-',
+          department: request?.department ?? vendorGroup?.department ?? '-',
+          selectedSupplier: quotation?.supplierName ?? pr.supplier_id,
+          supplierEmail: pr.supplier_email,
+          totalAmount: quotation?.quoteTotalPrice ?? request?.totalPrice ?? 0,
+          dueDate: request?.dueDate ?? vendorGroup?.targetDueDate ?? '-',
+          prStatus: pr.status,
+          sentAt: pr.sent_at,
+          responseDeadline: pr.expires_at,
+          respondedAt: pr.responded_at,
+          supplierApprovalStatus: pr.status === 'REJECTED'
+            ? 'rejected'
+            : ['ACCEPTED', 'PO_CREATED', 'PO_FAILED'].includes(pr.status)
+              ? 'approved'
+              : 'pending',
+          rejectReason: pr.rejection_reason,
+          poCreated: pr.status === 'PO_CREATED',
+          poNo: pr.po_name,
+          poError: pr.po_error,
+          processingError: pr.processing_error,
+          createdDate: pr.updated_at,
+        };
+      });
+      const existingCases = new Set(data.items.map((pr) => pr.case_id));
+      const requestItems: POItem[] = taskData.items
+        .filter((task) => task.task_type === 'pr_request' && !existingCases.has(task.case_id))
+        .map((task) => {
+          const mrName = String(task.payload.mr_name ?? '');
+          const request = requests.find((row) => row.mrNo === mrName);
+          const vendorGroup = vendorGroups.find((row) => row.mrNo === mrName);
+          const supplier = String(task.payload.selected_supplier ?? '');
+          const quotation = vendorGroup?.quotations.find(
+            (row) => row.supplierId === supplier || row.supplierName === supplier,
+          );
+          return {
+            id: task.task_id,
+            caseId: task.case_id,
+            prNo: 'PR 요청 전',
+            mrNo: mrName,
+            itemName: request?.itemName ?? vendorGroup?.itemName ?? '-',
+            itemCode: request?.itemCode ?? vendorGroup?.itemCode ?? '-',
+            department: request?.department ?? vendorGroup?.department ?? '-',
+            selectedSupplier: quotation?.supplierName ?? supplier,
+            totalAmount: quotation?.quoteTotalPrice ?? request?.totalPrice ?? 0,
+            dueDate: request?.dueDate ?? vendorGroup?.targetDueDate ?? '-',
+            supplierApprovalStatus: 'pending',
+            poCreated: false,
+            canRequestPR: true,
+          };
+        });
+      setPoItems([...requestItems, ...prItems]);
+    };
+
+    void loadSupplierPRs().catch((error) => showToast(String(error)));
+    const timer = window.setInterval(
+      () => void loadSupplierPRs().catch(() => undefined),
+      10_000,
+    );
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [currentTab, requests, vendorGroups]);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
     }, 4000);
+  };
+
+  const answerWorkflowTask = async (
+    task: WorkflowTask,
+    answer: Record<string, unknown>,
+  ) => {
+    const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+    const accessToken = localStorage.getItem('access_token');
+    const response = await fetch(`${apiBaseUrl}/api/procurement/tasks/${task.task_id}/answer`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify({ answer, version: task.version }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.detail ?? '워크플로 작업 처리에 실패했습니다.');
+    }
+    return response.json();
+  };
+
+  const handleProceedOrder = async (groupId: string) => {
+    const group = vendorGroups.find((row) => row.id === groupId);
+    const task = pendingTasks.find(
+      (row) => row.task_type === 'order_start' && String(row.payload.mr_name ?? '') === group?.mrNo,
+    );
+    if (!task) throw new Error('실제 발주 진행 작업을 찾을 수 없습니다. 구매 케이스 상태를 확인해 주세요.');
+    await answerWorkflowTask(task, { decision: 'start_order' });
+    setCurrentTab('po-manage');
+    showToast('PO 관리 화면에서 PR 요청을 진행해 주세요.');
+  };
+
+  const handleProceedOrderTask = async (task: WorkflowTask) => {
+    await answerWorkflowTask(task, { decision: 'start_order' });
+    setCurrentTab('po-manage');
+    showToast('PO 관리 화면에서 PR 요청을 진행해 주세요.');
+  };
+
+  const handleRequestPR = async (poId: string) => {
+    const task = pendingTasks.find((row) => row.task_id === poId && row.task_type === 'pr_request');
+    if (!task) throw new Error('PR 요청 작업을 찾을 수 없습니다. 화면을 새로고침해 주세요.');
+    await answerWorkflowTask(task, { decision: 'request_pr' });
+    showToast('선정 공급사에 PR 요청 메일을 발송했습니다.');
   };
 
   // Actions
@@ -162,42 +307,11 @@ export function App() {
     setVendorGroups((prev) =>
       prev.map((group) => {
         if (group.id === groupId) {
-          const supplier = group.quotations.find((q) => q.supplierId === supplierId);
-          const prNo = `PR-2025-${group.mrNo.split('-')[2] || '0890'}`;
-
-          if (supplier) {
-            setPoItems((poPrev) => [
-              {
-                id: `PO-ITEM-${Date.now()}`,
-                prNo,
-                mrNo: group.mrNo,
-                itemName: group.itemName,
-                itemCode: group.itemCode,
-                department: group.department,
-                selectedSupplier: supplier.supplierName,
-                totalAmount: supplier.quoteTotalPrice,
-                dueDate: group.targetDueDate,
-                supplierApprovalStatus: 'approved',
-                poCreated: false,
-              },
-              ...poPrev,
-            ]);
-          }
-
-          // Update requests processStage
-          setRequests((reqPrev) =>
-            reqPrev.map((r) =>
-              r.mrNo === group.mrNo
-                ? { ...r, processStage: { ...r.processStage, prSupplierApproved: '승인' } }
-                : r
-            )
-          );
-
           return {
             ...group,
             selectedSupplierId: supplierId,
-            prSent: true,
-            prNo,
+            prSent: false,
+            prNo: undefined,
             quotations: group.quotations.map((q) => ({
               ...q,
               isSelected: q.supplierId === supplierId,
@@ -208,7 +322,7 @@ export function App() {
       })
     );
 
-    showToast(`업체 선정이 완료되어 PR이 ERPNext로 자동 전송되었습니다.`);
+    showToast('업체 선정이 완료되었습니다. 발주 진행을 눌러 주세요.');
   };
 
   const handleCreatePO = (poId: string) => {
@@ -303,6 +417,9 @@ export function App() {
                 onSelectSupplier={handleSelectSupplier}
                 onOpenSpecModalByItemCode={handleOpenSpecByItemCode}
                 onExtendDeadline={handleExtendDeadline}
+                onProceedOrder={handleProceedOrder}
+                orderStartTasks={pendingTasks.filter((task) => task.task_type === 'order_start')}
+                onProceedOrderTask={handleProceedOrderTask}
               />
             )}
 
@@ -311,6 +428,7 @@ export function App() {
               <POManagementView
                 poItems={poItems}
                 onCreatePO={handleCreatePO}
+                onRequestPR={handleRequestPR}
               />
             )}
           </main>

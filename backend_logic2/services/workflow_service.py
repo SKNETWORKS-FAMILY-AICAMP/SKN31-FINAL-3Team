@@ -40,6 +40,8 @@ _TASK_STAGE = {
     "final_selection": "SUPPLIER_SELECTION",
     "order_start": "ORDER_START",
     "po_approval": "PRE_PO_APPROVAL",
+    "pr_request": "PR_REQUEST",
+    "pr_rejection_review": "PR_REJECTED",
     "supplier_scorecard": "SCORECARD",
 }
 
@@ -710,14 +712,20 @@ def project_case_from_checkpoint(case_id: str) -> dict[str, Any]:
             },
         )
 
+    active_presentations = [
+        task_presentation(payload) for payload in snapshot_data["interrupts"]
+    ]
     active_task_types = {
-        task_presentation(payload)["task_type"]
-        for payload in snapshot_data["interrupts"]
+        presentation["task_type"]
+        for presentation in active_presentations
+        if presentation["channel"] != "EMAIL"
     }
     task_repository.supersede_inactive_tasks(case_id, active_task_types)
     biddingflow_tasks: list[dict[str, Any]] = []
     for payload in snapshot_data["interrupts"]:
         presentation = task_presentation(payload)
+        if presentation["channel"] == "EMAIL":
+            continue
         task_repository.replace_pending_task(
             case_id=case_id,
             task_type=presentation["task_type"],
@@ -793,6 +801,51 @@ def project_substitute_decision(
             },
         )
     return projected
+
+
+def resume_supplier_pr_response(
+    *,
+    case_id: str,
+    pr_id: str,
+    decision: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Resume the exact supplier-response interrupt identified by a PR."""
+    from backend_logic2.pr import repository as pr_repository
+
+    case = case_repository.get_case(case_id)
+    if case is None:
+        raise LookupError(case_id)
+    if case["status"] in _TERMINAL_CASE_STATUSES:
+        raise ValueError("이미 종료된 구매 건입니다.")
+
+    app = get_process_app()
+    config = _config(case["thread_id"] or case["mr_name"])
+    with _GRAPH_LOCK:
+        snapshot = app.get_state(config)
+        values = to_checkpoint_data(snapshot.values or {})
+        if values.get("status") != "awaiting_supplier_pr_response":
+            raise ValueError("현재 구매 건은 공급사 PR 응답 대기 상태가 아닙니다.")
+        if str(values.get("pr_id") or "") != str(pr_id):
+            raise ValueError("현재 구매 건의 PR 번호와 응답 PR 번호가 일치하지 않습니다.")
+        try:
+            app.invoke(
+                Command(resume={"decision": decision, "reason": reason or ""}),
+                config=config,
+            )
+        except Exception as exc:
+            pr_repository.record_processing_error(pr_id, stage="invoke", error=str(exc))
+            raise RuntimeError(
+                "응답은 접수되었으나 처리 중 오류가 발생했습니다. 담당자가 확인해야 합니다."
+            ) from exc
+        try:
+            _delete_case_notifications_safely(case_id)
+            return project_case_from_checkpoint(case_id)
+        except Exception as exc:
+            pr_repository.record_processing_error(pr_id, stage="projection", error=str(exc))
+            raise RuntimeError(
+                "응답 처리는 완료되었으나 화면 상태 갱신에 실패했습니다."
+            ) from exc
 
 
 def resume_task(

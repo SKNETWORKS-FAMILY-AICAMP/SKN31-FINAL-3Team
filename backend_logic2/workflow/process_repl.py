@@ -160,12 +160,19 @@ def _handle_order_start(payload: dict) -> dict:
     return {"decision": "start_order" if choice.lower().startswith("y") else "later"}
 
 
+def _handle_pr_request(payload: dict) -> dict:
+    print(f"PR 요청 대상: {payload.get('selected_supplier')} (MR: {payload.get('mr_name')})")
+    choice = _ask("공급사에 PR 요청 메일을 발송할까요? [y/N]: ")
+    return {"decision": "request_pr" if choice.lower().startswith("y") else "later"}
+
+
 _HANDLERS = {
     "substitute_selection": _handle_substitute_selection,
     "select_rfq_targets": _handle_select_rfq_targets,
     "check_quotations": _handle_check_quotations,
     "final_selection": _handle_final_selection,
     "order_start": _handle_order_start,
+    "pr_request": _handle_pr_request,
     "po_approval": _handle_po_approval,
 }
 
