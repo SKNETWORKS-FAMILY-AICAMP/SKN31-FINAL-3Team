@@ -30,7 +30,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from langgraph.types import Command
 
@@ -38,10 +38,10 @@ from backend_logic2.nodes.mr.find_substitute import flatten_substitute_candidate
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.workflow.process_commands import to_checkpoint_data
 from backend_logic2.workflow.process_graph import get_process_app
-from backend_logic2.integrations.erp_client import ERPClient
+from backend_logic2.integrations.erp_client import get_material_requests_with_items
+from backend_logic2.integrations.assignment_config import can_access_category
 
 router = APIRouter(prefix="/api/mr", tags=["MR Substitute Decision"])
-erp_client = ERPClient()
 
 @router.get("/mr-list")
 def get_assigned_mr_list(
@@ -50,7 +50,7 @@ def get_assigned_mr_list(
     """
     ERPNext에서 MR을 조회한 뒤 로그인 사용자의 카테고리(Item Group)에 해당하는 건만 필터링하여 반환
     """
-    raw_mrs = erp_client.get_mr_list_with_items(limit=100)
+    raw_mrs = get_material_requests_with_items(limit=100)
     filtered = []
 
     for doc in raw_mrs:

@@ -589,25 +589,23 @@ def get_material_request_detail(mr_name):
     result["_attachments"] = attachments
     return result
 
-def get_material_requests_with_items(self, limit: int = 50):
+def get_material_requests_with_items(limit: int = 50):
     """ERPNext에서 Material Request 목록 및 하위 품목 정보를 가져옴"""
-    # 1. MR 기본 정보 조회
-    url = f"{self.base_url}/api/resource/Material Request"
+    url = f"{SITE_URL}/api/resource/Material Request"
     params = {
         "fields": '["name", "material_request_type", "status", "owner", "transaction_date"]',
         "order_by": "creation desc",
         "limit_page_length": limit,
     }
-    res = self.session.get(url, params=params)
+    res = requests.get(url, headers=HEADERS, params=params)
     if res.status_code != 200:
         return []
 
     mr_data = res.json().get("data", [])
 
-    # 2. 각 MR의 세부 품목(아이템 그룹, 아이템명 등) 확인
     detailed_mrs = []
     for mr in mr_data:
-        doc_res = self.session.get(f"{url}/{mr['name']}")
+        doc_res = requests.get(f"{url}/{mr['name']}", headers=HEADERS)
         if doc_res.status_code == 200:
             detailed_mrs.append(doc_res.json().get("data", {}))
 
