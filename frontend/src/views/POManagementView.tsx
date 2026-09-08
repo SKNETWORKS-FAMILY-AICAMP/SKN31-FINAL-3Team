@@ -8,17 +8,20 @@ import {
   FileText, 
   X,
   AlertTriangle,
-  FileCheck
+  FileCheck,
+  Mail
 } from 'lucide-react';
 
 interface POManagementViewProps {
   poItems: POItem[];
   onCreatePO: (poId: string) => void;
+  onRequestPR: (poId: string) => Promise<void>;
 }
 
 export const POManagementView: React.FC<POManagementViewProps> = ({
   poItems,
   onCreatePO,
+  onRequestPR,
 }) => {
   const [selectedMRDetail, setSelectedMRDetail] = useState<POItem | null>(null);
   const [selectedRejectReason, setSelectedRejectReason] = useState<POItem | null>(null);
@@ -103,17 +106,45 @@ export const POManagementView: React.FC<POManagementViewProps> = ({
                 </td>
                 {/* 6-1) PR에 대한 협력사 승인 여부 */}
                 <td>
-                  {item.supplierApprovalStatus === 'approved' && (
+                  {item.prStatus === 'SENT' && (
+                    <span className="badge badge-gray" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <Clock size={12} /> PR 요청
+                    </span>
+                  )}
+                  {item.prStatus === 'ACCEPTED' && (
+                    <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <CheckCircle2 size={12} /> 수주접수 · PO 생성 중
+                    </span>
+                  )}
+                  {item.prStatus === 'PO_CREATED' && (
+                    <span className="badge badge-blue" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <CheckCircle2 size={12} /> 수주접수 · PO 발송 완료
+                    </span>
+                  )}
+                  {item.prStatus === 'PO_FAILED' && (
+                    <span className="badge badge-red" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <AlertTriangle size={12} /> PO 생성 실패 · 확인 필요
+                    </span>
+                  )}
+                  {item.prStatus === 'REJECTED' && (
+                    <span className="badge badge-red" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <XCircle size={12} /> 수주 거절
+                    </span>
+                  )}
+                  {item.prStatus && ['DRAFT', 'EXPIRED', 'CANCELLED'].includes(item.prStatus) && (
+                    <span className="badge badge-gray">{item.prStatus}</span>
+                  )}
+                  {!item.prStatus && item.supplierApprovalStatus === 'approved' && (
                     <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                       <CheckCircle2 size={12} /> 협력사 승인 완료
                     </span>
                   )}
-                  {item.supplierApprovalStatus === 'rejected' && (
+                  {!item.prStatus && item.supplierApprovalStatus === 'rejected' && (
                     <span className="badge badge-red" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                       <XCircle size={12} /> 협력사 거절
                     </span>
                   )}
-                  {item.supplierApprovalStatus === 'pending' && (
+                  {!item.prStatus && item.supplierApprovalStatus === 'pending' && (
                     <span className="badge badge-gray" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                       <Clock size={12} /> 승인 확인 대기 중
                     </span>
@@ -121,7 +152,30 @@ export const POManagementView: React.FC<POManagementViewProps> = ({
                 </td>
                 {/* 6-2) 협력사 PR 승인된 것만 PO 생성 버튼 (결재권자 결재) / 거절 시 사유 기재란 확인 */}
                 <td>
-                  {item.supplierApprovalStatus === 'approved' ? (
+                  {item.canRequestPR ? (
+                    <button
+                      className="btn-primary"
+                      style={{ padding: '6px 12px', fontSize: '12px' }}
+                      onClick={() => void onRequestPR(item.id)}
+                    >
+                      <Mail size={14} /><span>PR 요청</span>
+                    </button>
+                  ) : item.prStatus === 'PO_CREATED' ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span className="badge badge-blue">✓ {item.poNo} 생성 완료</span>
+                      <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{item.createdDate}</span>
+                    </div>
+                  ) : item.prStatus === 'REJECTED' ? (
+                    <button className="btn-reject" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => setSelectedRejectReason(item)}>
+                      <AlertTriangle size={14} /><span>거절 사유 확인</span>
+                    </button>
+                  ) : item.prStatus === 'PO_FAILED' ? (
+                    <button className="btn-reject" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => setSelectedRejectReason(item)}>
+                      <AlertTriangle size={14} /><span>PO 오류 확인</span>
+                    </button>
+                  ) : item.prStatus ? (
+                    <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>자동 처리 중</span>
+                  ) : item.supplierApprovalStatus === 'approved' ? (
                     item.poCreated ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                         <span className="badge badge-blue">
@@ -221,6 +275,9 @@ export const POManagementView: React.FC<POManagementViewProps> = ({
               <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '10px' }}>
                 공급사: <strong style={{ color: '#fff' }}>{selectedRejectReason.selectedSupplier}</strong>
               </div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px' }}>
+                이메일: {selectedRejectReason.supplierEmail || '-'} · 응답 시각: {selectedRejectReason.respondedAt || '-'}
+              </div>
               <div 
                 style={{
                   backgroundColor: 'rgba(239, 68, 68, 0.1)',
@@ -232,7 +289,9 @@ export const POManagementView: React.FC<POManagementViewProps> = ({
                   lineHeight: '1.5'
                 }}
               >
-                {selectedRejectReason.rejectReason || '사유가 작성되지 않았습니다.'}
+                {selectedRejectReason.prStatus === 'PO_FAILED'
+                  ? (selectedRejectReason.poError || selectedRejectReason.processingError || 'PO 생성 오류를 확인해 주세요.')
+                  : (selectedRejectReason.rejectReason || '사유가 작성되지 않았습니다.')}
               </div>
             </div>
             <div className="modal-footer">

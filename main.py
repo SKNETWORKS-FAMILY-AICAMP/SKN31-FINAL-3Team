@@ -34,6 +34,8 @@ from backend_logic2.nodes.mr.reject_material_request import (
 from backend_logic2.nodes.mr.substitute_reply_watcher import (
     run_once as process_substitute_replies,
 )
+from backend_logic2.pr import internal_router as pr_internal_router
+from backend_logic2.pr import public_router as pr_public_router
 from backend_logic2.services import (
     item_service,
     quotation_service,
@@ -349,6 +351,11 @@ app.include_router(
     dependencies=[Depends(require_authenticated_user)],
 )
 app.include_router(erpnext_webhook_router)
+app.include_router(pr_public_router)
+app.include_router(
+    pr_internal_router,
+    dependencies=[Depends(require_authenticated_user)],
+)
 
 
 @app.get("/api/health")

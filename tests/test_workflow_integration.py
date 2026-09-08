@@ -17,12 +17,14 @@ from backend_logic2.services.workflow_service import (
     project_substitute_decision,
 )
 from backend_logic2.workflow.process_commands import (
+    await_supplier_pr_response_command,
     _cancel_urgent_mr_without_supplier,
     _submit_mr_for_purchase,
     await_order_start_command,
     check_mr_item_command,
     final_selection_command,
     po_approval_command,
+    request_pr_command,
 )
 
 
@@ -83,6 +85,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
     def test_graph_status_projection_distinguishes_selection_and_po_approval(self):
         self.assertEqual(project_graph_status("supplier_selected"), ("WAITING_INPUT", "ORDER_START"))
         self.assertEqual(project_graph_status("awaiting_po_approval"), ("WAITING_INPUT", "PRE_PO_APPROVAL"))
+        self.assertEqual(project_graph_status("awaiting_pr_request"), ("WAITING_INPUT", "PR_REQUEST"))
         self.assertEqual(project_graph_status("po_sent"), ("RUNNING", "DELIVERY"))
         self.assertEqual(
             project_graph_status("catalog_purchase_required"),
@@ -274,7 +277,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(command.goto, "await_order_start")
         self.assertEqual(command.update["status"], "supplier_selected")
 
-    def test_order_start_then_po_approval_are_separate_decisions(self):
+    def test_order_start_moves_to_pr_request_without_internal_approval(self):
         state = {
             "mr_name": "MAT-MR-0001",
             "rfq_name": "PUR-RFQ-0001",
@@ -285,16 +288,49 @@ class WorkflowIntegrationTests(unittest.TestCase):
             return_value={"decision": "start_order"},
         ):
             order_command = await_order_start_command(state)
-        self.assertEqual(order_command.goto, "po_approval")
-        self.assertEqual(order_command.update["status"], "awaiting_po_approval")
+        self.assertEqual(order_command.goto, "request_pr")
+        self.assertEqual(order_command.update["status"], "awaiting_pr_request")
 
+    def test_supplier_pr_acceptance_continues_to_po_creation(self):
+        state = {
+            "case_id": "case-1",
+            "mr_name": "MAT-MR-0001",
+            "pr_id": "pr-1",
+            "selected_supplier": "공급사 A",
+        }
         with patch(
             "backend_logic2.workflow.process_commands.interrupt",
-            return_value={"decision": "approve"},
+            return_value={"decision": "accept"},
         ):
-            approval_command = po_approval_command(state)
-        self.assertEqual(approval_command.goto, "create_po")
-        self.assertEqual(approval_command.update["status"], "creating_po")
+            command = await_supplier_pr_response_command(state)
+        self.assertEqual(command.goto, "create_po")
+        self.assertEqual(command.update["pr_status"], "ACCEPTED")
+
+    def test_pr_request_button_starts_email_creation(self):
+        state = {"case_id": "case-1", "mr_name": "MAT-MR-0001"}
+        with patch(
+            "backend_logic2.workflow.process_commands.interrupt",
+            return_value={"decision": "request_pr"},
+        ):
+            command = request_pr_command(state)
+        self.assertEqual(command.goto, "create_pr")
+        self.assertEqual(command.update["status"], "creating_pr")
+
+    def test_supplier_pr_rejection_preserves_reason(self):
+        state = {
+            "case_id": "case-1",
+            "mr_name": "MAT-MR-0001",
+            "pr_id": "pr-1",
+            "selected_supplier": "공급사 A",
+        }
+        with patch(
+            "backend_logic2.workflow.process_commands.interrupt",
+            return_value={"decision": "reject", "reason": "요청 납기 대응 불가"},
+        ):
+            command = await_supplier_pr_response_command(state)
+        self.assertEqual(command.goto, "handle_pr_rejection")
+        self.assertEqual(command.update["pr_status"], "REJECTED")
+        self.assertEqual(command.update["pr_rejection_reason"], "요청 납기 대응 불가")
 
 
 if __name__ == "__main__":

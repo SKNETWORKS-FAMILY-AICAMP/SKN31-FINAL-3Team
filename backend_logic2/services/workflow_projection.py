@@ -25,6 +25,10 @@ STATUS_TO_STAGE = {
     "awaiting_final_selection": "SUPPLIER_SELECTION",
     "supplier_selected": "ORDER_START",
     "awaiting_po_approval": "PRE_PO_APPROVAL",
+    "awaiting_pr_request": "PR_REQUEST",
+    "creating_pr": "PR_SENDING",
+    "awaiting_supplier_pr_response": "PR_RESPONSE_WAITING",
+    "supplier_pr_rejected": "PR_REJECTED",
     "creating_po": "PO_CREATION",
     "po_sent": "DELIVERY",
     "human_review": "HUMAN_REVIEW",
@@ -37,6 +41,9 @@ INTERRUPT_STATUSES = {
     "awaiting_final_selection",
     "supplier_selected",
     "awaiting_po_approval",
+    "awaiting_pr_request",
+    "awaiting_supplier_pr_response",
+    "supplier_pr_rejected",
 }
 
 
@@ -117,6 +124,24 @@ def task_presentation(payload: dict[str, Any]) -> dict[str, Any]:
             "PO 발송 전 최종 승인이 필요합니다",
             "금액·납기·협력사를 확인한 뒤 PO 생성 및 발송을 승인하거나 반려합니다.",
         ),
+        "pr_request": (
+            "BUYER",
+            "BIDDINGFLOW",
+            "선정 공급사에 PR을 요청해 주세요.",
+            "PO 내용을 확인한 뒤 PR 요청 버튼으로 공급사 수주 접수를 요청합니다.",
+        ),
+        "supplier_pr_response": (
+            "SUPPLIER",
+            "EMAIL",
+            "공급사 수주 응답을 기다리고 있습니다.",
+            "공급사가 이메일에서 수주 수락 또는 거절을 선택합니다.",
+        ),
+        "pr_rejection_review": (
+            "BUYER",
+            "BIDDINGFLOW",
+            "공급사가 수주를 거절했습니다.",
+            "거절 사유를 확인하고 차순위 공급사 또는 재비딩을 선택합니다.",
+        ),
     }
     audience, channel, title, description = presentations.get(
         task_type,
@@ -175,6 +200,26 @@ def task_input_schema(payload: dict[str, Any]) -> dict[str, Any]:
             "options": [
                 {"label": "승인 후 PO 발송", "value": "approve"},
                 {"label": "반려", "value": "reject"},
+            ],
+        }
+    if task_type == "pr_request":
+        return {
+            "type": "confirmation",
+            "field": "decision",
+            "confirm_value": "request_pr",
+            "confirm_label": "PR 요청",
+        }
+    if task_type == "supplier_pr_response":
+        return {"type": "external_supplier_response", "read_only": True}
+    if task_type == "pr_rejection_review":
+        return {
+            "type": "pr_rejection_review",
+            "field": "decision",
+            "supplier_field": "supplier",
+            "options": [
+                {"label": "차순위 공급사 선정", "value": "select_next_supplier"},
+                {"label": "재비딩 진행", "value": "rebid"},
+                {"label": "구매 프로세스 종료", "value": "cancel"},
             ],
         }
     if task_type == "supplier_scorecard":
