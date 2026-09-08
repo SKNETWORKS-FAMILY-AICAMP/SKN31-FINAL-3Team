@@ -962,6 +962,11 @@ def resume_task(
                     task_presentation(payload)["task_type"]
                     for payload in _interrupt_payloads(snapshot)
                 }
+                if "order_start" in active_task_types:
+                    # Legacy direct-purchase cases used to skip supplier
+                    # selection and were persisted as pr_request. Recovery now
+                    # moves them back to the required 발주 진행 decision.
+                    return project_case_from_checkpoint(str(case["case_id"]))
         if task["task_type"] not in active_task_types:
             raise ValueError(
                 "현재 LangGraph 인터럽트와 대기 작업이 일치하지 않습니다. "

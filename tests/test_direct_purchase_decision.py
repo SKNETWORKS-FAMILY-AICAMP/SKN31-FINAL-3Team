@@ -50,7 +50,7 @@ class DirectPurchaseDecisionTests(unittest.TestCase):
         self.assertIn(["docstatus", "=", 1], get_many.call_args.kwargs["filters"])
 
     @patch("backend_logic2.nodes.mr.decide_bidding.decide_bidding")
-    def test_non_bidding_result_routes_to_pr_request(self, decide_bidding):
+    def test_non_bidding_result_routes_to_supplier_selection(self, decide_bidding):
         decide_bidding.return_value = {
             "ITEM-001": {
                 "needs_bidding": False,
@@ -64,8 +64,9 @@ class DirectPurchaseDecisionTests(unittest.TestCase):
 
         command = decide_bidding_choice_command({"mr_name": "MAT-MR-0001"})
 
-        self.assertEqual(command.goto, "request_pr")
-        self.assertEqual(command.update["status"], "awaiting_pr_request")
+        self.assertEqual(command.goto, "await_order_start")
+        self.assertEqual(command.update["status"], "supplier_selected")
+        self.assertFalse(command.update["order_started"])
         self.assertEqual(command.update["selected_supplier"], "공급사 A")
         self.assertTrue(command.update["direct_purchase"])
 

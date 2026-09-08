@@ -290,6 +290,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
             order_command = await_order_start_command(state)
         self.assertEqual(order_command.goto, "request_pr")
         self.assertEqual(order_command.update["status"], "awaiting_pr_request")
+        self.assertTrue(order_command.update["order_started"])
 
     def test_supplier_pr_acceptance_continues_to_po_creation(self):
         state = {
@@ -307,7 +308,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(command.update["pr_status"], "ACCEPTED")
 
     def test_pr_request_button_starts_email_creation(self):
-        state = {"case_id": "case-1", "mr_name": "MAT-MR-0001"}
+        state = {"case_id": "case-1", "mr_name": "MAT-MR-0001", "order_started": True}
         with patch(
             "backend_logic2.workflow.process_commands.interrupt",
             return_value={"decision": "request_pr"},
@@ -315,6 +316,11 @@ class WorkflowIntegrationTests(unittest.TestCase):
             command = request_pr_command(state)
         self.assertEqual(command.goto, "create_pr")
         self.assertEqual(command.update["status"], "creating_pr")
+
+    def test_pr_request_cannot_skip_order_start(self):
+        command = request_pr_command({"case_id": "case-1", "mr_name": "MAT-MR-0001"})
+        self.assertEqual(command.goto, "await_order_start")
+        self.assertEqual(command.update["status"], "supplier_selected")
 
     def test_supplier_pr_rejection_preserves_reason(self):
         state = {
