@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: biddingflow-production-backend
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -27,11 +27,6 @@ jobs:
       url: https://biddingflow.13.209.103.102.nip.io/
 
     steps:
-      - name: Check out trusted deployment configuration
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
       - name: Resolve tested commit
         env:
           TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -44,22 +39,53 @@ jobs:
           fi
           echo "DEPLOY_SHA=$deploy_sha" >> "$GITHUB_ENV"
 
-      - name: Configure restricted SSH identity
-        env:
-          DEPLOY_KEY: ${{ secrets.BIDDINGFLOW_DEPLOY_KEY }}
-        run: |
-          test -n "$DEPLOY_KEY"
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/biddingflow_deploy"
-          chmod 600 "$HOME/.ssh/biddingflow_deploy"
-
       - name: Trigger verified backend deployment
+        env:
+          DEPLOY_TOKEN: ${{ secrets.BIDDINGFLOW_DEPLOY_TOKEN }}
+          DEPLOY_COMPONENT: backend
+          TRIGGER_URL: https://biddingflow.13.209.103.102.nip.io/__biddingflow_deploy
         run: |
-          ssh \
-            -i "$HOME/.ssh/biddingflow_deploy" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$GITHUB_WORKSPACE/deploy/ssh/known_hosts.production" \
-            biddingflow-deploy@13.209.103.102 \
-            "deploy backend $DEPLOY_SHA"
+          test -n "$DEPLOY_TOKEN"
+          payload="$(printf '{\"component\":\"%s\",\"commit_sha\":\"%s\"}' "$DEPLOY_COMPONENT" "$DEPLOY_SHA")"
+          timestamp="$(date +%s)"
+          signature="$(PAYLOAD="$payload" TIMESTAMP="$timestamp" python3 - <<'PY'
+          import hashlib
+          import hmac
+          import os
+
+          message = f"{os.environ['TIMESTAMP']}.{os.environ['PAYLOAD']}".encode()
+          print(hmac.new(os.environ['DEPLOY_TOKEN'].encode(), message, hashlib.sha256).hexdigest())
+          PY
+          )"
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --header "X-BiddingFlow-Timestamp: $timestamp" \
+            --header "X-BiddingFlow-Signature: $signature" \
+            --data-binary "$payload" \
+            "$TRIGGER_URL"
+
+      - name: Wait for backend deployment result
+        env:
+          DEPLOY_COMPONENT: backend
+          STATUS_URL: https://biddingflow.13.209.103.102.nip.io/deployment-status.json
+        run: |
+          for attempt in $(seq 1 240); do
+            status_json="$(curl --fail --silent --show-error "$STATUS_URL?ts=$(date +%s)")"
+            result="$(jq -r '.result // empty' <<<"$status_json")"
+            deployed_sha="$(jq -r --arg component "$DEPLOY_COMPONENT" '.[$component + "_commit"] // empty' <<<"$status_json")"
+            requested_sha="$(jq -r '.requested_commit // empty' <<<"$status_json")"
+
+            if [[ "$deployed_sha" == "$DEPLOY_SHA" && "$result" == "success" ]]; then
+              echo "$DEPLOY_COMPONENT deployment succeeded: $DEPLOY_SHA"
+              exit 0
+            fi
+            if [[ "$requested_sha" == "$DEPLOY_SHA" && "$result" == "failed" ]]; then
+              echo "$status_json"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "Timed out waiting for $DEPLOY_COMPONENT deployment: $DEPLOY_SHA"
+          exit 1

@@ -1,0 +1,24 @@
+[Unit]
+Description=BiddingFlow authenticated deployment trigger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=biddingflow-deploy
+Group=biddingflow-deploy
+EnvironmentFile=/etc/biddingflow/deploy-trigger.env
+ExecStart=/usr/bin/python3 /usr/local/lib/biddingflow/deploy-trigger.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

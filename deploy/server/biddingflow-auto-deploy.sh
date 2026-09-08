@@ -73,6 +73,8 @@ write_status() {
 {
   "result": "$result",
   "message": "$message",
+  "requested_component": "$deploy_component",
+  "requested_commit": "$expected_sha",
   "started_at": "$started_at",
   "finished_at": "$finished_at",
   "backend_commit": "$backend_sha",
@@ -90,6 +92,8 @@ on_error() {
   echo "Deployment failed at line $line"
 }
 trap 'on_error "$LINENO"' ERR
+
+write_status running "$deploy_component deployment started"
 
 deploy_backend() {
   local remote_sha deployed_sha previous_sha

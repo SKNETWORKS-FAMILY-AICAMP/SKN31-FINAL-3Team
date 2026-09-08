@@ -42,14 +42,17 @@ lint and build succeed.
 
 `Backend CD` runs only after `Backend CI` succeeds for a push to `main`, or
 when it is started manually. The workflow sends only a component name and the
-tested 40-character commit SHA through a dedicated SSH identity. The server
-rejects any other command, and deployment also fails if `main` moved to a
-different commit before the server fetched it.
+tested 40-character commit SHA through a timestamped HMAC request over HTTPS.
+The server rejects expired, incorrectly signed, or malformed requests, and
+deployment also fails if `main` moved before the server fetched it.
 
 Server-side files:
 
 - `/usr/local/sbin/biddingflow-github-ssh-command`: forced SSH command
 - `/usr/local/sbin/biddingflow-github-dispatch`: validates component and SHA
+- `/usr/local/lib/biddingflow/deploy-trigger.py`: loopback-only HMAC endpoint
+- `/etc/biddingflow/deploy-trigger.env`: root-managed deployment token
+- `biddingflow-deploy-trigger.service`: local trigger service
 - `/etc/sudoers.d/biddingflow-github-deploy`: permits only the dispatcher
 - `/var/lib/biddingflow-deploy/.ssh/authorized_keys`: restricted Actions key
 
@@ -57,7 +60,7 @@ GitHub repository configuration:
 
 1. Create the `production` environment and restrict its deployment branch to
    `main`.
-2. Add the Actions-only private key as the environment secret
-   `BIDDINGFLOW_DEPLOY_KEY`.
+2. Add the shared HMAC token as the environment or repository secret
+   `BIDDINGFLOW_DEPLOY_TOKEN`.
 3. Keep the timer enabled until both backend and frontend workflows have been
    verified. It can then remain as reconciliation fallback or be disabled.
