@@ -38,6 +38,7 @@ from backend_logic2.nodes.mr.find_substitute import flatten_substitute_candidate
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.workflow.process_commands import to_checkpoint_data
 from backend_logic2.workflow.process_graph import get_process_app
+from backend_logic2.integrations.erp_client import ERPClient
 
 router = APIRouter(prefix="/api/mr", tags=["MR Substitute Decision"])
 erp_client = ERPClient()
