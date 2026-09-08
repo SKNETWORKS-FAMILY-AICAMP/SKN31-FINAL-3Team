@@ -67,6 +67,7 @@ class WorkflowStateSafetyTests(unittest.TestCase):
 
         self.assertEqual(command.goto, "create_rfq")
         self.assertEqual(command.update["selected_suppliers"], ["직접입력상사"])
+        self.assertEqual(command.update["custom_rfq_suppliers"], ["직접입력상사"])
         registered = register_suppliers.call_args.args[0][0]
         self.assertEqual(registered["email"], "sales@example.com")
         self.assertEqual(registered["source"], "manual")
