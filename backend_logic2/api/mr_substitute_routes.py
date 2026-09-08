@@ -30,7 +30,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from langgraph.types import Command
 
@@ -38,61 +38,9 @@ from backend_logic2.nodes.mr.find_substitute import flatten_substitute_candidate
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.workflow.process_commands import to_checkpoint_data
 from backend_logic2.workflow.process_graph import get_process_app
-from backend_logic2.integrations.erp_client import get_material_requests_with_items
-from backend_logic2.integrations.assignment_config import can_access_category
-from backend_logic2.integrations.erp_client import erp_get, erp_get_one
 
 
 router = APIRouter(prefix="/api/mr", tags=["MR Substitute Decision"])
-
-@router.get("/mr-list")
-def get_assigned_mr_list(
-    user_email: Optional[str] = Query(None, description="로그인한 사용자 이메일"),
-):
-    """
-    ERPNext에서 MR을 조회한 뒤 로그인 사용자의 카테고리(Item Group)에 해당하는 건만 필터링하여 반환
-    """
-    summaries = erp_get(
-        "Material Request",
-        fields=["name"],
-        order_by="modified desc",
-        limit=100,
-    )
-    raw_mrs = [
-        document
-        for row in summaries
-        if row.get("name")
-        for document in [erp_get_one("Material Request", str(row["name"]))]
-        if document
-    ]
-    filtered = []
-
-    for doc in raw_mrs:
-        items = doc.get("items", [])
-        if not items:
-            continue
-
-        first_item = items[0]
-        item_group = first_item.get("item_group", "Products")
-
-        # 담당 카테고리 매핑 검증
-        if can_access_category(item_group, user_email):
-            filtered.append(
-                {
-                    "mr_name": doc.get("name"),
-                    "status": doc.get("status"),
-                    "requester": doc.get("owner"),
-                    "item_code": first_item.get("item_code"),
-                    "item_name": first_item.get("item_name"),
-                    "item_group": item_group,
-                    "description": first_item.get("description"),
-                    "qty": first_item.get("qty"),
-                    "rate": first_item.get("rate", 0),
-                    "schedule_date": first_item.get("schedule_date"),
-                }
-            )
-
-    return {"status": "success", "data": filtered}
 
 
 def _require_client_script_secret(x_client_script_secret: Optional[str] = Header(default=None)):

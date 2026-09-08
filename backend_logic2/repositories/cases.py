@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from psycopg.types.json import Jsonb
 
 from procurement_db import get_connection
+from backend_logic2.integrations.assignment_config import get_category_manager
 
 
 class CaseConflictError(RuntimeError):
@@ -165,6 +166,9 @@ def upsert_case_from_material_request(material_request: dict[str, Any]) -> dict[
     item = items[0]
     requester_id = summary.get("requester")
 
+    item_group = summary.get("item_group")
+    assigned_user_id = get_category_manager(item_group)
+
     with get_connection() as connection:
         existing_case = connection.execute(
             """
@@ -191,6 +195,7 @@ def upsert_case_from_material_request(material_request: dict[str, Any]) -> dict[
                 and existing.get("item_name")
                 == (item.get("item_name") or item.get("item_code"))
                 and existing.get("requester_id") == requester_id
+                and existing.get("assigned_user_id") == assigned_user_id
             ):
                 return existing
         if recreated:
@@ -222,18 +227,20 @@ def upsert_case_from_material_request(material_request: dict[str, Any]) -> dict[
             """
             INSERT INTO procurement.procurement_case (
                 case_id, mr_name, thread_id, status, stage, item_code,
-                item_name, requester_id, summary, erp_modified_at
+                item_name, requester_id, assigned_user_id,
+                summary, erp_modified_at
             )
             VALUES (
                 gen_random_uuid(), %(mr_name)s, %(thread_id)s,
                 'AWAITING_MR_REVIEW', 'MR_REVIEW', %(item_code)s,
-                %(item_name)s, %(requester_id)s, %(summary)s,
-                %(erp_modified_at)s
+                %(item_name)s, %(requester_id)s, %(assigned_user_id)s,
+                %(summary)s, %(erp_modified_at)s
             )
             ON CONFLICT (mr_name) WHERE mr_name IS NOT NULL DO UPDATE SET
                 item_code = EXCLUDED.item_code,
                 item_name = EXCLUDED.item_name,
                 requester_id = EXCLUDED.requester_id,
+                assigned_user_id = EXCLUDED.assigned_user_id,
                 summary = EXCLUDED.summary,
                 erp_modified_at = EXCLUDED.erp_modified_at,
                 updated_at = now(),
@@ -250,6 +257,7 @@ def upsert_case_from_material_request(material_request: dict[str, Any]) -> dict[
                 "item_code": item.get("item_code"),
                 "item_name": item.get("item_name") or item.get("item_code"),
                 "requester_id": requester_id,
+                "assigned_user_id": assigned_user_id,
                 "summary": Jsonb(summary),
                 "erp_modified_at": _erp_datetime(material_request.get("modified")),
             },
@@ -427,6 +435,7 @@ def list_cases(
     *,
     status: str | None = None,
     stage: str | None = None,
+    assigned_user_id: str | None = None,
     include_closed: bool = False,
     limit: int = 100,
     offset: int = 0,
@@ -439,6 +448,11 @@ def list_cases(
     if stage:
         conditions.append("pc.stage = %(stage)s")
         params["stage"] = stage
+    if assigned_user_id:
+        conditions.append(
+            "LOWER(pc.assigned_user_id) = LOWER(%(assigned_user_id)s)"
+        )
+        params["assigned_user_id"] = assigned_user_id
     if not include_closed:
         conditions.append("pc.status NOT IN ('COMPLETED', 'CANCELLED', 'REJECTED')")
 
