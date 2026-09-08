@@ -937,6 +937,31 @@ def resume_task(
             task_presentation(payload)["task_type"]
             for payload in _interrupt_payloads(snapshot)
         }
+        if task["task_type"] == "pr_request" and task["task_type"] not in active_task_types:
+            persisted_snapshot = case.get("workflow_snapshot") or {}
+            persisted_interrupts = persisted_snapshot.get("interrupts") or []
+            persisted_types = {
+                task_presentation(payload)["task_type"]
+                for payload in persisted_interrupts
+                if isinstance(payload, dict)
+            }
+            if "pr_request" in persisted_types:
+                restored_values = dict(persisted_snapshot.get("values") or {})
+                restored_values.update({
+                    "entrypoint": "pr_request_recovery",
+                    "case_id": str(case["case_id"]),
+                    "mr_name": str(case["mr_name"]),
+                })
+                delete_thread_checkpoints(str(case["thread_id"] or case["mr_name"]))
+                app.invoke(
+                    restored_values,
+                    config=_config(case["thread_id"] or case["mr_name"]),
+                )
+                snapshot = app.get_state(_config(case["thread_id"] or case["mr_name"]))
+                active_task_types = {
+                    task_presentation(payload)["task_type"]
+                    for payload in _interrupt_payloads(snapshot)
+                }
         if task["task_type"] not in active_task_types:
             raise ValueError(
                 "현재 LangGraph 인터럽트와 대기 작업이 일치하지 않습니다. "

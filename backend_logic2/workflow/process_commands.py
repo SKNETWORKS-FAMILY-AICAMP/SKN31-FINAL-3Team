@@ -105,6 +105,16 @@ def route_entrypoint_command(state: PurchaseProcessState) -> Command:
             update={"entrypoint": "", "case_id": case_id, "status": "checking_bidding"},
             goto="decide_bidding_choice",
         )
+    if state.get("entrypoint") == "pr_request_recovery":
+        return Command(
+            update={
+                "entrypoint": "",
+                "case_id": case_id,
+                "status": "awaiting_pr_request",
+                "error": "",
+            },
+            goto="request_pr",
+        )
     return Command(update={"entrypoint": "", "case_id": case_id, "status": "checking_mr_item"}, goto="check_mr_item")
 
 
