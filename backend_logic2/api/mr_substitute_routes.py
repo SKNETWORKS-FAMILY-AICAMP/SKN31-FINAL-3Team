@@ -39,6 +39,44 @@ from backend_logic2.workflow.process_commands import to_checkpoint_data
 from backend_logic2.workflow.process_graph import get_process_app
 
 router = APIRouter(prefix="/api/mr", tags=["MR Substitute Decision"])
+erp_client = ERPClient()
+
+@router.get("/mr-list")
+def get_assigned_mr_list(
+    user_email: Optional[str] = Query(None, description="로그인한 사용자 이메일"),
+):
+    """
+    ERPNext에서 MR을 조회한 뒤 로그인 사용자의 카테고리(Item Group)에 해당하는 건만 필터링하여 반환
+    """
+    raw_mrs = erp_client.get_mr_list_with_items(limit=100)
+    filtered = []
+
+    for doc in raw_mrs:
+        items = doc.get("items", [])
+        if not items:
+            continue
+
+        first_item = items[0]
+        item_group = first_item.get("item_group", "Products")
+
+        # 담당 카테고리 매핑 검증
+        if can_access_category(item_group, user_email):
+            filtered.append(
+                {
+                    "mr_name": doc.get("name"),
+                    "status": doc.get("status"),
+                    "requester": doc.get("owner"),
+                    "item_code": first_item.get("item_code"),
+                    "item_name": first_item.get("item_name"),
+                    "item_group": item_group,
+                    "description": first_item.get("description"),
+                    "qty": first_item.get("qty"),
+                    "rate": first_item.get("rate", 0),
+                    "schedule_date": first_item.get("schedule_date"),
+                }
+            )
+
+    return {"status": "success", "data": filtered}
 
 
 def _require_client_script_secret(x_client_script_secret: Optional[str] = Header(default=None)):
