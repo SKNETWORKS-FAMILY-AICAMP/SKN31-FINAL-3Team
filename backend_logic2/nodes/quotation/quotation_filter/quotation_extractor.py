@@ -188,6 +188,22 @@ def _render_scanned_pdf(data: bytes, filename: str) -> list[VisionInput]:
     return images
 
 
+def _pdf_tables_to_text(tables: list[list[list[str]]]) -> str:
+    """pdf_table_extractor.py의 행x열 그리드를 LLM 프롬프트용 평문으로 렌더링한다.
+
+    " | "로 열을 구분해 좌표 정보 없이도 어느 값이 어느 열인지 LLM이 구분할 수
+    있게 한다. pypdf.extract_text()의 통짜 평문화(열 순서가 보장되지 않음)와
+    가장 크게 다른 지점이 여기다.
+    """
+    rendered = []
+    for index, grid in enumerate(tables, start=1):
+        lines = [f"[표 {index}]"]
+        for row in grid:
+            lines.append(" | ".join(cell.replace("\n", " ").strip() for cell in row))
+        rendered.append("\n".join(lines))
+    return "\n\n".join(rendered)
+
+
 def _pdf_to_source(data: bytes, filename: str) -> tuple[str, list[VisionInput], list[str]]:
     try:
         from pypdf import PdfReader
@@ -196,13 +212,53 @@ def _pdf_to_source(data: bytes, filename: str) -> tuple[str, list[VisionInput], 
 
     reader = PdfReader(io.BytesIO(data))
     pages = [(page.extract_text() or "").strip() for page in reader.pages]
-    text = "\n\n".join(f"[page {idx}]\n{page}" for idx, page in enumerate(pages, 1) if page)
-    evidence = [f"PDF {len(reader.pages)}페이지에서 텍스트 {len(text)}자 로컬 추출"]
-    if text.strip():
-        return text, [], evidence
+    flat_text = "\n\n".join(f"[page {idx}]\n{page}" for idx, page in enumerate(pages, 1) if page)
+    if not flat_text.strip():
+        evidence = [
+            f"PDF {len(reader.pages)}페이지에서 텍스트 0자 추출",
+            "디지털 텍스트가 없어 페이지를 이미지로 변환해 로컬 비전 모델 사용",
+        ]
+        return "[스캔 PDF]", _render_scanned_pdf(data, filename), evidence
 
-    evidence.append("디지털 텍스트가 없어 페이지를 이미지로 변환해 로컬 비전 모델 사용")
-    return "[스캔 PDF]", _render_scanned_pdf(data, filename), evidence
+    # 디지털 텍스트가 있으면(스캔본이 아니면) pypdf 평문화 대신 표 좌표 기반
+    # 추출을 우선 시도한다. pypdf 평문화는 표의 열 순서를 보장하지 않는다
+    # (실측: 견적서 표가 한 줄 텍스트로 뒤섞여 나오는 문제를 확인함).
+    try:
+        try:
+            from .pdf_table_extractor import (
+                extract_page_text_outside_tables,
+                extract_tables_from_pdf,
+            )
+        except ImportError:  # nodes 폴더에서 직접 실행할 때
+            from backend_logic2.nodes.quotation.quotation_filter.pdf_table_extractor import (
+                extract_page_text_outside_tables,
+                extract_tables_from_pdf,
+            )
+
+        tables = extract_tables_from_pdf(io.BytesIO(data))
+        outside_text = "\n\n".join(extract_page_text_outside_tables(io.BytesIO(data)))
+        if tables:
+            table_text = _pdf_tables_to_text(tables)
+            structured_text = "\n\n".join(part for part in (outside_text, table_text) if part.strip())
+            evidence = [
+                f"PDF {len(reader.pages)}페이지에서 디지털 텍스트 확인",
+                f"pdfplumber 좌표 기반 표 추출: 표 {len(tables)}개(병합 셀 반영, OCR 미사용)",
+            ]
+            return structured_text, [], evidence
+
+        # 표가 감지되지 않은 디지털 PDF(순수 텍스트 문서 등)는 표 밖 텍스트만으로 충분하다.
+        evidence = [
+            f"PDF {len(reader.pages)}페이지에서 디지털 텍스트 확인, 감지된 표 없음",
+        ]
+        return outside_text or flat_text, [], evidence
+    except Exception as exc:
+        # pdfplumber 처리 중 어떤 이유로든 실패하면(예: pdfplumber 미설치, 손상된
+        # 표 구조) 기존 pypdf 평문화로 안전하게 폴백한다 — 추출 자체가 죽지 않게 함.
+        evidence = [
+            f"PDF {len(reader.pages)}페이지에서 텍스트 {len(flat_text)}자 로컬 추출",
+            f"표 좌표 기반 추출 실패로 평문 추출로 폴백: {type(exc).__name__}: {exc}",
+        ]
+        return flat_text, [], evidence
 
 
 def _strip_html(value: str) -> str:
