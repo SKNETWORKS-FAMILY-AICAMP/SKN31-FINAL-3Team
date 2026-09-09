@@ -38,6 +38,7 @@ _TASK_STAGE = {
     "quotation_check": "QUOTATION_COLLECTION",
     "check_quotations": "QUOTATION_COLLECTION",
     "final_selection": "SUPPLIER_SELECTION",
+    "supplier_document_review": "SUPPLIER_DOCUMENT_REVIEW",
     "order_start": "ORDER_START",
     "po_approval": "PRE_PO_APPROVAL",
     "pr_request": "PR_REQUEST",

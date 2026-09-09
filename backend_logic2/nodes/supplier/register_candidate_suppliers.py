@@ -85,9 +85,19 @@ def register_candidate_suppliers(candidates: list, case_id: str = None) -> list:
                         "reason": f"기존 Supplier 이메일 갱신 실패: {response.text[:300]}",
                     })
                     continue
-                results.append({"name": name, "status": "updated"})
+                results.append({
+                    "name": name,
+                    "status": "updated",
+                    "is_new_supplier": bool(existing.get("custom_is_new_supplier")),
+                    "onboarding_status": (existing.get("custom_onboarding_status") or "APPROVED"),
+                })
             else:
-                results.append({"name": name, "status": "already_exists"})
+                results.append({
+                    "name": name,
+                    "status": "already_exists",
+                    "is_new_supplier": bool(existing.get("custom_is_new_supplier")),
+                    "onboarding_status": (existing.get("custom_onboarding_status") or "APPROVED"),
+                })
             continue
 
         payload = {
@@ -95,12 +105,21 @@ def register_candidate_suppliers(candidates: list, case_id: str = None) -> list:
             "supplier_group": "All Supplier Groups",
             "country": "Korea, Republic of",
             "supplier_type": "Company",
+            "email_id": email,
+            "custom_is_new_supplier": 1,
+            "custom_onboarding_status": "PROVISIONAL",
+            "custom_business_registration_verified": 0,
+            "custom_bankbook_verified": 0,
         }
-        payload["email_id"] = email
 
         try:
             created = erp_post("Supplier", payload)
-            results.append({"name": created["name"], "status": "created"})
+            results.append({
+                "name": created["name"],
+                "status": "created",
+                "is_new_supplier": True,
+                "onboarding_status": "PROVISIONAL",
+            })
         except ERPNextAPIError as e:
             results.append({"name": name, "status": "failed", "reason": str(e)})
 
