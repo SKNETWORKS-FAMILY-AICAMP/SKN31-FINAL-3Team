@@ -19,7 +19,7 @@ from backend_logic2.repositories import events as event_repository
 from backend_logic2.repositories import notifications as notification_repository
 from backend_logic2.repositories import tasks as task_repository
 from backend_logic2.workflow.process_commands import to_checkpoint_data
-from backend_logic2.workflow.process_graph import get_process_app
+from backend_logic2.workflow.process_graph import delete_thread_checkpoints, get_process_app
 
 from .workflow_projection import (
     project_graph_status,
@@ -67,6 +67,26 @@ def _delete_case_notifications_safely(case_id: str) -> None:
         notification_repository.delete_case_notifications(case_id)
     except Exception as exc:  # 알림 정리는 본 업무 트랜잭션과 분리한다.
         print(f"[workflow notification] 이전 알림 정리 실패: {exc}")
+
+
+def _delete_thread_checkpoint_safely(case: dict[str, Any]) -> None:
+    """Drop this case's LangGraph checkpoint once ERPNext no longer has the MR.
+
+    process_checkpoints.sqlite is a separate store keyed only by thread_id -
+    ERPNext deleting the Material Request never cleans it up on its own, and
+    leftover checkpoints from a deleted MR could later collide with a
+    recreated document reusing the same thread_id. Like notification cleanup,
+    a failure here must not roll back the case transition that already
+    succeeded.
+    """
+
+    thread_id = case.get("thread_id") or case.get("mr_name")
+    if not thread_id:
+        return
+    try:
+        delete_thread_checkpoints(str(thread_id))
+    except Exception as exc:  # 체크포인트 정리는 본 업무 트랜잭션과 분리한다.
+        print(f"[workflow checkpoint] thread_id={thread_id} 체크포인트 정리 실패: {exc}")
 
 
 def _material_request_changed_fields(
@@ -185,6 +205,7 @@ def _close_case_missing_in_erp(case: dict[str, Any], *, triggered_by: str) -> di
     )
     task_repository.cancel_pending_tasks(case_id, reason=reason)
     _delete_case_notifications_safely(case_id)
+    _delete_thread_checkpoint_safely(case)
     return closed
 
 

@@ -35,10 +35,49 @@ from pydantic import BaseModel
 from langgraph.types import Command
 
 from backend_logic2.nodes.mr.find_substitute import flatten_substitute_candidates
+from backend_logic2.repositories import cases as case_repository
 from backend_logic2.workflow.process_commands import to_checkpoint_data
 from backend_logic2.workflow.process_graph import get_process_app
 
 router = APIRouter(prefix="/api/mr", tags=["MR Substitute Decision"])
+erp_client = ERPClient()
+
+@router.get("/mr-list")
+def get_assigned_mr_list(
+    user_email: Optional[str] = Query(None, description="로그인한 사용자 이메일"),
+):
+    """
+    ERPNext에서 MR을 조회한 뒤 로그인 사용자의 카테고리(Item Group)에 해당하는 건만 필터링하여 반환
+    """
+    raw_mrs = erp_client.get_mr_list_with_items(limit=100)
+    filtered = []
+
+    for doc in raw_mrs:
+        items = doc.get("items", [])
+        if not items:
+            continue
+
+        first_item = items[0]
+        item_group = first_item.get("item_group", "Products")
+
+        # 담당 카테고리 매핑 검증
+        if can_access_category(item_group, user_email):
+            filtered.append(
+                {
+                    "mr_name": doc.get("name"),
+                    "status": doc.get("status"),
+                    "requester": doc.get("owner"),
+                    "item_code": first_item.get("item_code"),
+                    "item_name": first_item.get("item_name"),
+                    "item_group": item_group,
+                    "description": first_item.get("description"),
+                    "qty": first_item.get("qty"),
+                    "rate": first_item.get("rate", 0),
+                    "schedule_date": first_item.get("schedule_date"),
+                }
+            )
+
+    return {"status": "success", "data": filtered}
 
 
 def _require_client_script_secret(x_client_script_secret: Optional[str] = Header(default=None)):
@@ -51,6 +90,23 @@ def _require_client_script_secret(x_client_script_secret: Optional[str] = Header
 
 def _config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
+
+
+def _resolve_thread_id(mr_name: str) -> str:
+    """이 MR의 실제 LangGraph thread_id를 찾는다.
+
+    보통 thread_id는 mr_name과 같지만, 같은 MR 번호가 재사용(recreated)된
+    경우 workflow_service.py가 procurement_case.thread_id에 다른 값을 저장
+    해둔다(material_request_thread_id 참고). 여기서 그걸 확인 안 하고
+    mr_name을 그대로 thread_id로 쓰면, recreated된 MR에서는 항상 빈
+    체크포인트를 조회해 "지금 대체품 확인이 필요한 상태가 아닙니다"가
+    잘못 뜬다. workflow_service.py와 항상 같은 thread_id를 보도록 이 조회를
+    거친다.
+    """
+    case = case_repository.get_case_by_mr(mr_name)
+    if case and case.get("thread_id"):
+        return str(case["thread_id"])
+    return mr_name
 
 
 class SubstituteDecisionRequest(BaseModel):
@@ -68,7 +124,8 @@ def get_substitutes(mr_name: str, _auth=Depends(_require_client_script_secret)):
     실제로 resume될 때와 항상 정확히 같은 후보/번호를 보장하기 위해서.
     """
     app = get_process_app()
-    snapshot = app.get_state(_config(mr_name))
+    thread_id = _resolve_thread_id(mr_name)
+    snapshot = app.get_state(_config(thread_id))
     values = snapshot.values or {}
 
     if values.get("status") != "awaiting_substitute_selection":
@@ -139,15 +196,16 @@ def submit_substitute_decision(
         }
 
     app = get_process_app()
+    thread_id = _resolve_thread_id(mr_name)
     resume_data = {}
     if body.decision:
         resume_data["decision"] = body.decision
     if body.item_code:
         resume_data["item_code"] = body.item_code
 
-    app.invoke(Command(resume=resume_data), config=_config(mr_name))
+    app.invoke(Command(resume=resume_data), config=_config(thread_id))
 
-    new_values = (app.get_state(_config(mr_name)).values) or {}
+    new_values = (app.get_state(_config(thread_id)).values) or {}
     still_waiting = new_values.get("status") == "awaiting_substitute_selection"
 
     # ERPNext 요청자가 선택한 결과를 PostgreSQL에 투영하고 알림/SSE로

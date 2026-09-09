@@ -1,0 +1,2 @@
+# Validate with: visudo -cf /etc/sudoers.d/biddingflow-github-deploy
+biddingflow-deploy ALL=(root) NOPASSWD: /usr/local/sbin/biddingflow-github-dispatch

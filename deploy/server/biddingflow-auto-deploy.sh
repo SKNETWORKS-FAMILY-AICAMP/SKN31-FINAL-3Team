@@ -12,6 +12,28 @@ config_file=/etc/biddingflow/deploy.conf
 BACKEND_BRANCH=main
 FRONTEND_BRANCH=main
 
+deploy_component="${1:-all}"
+expected_sha="${2:-}"
+
+case "$deploy_component" in
+  all)
+    if [[ -n "$expected_sha" ]]; then
+      echo "An expected commit can only be used with backend or frontend deployment."
+      exit 64
+    fi
+    ;;
+  backend|frontend)
+    if [[ ! "$expected_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "A full 40-character commit SHA is required for $deploy_component deployment."
+      exit 64
+    fi
+    ;;
+  *)
+    echo "Usage: $0 [all | backend COMMIT_SHA | frontend COMMIT_SHA]"
+    exit 64
+    ;;
+esac
+
 if [[ -r "$config_file" ]]; then
   # shellcheck disable=SC1090
   source "$config_file"
@@ -24,9 +46,9 @@ chown root:ubuntu "$log_dir/deploy.log"
 chmod 664 "$log_dir/deploy.log"
 
 exec 9>"$state_dir/deploy.lock"
-if ! flock -n 9; then
-  echo "A BiddingFlow deployment is already running."
-  exit 0
+if ! flock -w 1200 9; then
+  echo "Timed out waiting for another BiddingFlow deployment to finish."
+  exit 75
 fi
 
 exec > >(tee -a "$log_dir/deploy.log") 2>&1
@@ -51,6 +73,8 @@ write_status() {
 {
   "result": "$result",
   "message": "$message",
+  "requested_component": "$deploy_component",
+  "requested_commit": "$expected_sha",
   "started_at": "$started_at",
   "finished_at": "$finished_at",
   "backend_commit": "$backend_sha",
@@ -69,6 +93,8 @@ on_error() {
 }
 trap 'on_error "$LINENO"' ERR
 
+write_status running "$deploy_component deployment started"
+
 deploy_backend() {
   local remote_sha deployed_sha previous_sha
 
@@ -76,6 +102,11 @@ deploy_backend() {
     "+refs/heads/$BACKEND_BRANCH:refs/remotes/origin/$BACKEND_BRANCH"
   remote_sha="$(as_ubuntu git -C "$backend_dir" rev-parse "origin/$BACKEND_BRANCH")"
   deployed_sha="$(cat "$state_dir/backend.sha" 2>/dev/null || true)"
+
+  if [[ -n "$expected_sha" && "$remote_sha" != "$expected_sha" ]]; then
+    echo "Backend main moved before deployment: expected $expected_sha, found $remote_sha"
+    return 65
+  fi
 
   if [[ "$remote_sha" == "$deployed_sha" ]]; then
     echo "Backend is current: $remote_sha"
@@ -126,6 +157,11 @@ deploy_frontend() {
     "+refs/heads/$FRONTEND_BRANCH:refs/remotes/origin/$FRONTEND_BRANCH"
   remote_sha="$(as_ubuntu git -C "$frontend_dir" rev-parse "origin/$FRONTEND_BRANCH")"
   deployed_sha="$(cat "$state_dir/frontend.sha" 2>/dev/null || true)"
+
+  if [[ -n "$expected_sha" && "$remote_sha" != "$expected_sha" ]]; then
+    echo "Frontend main moved before deployment: expected $expected_sha, found $remote_sha"
+    return 65
+  fi
 
   if [[ "$remote_sha" == "$deployed_sha" ]]; then
     echo "Frontend is current: $remote_sha"
@@ -181,7 +217,18 @@ deploy_frontend() {
   echo "Frontend deployment succeeded: $remote_sha"
 }
 
-deploy_backend
-deploy_frontend
-write_status success "deployment completed"
+case "$deploy_component" in
+  all)
+    deploy_backend
+    deploy_frontend
+    ;;
+  backend)
+    deploy_backend
+    ;;
+  frontend)
+    deploy_frontend
+    ;;
+esac
+
+write_status success "$deploy_component deployment completed"
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] deployment check completed"

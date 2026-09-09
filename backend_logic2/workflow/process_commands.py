@@ -46,6 +46,7 @@ class PurchaseProcessState(TypedDict, total=False):
     supplier_candidates: list[dict[str, Any]]
     supplier_registration_results: list[dict[str, Any]]
     selected_suppliers: list[str]
+    custom_rfq_suppliers: list[str]
     quotation_deadline: str
     rfq_name: str
     quotation_ranking: list[dict[str, Any]]
@@ -505,11 +506,19 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
             goto="select_rfq_targets",
         )
     selected = [row["name"] for row in registrations]
+    custom_rfq_suppliers = [
+        str(result.get("name") or "").strip()
+        for candidate, result in zip(selected_candidates, registrations)
+        if candidate.get("source") == "manual"
+        and result.get("status") != "failed"
+        and str(result.get("name") or "").strip()
+    ]
     print(f"  등록 완료: {selected}\n")
 
     return Command(
         update={
             "selected_suppliers": selected,
+            "custom_rfq_suppliers": custom_rfq_suppliers,
             "quotation_deadline": str(answer.get("quotation_deadline") or "").strip(),
             "supplier_candidates": candidates,
             "supplier_registration_results": registrations,
@@ -527,22 +536,27 @@ def create_rfq_command(state: PurchaseProcessState) -> Command:
     ERPNext 자체 로직(Suppliers 하위테이블의 send_email 체크박스)이
     이메일 발송을 트리거하는 구조라, 파이썬 쪽에서 TEST_MODE를 확인 안
     하고 그냥 send_email=True로 넘기면 ERPNext가 실제로 메일을 보내버릴
-    수 있음. 여기서 is_test_mode()로 명시적으로 확인해서, TEST_MODE=true면
-    무조건 send_email=False로 강제함 - 이 값이 사람 입력이나 다른 로직으로
-    덮어써질 여지를 아예 없앰."""
-    from backend_logic2.integrations.erp_client import is_test_mode
+    수 있음. TEST_MODE=true면 전체를 차단하고, custom_only면 이번 RFQ에서
+    사용자가 직접 추가한 공급사 행만 발송하며, false일 때만 전체 발송한다."""
+    from backend_logic2.integrations.erp_client import get_email_delivery_policy
     from backend_logic2.nodes.rfq.send_rfq import create_and_send_rfq
 
-    test_mode = is_test_mode()
-    send_email = not test_mode  # TEST_MODE=true면 무조건 False, 예외 없음
+    email_policy = get_email_delivery_policy()
+    custom_rfq_suppliers = list(dict.fromkeys(state.get("custom_rfq_suppliers") or []))
+    send_email = email_policy != "block_all"
+    email_supplier_names = custom_rfq_suppliers if email_policy == "custom_only" else None
 
     print(f"\n[RFQ 생성] '{state['mr_name']}' -> 대상: {state['selected_suppliers']}")
-    print(f"  환경: {'TEST_MODE (실제 이메일 발송 안 함)' if test_mode else '운영 모드 (실제 이메일 발송됨)'}")
+    if email_policy == "custom_only":
+        print(f"  환경: CUSTOM_ONLY (직접 추가 RFQ 수신처: {custom_rfq_suppliers})")
+    else:
+        print(f"  환경: {'TEST_MODE (실제 이메일 발송 안 함)' if email_policy == 'block_all' else '운영 모드 (실제 이메일 발송됨)'}")
 
     rfq = create_and_send_rfq(
         state["mr_name"],
         state["selected_suppliers"],
         send_email=send_email,
+        email_supplier_names=email_supplier_names,
         submit=True,
     )
 
@@ -553,8 +567,13 @@ def create_rfq_command(state: PurchaseProcessState) -> Command:
         # 응답할 수 있게 한다.
         raise RuntimeError("RFQ 생성 또는 발송에 실패했습니다.")
 
-    print(f"  -> RFQ 생성 완료: {rfq['name']}"
-          f" (이메일 {'발송 안 함, TEST_MODE' if test_mode else '실제 발송됨'})\n")
+    if email_policy == "block_all":
+        delivery_result = "발송 안 함, TEST_MODE"
+    elif email_policy == "custom_only":
+        delivery_result = f"직접 추가 {len(custom_rfq_suppliers)}곳만 실제 발송"
+    else:
+        delivery_result = "선택 대상 전체 실제 발송"
+    print(f"  -> RFQ 생성 완료: {rfq['name']} (이메일 {delivery_result})\n")
 
     return Command(
         update={

@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Literal, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -39,11 +39,24 @@ class ERPNextAPIError(Exception):
     pass
 
 
+EmailDeliveryPolicy = Literal["block_all", "custom_only", "send_all"]
+
+
+def get_email_delivery_policy() -> EmailDeliveryPolicy:
+    """Resolve the three-state, fail-closed outbound email policy."""
+    value = os.getenv("TEST_MODE", "true").strip().lower()
+    if value == "false":
+        return "send_all"
+    if value in {"custom_only", "custom-only", "manual_only", "manual-only"}:
+        return "custom_only"
+    return "block_all"
+
+
 def is_test_mode() -> bool:
-    """Return the single TEST_MODE policy used by every mail-sending node."""
+    """Return True unless unrestricted production email is explicitly enabled."""
     # 환경 변수가 누락되면 실제 발송보다 차단이 안전하다. 운영 전환은
     # 반드시 TEST_MODE=false를 명시한 경우에만 허용한다.
-    return os.getenv("TEST_MODE", "true").strip().lower() != "false"
+    return get_email_delivery_policy() != "send_all"
 
 
 def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None, start=None):
@@ -575,6 +588,30 @@ def get_material_request_detail(mr_name):
     result = dict(material_request)
     result["_attachments"] = attachments
     return result
+
+def get_material_requests_with_items(self, limit: int = 50):
+    """ERPNext에서 Material Request 목록 및 하위 품목 정보를 가져옴"""
+    # 1. MR 기본 정보 조회
+    url = f"{self.base_url}/api/resource/Material Request"
+    params = {
+        "fields": '["name", "material_request_type", "status", "owner", "transaction_date"]',
+        "order_by": "creation desc",
+        "limit_page_length": limit,
+    }
+    res = self.session.get(url, params=params)
+    if res.status_code != 200:
+        return []
+
+    mr_data = res.json().get("data", [])
+
+    # 2. 각 MR의 세부 품목(아이템 그룹, 아이템명 등) 확인
+    detailed_mrs = []
+    for mr in mr_data:
+        doc_res = self.session.get(f"{url}/{mr['name']}")
+        if doc_res.status_code == 200:
+            detailed_mrs.append(doc_res.json().get("data", {}))
+
+    return detailed_mrs
 
 
 # ============================================================
