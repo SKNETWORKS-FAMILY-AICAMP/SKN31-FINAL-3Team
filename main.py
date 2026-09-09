@@ -17,6 +17,7 @@ load_dotenv(dotenv_path=ENV_FILE)
 
 from auth_service.dependencies import CurrentUser, require_authenticated_user
 from auth_service.router import router as auth_router
+from backend_logic2.assistant.api import router as assistant_router
 from backend_logic2.api.mr_substitute_routes import router as mr_substitute_router
 from backend_logic2.api.procurement_routes import (
     router as procurement_router,
@@ -348,6 +349,10 @@ app.include_router(
 app.include_router(mr_substitute_router)
 app.include_router(
     procurement_router,
+    dependencies=[Depends(require_authenticated_user)],
+)
+app.include_router(
+    assistant_router,
     dependencies=[Depends(require_authenticated_user)],
 )
 app.include_router(erpnext_webhook_router)
