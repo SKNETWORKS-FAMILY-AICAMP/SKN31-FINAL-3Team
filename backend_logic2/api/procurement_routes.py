@@ -31,6 +31,10 @@ from backend_logic2.nodes.item.item_spec_validation import (
 )
 from backend_logic2.services import quotation_service
 from procurement_db.config import require_database_url
+from backend_logic2.integrations.assignment_config import (
+    is_super_admin,
+    is_same_user,
+)
 
 
 router = APIRouter(prefix="/api/procurement", tags=["Procurement Workflow"])
@@ -51,8 +55,49 @@ class ExtendQuotationDeadlineRequest(BaseModel):
 
 
 def _user_id(current_user: dict[str, Any]) -> str:
-    return str(current_user.get("erp_user_id") or current_user.get("id") or "unknown")
+    return str(
+        current_user.get("erp_user_id")
+        or current_user.get("email")
+        or current_user.get("id")
+        or "unknown"
+    ).strip()
 
+def _can_access_case(
+    case: dict[str, Any],
+    current_user: dict[str, Any],
+) -> bool:
+    actor = _user_id(current_user)
+
+    # 관리자
+    if is_super_admin(actor):
+        return True
+
+    # 해당 Case 담당자
+    return is_same_user(
+        case.get("assigned_user_id"),
+        actor,
+    )
+
+
+def _require_case_access(
+    case_id: str,
+    current_user: dict[str, Any],
+) -> dict[str, Any]:
+    case = case_repository.get_case(case_id)
+
+    if case is None:
+        raise HTTPException(
+            status_code=404,
+            detail="구매 작업을 찾을 수 없습니다.",
+        )
+
+    if not _can_access_case(case, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="이 구매 요청의 담당자가 아닙니다.",
+        )
+
+    return case
 
 @router.post("/cases/sync-drafts")
 def sync_draft_cases(
@@ -93,30 +138,60 @@ def get_cases(
     current_user: CurrentUser,
     case_status: str | None = Query(default=None, alias="status"),
     stage: str | None = None,
+
+    # 기본값 True:
+    # 로그인하면 자기 담당 MR만 반환
+    assigned_to_me: bool = Query(default=True),
+
     include_closed: bool = False,
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
+    actor = _user_id(current_user)
+
+    # 관리자 또는 "내 담당" 필터 해제 시 전체 조회
+    if is_super_admin(actor) or not assigned_to_me:
+        assigned_user_id = None
+    else:
+        assigned_user_id = actor
+
     try:
         rows = case_repository.list_cases(
             status=case_status,
             stage=stage,
+            assigned_user_id=assigned_user_id,
             include_closed=include_closed,
             limit=limit,
             offset=offset,
         )
-    except psycopg.Error as exc:
-        raise HTTPException(status_code=503, detail="구매 작업 저장소에 연결할 수 없습니다.") from exc
-    return {"items": rows, "count": len(rows), "limit": limit, "offset": offset}
 
+    except psycopg.Error as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="구매 작업 저장소에 연결할 수 없습니다.",
+        ) from exc
+
+    return {
+        "items": rows,
+        "count": len(rows),
+        "limit": limit,
+        "offset": offset,
+        "assigned_to_me": assigned_to_me,
+    }
 
 @router.get("/cases/{case_id}")
 def get_case(case_id: str, current_user: CurrentUser):
     row = case_repository.get_case(case_id)
+
     if row is None:
-        raise HTTPException(status_code=404, detail="구매 작업을 찾을 수 없습니다.")
+        raise HTTPException(
+            status_code=404,
+            detail="구매 작업을 찾을 수 없습니다.",
+        )
+
     row["tasks"] = task_repository.list_tasks(case_id=case_id)
     row["delivery"] = delivery_repository.get_delivery_by_case(case_id)
+
     return row
 
 
@@ -155,7 +230,10 @@ def download_material_request_attachment(
 
 @router.post("/cases/{case_id}/start", status_code=status.HTTP_202_ACCEPTED)
 def start_case(case_id: str, background_tasks: BackgroundTasks, current_user: CurrentUser):
+    
+    _require_case_access(case_id, current_user)
     actor = _user_id(current_user)
+    
     try:
         queued = workflow_service.queue_case_start(case_id, triggered_by=actor)
     except LookupError as exc:
@@ -170,6 +248,9 @@ def start_case(case_id: str, background_tasks: BackgroundTasks, current_user: Cu
 
 @router.post("/cases/{case_id}/reject")
 def reject_case(case_id: str, body: RejectCaseRequest, current_user: CurrentUser):
+    
+    _require_case_access(case_id, current_user)
+
     try:
         return workflow_service.reject_case(
             case_id,
@@ -190,6 +271,8 @@ def extend_quotation_deadline(
     body: ExtendQuotationDeadlineRequest,
     current_user: CurrentUser,
 ):
+    _require_case_access(case_id, current_user)
+
     try:
         return workflow_service.extend_quotation_deadline(
             case_id,
@@ -214,6 +297,19 @@ def get_tasks(
 
 @router.post("/tasks/{task_id}/answer")
 def answer_task(task_id: str, body: ResumeTaskRequest, current_user: CurrentUser):
+    task = task_repository.get_task(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="대기 작업을 찾을 수 없습니다.",
+        )
+
+    _require_case_access(
+        str(task["case_id"]),
+        current_user,
+    )
+    
     try:
         return workflow_service.resume_task(
             task_id,

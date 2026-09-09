@@ -42,6 +42,8 @@ class PurchaseProcessState(TypedDict, total=False):
     bidding_items: list[str]
     direct_purchase: bool
     direct_purchase_items: dict[str, dict[str, Any]]
+    force_bidding: bool
+    order_started: bool
     existing_supplier_candidates: list[dict[str, Any]]
     supplier_candidates: list[dict[str, Any]]
     supplier_registration_results: list[dict[str, Any]]
@@ -104,6 +106,16 @@ def route_entrypoint_command(state: PurchaseProcessState) -> Command:
         return Command(
             update={"entrypoint": "", "case_id": case_id, "status": "checking_bidding"},
             goto="decide_bidding_choice",
+        )
+    if state.get("entrypoint") == "pr_request_recovery":
+        return Command(
+            update={
+                "entrypoint": "",
+                "case_id": case_id,
+                "status": "awaiting_pr_request",
+                "error": "",
+            },
+            goto="request_pr",
         )
     return Command(update={"entrypoint": "", "case_id": case_id, "status": "checking_mr_item"}, goto="check_mr_item")
 
@@ -171,7 +183,7 @@ def substitute_selection_command(state: PurchaseProcessState) -> Command:
     if _decision_value(answer) == "new_purchase" or choice == "new_purchase":
         _submit_mr_for_purchase(state["mr_name"])
         return Command(
-            update={"status": "checking_bidding", "error": ""},
+            update={"force_bidding": True, "direct_purchase": False, "status": "checking_bidding", "error": ""},
             goto="decide_bidding_choice",
         )
 
@@ -265,6 +277,8 @@ def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
     mr_name = state["mr_name"]
     bidding_results = decide_bidding(mr_name)
     bidding_items = [code for code, info in bidding_results.items() if info["needs_bidding"]]
+    if state.get("force_bidding"):
+        bidding_items = list(bidding_results)
 
     if not bidding_items:
         cancellation_reason = _cancel_urgent_mr_without_supplier(mr_name, bidding_results)
@@ -315,19 +329,19 @@ def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
                 goto=END,
             )
 
-        # 비딩을 생략해도 PO는 법적 효력이 있으므로 즉시 생성하지 않는다.
-        # 최근 확정 거래를 구매 근거로 저장하고 구매 담당자의 최종 승인을
-        # 받은 뒤 direct PO 생성 노드로 진행한다.
+        # 비딩을 생략하더라도 협력사 선정 결과를 구매 담당자가 화면에서
+        # 확인하고 '발주 진행'을 눌러야 PO 관리 단계로 이동한다.
         return Command(
             update={
                 "bidding_results": bidding_results,
                 "direct_purchase": True,
                 "direct_purchase_items": direct_purchase_items,
                 "selected_supplier": next(iter(direct_suppliers)),
-                "status": "awaiting_pr_request",
+                "order_started": False,
+                "status": "supplier_selected",
                 "error": "",
             },
-            goto="request_pr",
+            goto="await_order_start",
         )
 
     return Command(
@@ -701,6 +715,23 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
 def await_order_start_command(state: PurchaseProcessState) -> Command:
     """Wait for 발주 진행, then move the case to PO management."""
 
+    if (
+        state.get("direct_purchase")
+        and state.get("substitute_results")
+        and not state.get("order_started")
+    ):
+        return Command(
+            update={
+                "force_bidding": True,
+                "direct_purchase": False,
+                "direct_purchase_items": {},
+                "selected_supplier": "",
+                "status": "checking_bidding",
+                "error": "",
+            },
+            goto="decide_bidding_choice",
+        )
+
     answer = interrupt({
         "type": "order_start",
         "mr_name": state["mr_name"],
@@ -715,7 +746,7 @@ def await_order_start_command(state: PurchaseProcessState) -> Command:
             goto="await_order_start",
         )
     return Command(
-        update={"status": "awaiting_pr_request", "error": ""},
+        update={"order_started": True, "status": "awaiting_pr_request", "error": ""},
         goto="request_pr",
     )
 
@@ -749,6 +780,11 @@ def po_approval_command(state: PurchaseProcessState) -> Command:
 
 def request_pr_command(state: PurchaseProcessState) -> Command:
     """Wait for the buyer to send the supplier PR from PO management."""
+    if not state.get("order_started"):
+        return Command(
+            update={"status": "supplier_selected", "error": "발주 진행을 먼저 눌러 주세요."},
+            goto="await_order_start",
+        )
     answer = interrupt({
         "type": "pr_request",
         "case_id": state["case_id"],
