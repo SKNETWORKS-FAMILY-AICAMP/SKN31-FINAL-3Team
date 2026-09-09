@@ -388,6 +388,7 @@ def erp_get_document_email_communications(doctype, name):
             "recipients",
             "cc",
             "subject",
+            "content",
             "creation",
             "communication_date",
         ],
@@ -412,6 +413,53 @@ def erp_add_comment(doctype, name, comment_text):
     if res.status_code not in (200, 201):
         raise ERPNextAPIError(f"COMMENT {doctype}/{name}: {res.status_code} - {res.text[:500]}")
     return res.json().get("data")
+
+
+def erp_get_communication_attachments(
+    communication_name: str,
+) -> list[dict]:
+    """Communication에 연결된 첨부파일 목록을 반환한다."""
+    return erp_get(
+        "File",
+        filters=[
+            ["attached_to_doctype", "=", "Communication"],
+            ["attached_to_name", "=", communication_name],
+            ["is_folder", "=", 0],
+        ],
+        fields=[
+            "name",
+            "file_name",
+            "file_url",
+            "is_private",
+            "file_size",
+            "content_hash",
+        ],
+        order_by="creation asc",
+        limit=100,
+    ) or []
+
+
+def erp_get_rfq_received_communications(
+    rfq_name: str,
+) -> list[dict]:
+    """RFQ에 연결된 수신 이메일과 첨부파일을 반환한다."""
+    communications = erp_get_document_email_communications(
+        "Request for Quotation",
+        rfq_name,
+    )
+
+    received = []
+    for communication in communications:
+        if communication.get("sent_or_received") != "Received":
+            continue
+
+        row = dict(communication)
+        row["attachments"] = erp_get_communication_attachments(
+            communication["name"]
+        )
+        received.append(row)
+
+    return received
 
 
 def erp_assign_to(doctype, name, assign_to_email, description=None, priority="Medium"):

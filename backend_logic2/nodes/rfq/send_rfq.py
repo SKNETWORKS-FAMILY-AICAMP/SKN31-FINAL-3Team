@@ -27,12 +27,44 @@ from backend_logic2.integrations.erp_client import (
     erp_submit,
 )
 
-DEFAULT_MESSAGE = (
-    "견적 부탁드립니다.<br><br>"
-    "{{ portal_link }}<br><br>"
-    "처음 거래하시는 경우, 아래 버튼으로 포털 비밀번호를 설정해주세요.<br>"
-    "{{ update_password_link }}"
-)
+DEFAULT_MESSAGE = """
+<p>견적 부탁드립니다.</p>
+
+<p>{{ portal_link }}</p>
+
+<hr>
+
+<h3>[신규 업체 필독]</h3>
+
+<p>
+당사와 최초 거래하는 업체는 견적 회신 시 아래 서류를
+함께 첨부해 주시기 바랍니다.
+</p>
+
+<p><strong>필수 제출서류</strong></p>
+<ol>
+  <li>사업자등록증 사본</li>
+  <li>통장사본</li>
+</ol>
+
+<p><strong>필요 시 추가 요청서류</strong></p>
+<ul>
+  <li>법인인감증명서</li>
+  <li>사용인감계</li>
+  <li>법인등기부등본</li>
+  <li>국세/지방세 완납증명서</li>
+</ul>
+
+<p>
+※ 기존 등록 업체는 제출하지 않으셔도 됩니다.<br>
+※ 제출서류 확인 및 거래처 등록이 완료된 후 발주가 진행됩니다.
+</p>
+
+<p>
+처음 거래하시는 경우 아래 버튼으로 포털 비밀번호를 설정해주세요.<br>
+{{ update_password_link }}
+</p>
+"""
 
 
 def create_rfq(

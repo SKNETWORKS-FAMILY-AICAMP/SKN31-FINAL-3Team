@@ -40,6 +40,7 @@ from .process_commands import (
     decide_bidding_choice_command,
     final_selection_command,
     handle_pr_rejection_command,
+    inspect_selected_supplier_documents_command,
     po_approval_command,
     request_pr_command,
     resolve_suppliers_choice_command,
@@ -47,6 +48,7 @@ from .process_commands import (
     search_new_suppliers_command,
     select_rfq_targets_command,
     substitute_selection_command,
+    review_supplier_documents_command,
 )
 
 
@@ -103,6 +105,20 @@ def build_process_graph(*, checkpointer: Any = None):
     graph.add_node("create_rfq", _with_status_log("create_rfq", create_rfq_command))
     graph.add_node("check_quotations", _with_status_log("check_quotations", check_quotations_command))
     graph.add_node("final_selection", _with_status_log("final_selection", final_selection_command))
+    graph.add_node(
+        "inspect_selected_supplier_documents",
+        _with_status_log(
+            "inspect_selected_supplier_documents",
+            inspect_selected_supplier_documents_command,
+        ),
+    )
+    graph.add_node(
+        "review_supplier_documents",
+        _with_status_log(
+            "review_supplier_documents",
+            review_supplier_documents_command,
+        ),
+    )
     graph.add_node("await_order_start", _with_status_log("await_order_start", await_order_start_command))
     graph.add_node("po_approval", _with_status_log("po_approval", po_approval_command))
     graph.add_node("request_pr", _with_status_log("request_pr", request_pr_command))

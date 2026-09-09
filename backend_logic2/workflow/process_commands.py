@@ -47,6 +47,9 @@ class PurchaseProcessState(TypedDict, total=False):
     existing_supplier_candidates: list[dict[str, Any]]
     supplier_candidates: list[dict[str, Any]]
     supplier_registration_results: list[dict[str, Any]]
+    supplier_document_review: dict[str, Any]
+    supplier_documents_approved: bool
+    supplier_onboarding_note: str
     selected_suppliers: list[str]
     custom_rfq_suppliers: list[str]
     quotation_deadline: str
@@ -705,6 +708,9 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
         update={
             "selected_supplier": supplier,
             "requested_supplier": "",
+            "supplier_document_review": {},
+            "supplier_documents_approved": False,
+            "supplier_onboarding_note": "",
             "status": "supplier_selected",
             "error": "",
         },
@@ -714,6 +720,36 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
 
 def await_order_start_command(state: PurchaseProcessState) -> Command:
     """Wait for 발주 진행, then move the case to PO management."""
+
+    selected_supplier = str(state.get("selected_supplier") or "").strip()
+    selected_registration = next(
+        (
+            row
+            for row in state.get("supplier_registration_results") or []
+            if str(row.get("name") or "").strip() == selected_supplier
+        ),
+        {},
+    )
+    requires_document_review = bool(
+        selected_registration.get("is_new_supplier")
+        or selected_registration.get("onboarding_status") == "PROVISIONAL"
+    )
+
+    # 견적을 통해 새로 선정된 업체는 발주 시작 전에 서류 검토를 완료해야 한다.
+    # 직접구매 공급사는 과거 PO 실적에서 가져온 기존 등록 업체이므로 제외한다.
+    if (
+        not state.get("direct_purchase")
+        and requires_document_review
+        and not state.get("supplier_documents_approved")
+        and not state.get("supplier_document_review")
+    ):
+        return Command(
+            update={
+                "status": "checking_supplier_documents",
+                "error": "",
+            },
+            goto="inspect_selected_supplier_documents",
+        )
 
     if (
         state.get("direct_purchase")
@@ -931,6 +967,21 @@ def create_po_command(state: PurchaseProcessState) -> Command:
         create_and_send_po,
     )
     from backend_logic2.pr import repository as pr_repository
+    from backend_logic2.integrations.erp_client import erp_get_one
+    from backend_logic2.nodes.supplier.onboarding import (
+        is_existing_registered_supplier,
+    )
+
+    supplier_id = str(state.get("selected_supplier") or "").strip()
+
+    supplier_doc = erp_get_one("Supplier", supplier_id)
+
+    if not is_existing_registered_supplier(supplier_doc):
+        raise RuntimeError(
+            f"신규 업체 '{supplier_id}'의 제출서류 확인 및 "
+            "정식 거래처 등록이 완료되지 않아 "
+            "PO를 생성할 수 없습니다."
+        )
 
     direct_purchase = bool(state.get("direct_purchase"))
     rfq_name = state.get("rfq_name")
@@ -996,4 +1047,140 @@ def create_po_command(state: PurchaseProcessState) -> Command:
     return Command(
         update={"po_name": po["name"], "status": "po_sent", "error": ""},
         goto=END,
+    )
+
+# 서류 조회
+def inspect_selected_supplier_documents_command(
+    state: PurchaseProcessState,
+) -> Command:
+    from backend_logic2.nodes.supplier.onboarding import (
+        inspect_supplier_documents,
+    )
+
+    result = inspect_supplier_documents(
+        state["rfq_name"],
+        state["selected_supplier"],
+    )
+
+    if not result["review_required"]:
+        return Command(
+            update={
+                "supplier_document_review": result,
+                "supplier_documents_approved": True,
+                "status": "supplier_selected",
+                "error": "",
+            },
+            goto="await_order_start",
+        )
+
+    return Command(
+        update={
+            "supplier_document_review": result,
+            "supplier_documents_approved": False,
+            "status": "awaiting_supplier_document_review",
+            "error": "",
+        },
+        goto="review_supplier_documents",
+    )
+
+
+# 담당자 검토
+def review_supplier_documents_command(
+    state: PurchaseProcessState,
+) -> Command:
+    review = state.get(
+        "supplier_document_review"
+    ) or {}
+
+    answer = interrupt({
+        "type": "supplier_document_review",
+        "supplier": state["selected_supplier"],
+        "rfq_name": state["rfq_name"],
+        "documents": review.get("documents", []),
+        "missing_documents": review.get(
+            "missing_documents",
+            [],
+        ),
+        "required_documents": [
+            "business_registration",
+            "bankbook",
+        ],
+        "optional_documents": [
+            "corporate_seal_certificate",
+            "seal_usage_certificate",
+            "corporate_registry",
+            "tax_clearance_certificate",
+        ],
+        "allowed": [
+            "approve",
+            "recheck",
+            "reject",
+        ],
+    })
+
+    decision = _decision_value(answer)
+    answer_data = answer if isinstance(answer, dict) else {}
+
+    if decision == "recheck":
+        return Command(
+            update={
+                "status": "checking_supplier_documents",
+                "error": "",
+            },
+            goto="inspect_selected_supplier_documents",
+        )
+
+    if decision == "approve":
+        from backend_logic2.nodes.supplier.onboarding import (
+            approve_supplier_onboarding,
+        )
+
+        approve_supplier_onboarding(
+            state["selected_supplier"],
+            documents_complete=bool(review.get("complete")),
+            business_registration_verified=bool(
+                answer_data.get(
+                    "business_registration_verified"
+                )
+            ),
+            bankbook_verified=bool(
+                answer_data.get("bankbook_verified")
+            ),
+            note=str(answer_data.get("note") or ""),
+        )
+
+        return Command(
+            update={
+                "supplier_documents_approved": True,
+                "supplier_onboarding_note": str(
+                    answer_data.get("note") or ""
+                ),
+                "status": "supplier_selected",
+                "error": "",
+            },
+            goto="await_order_start",
+        )
+
+    if decision == "reject":
+        return Command(
+            update={
+                "selected_supplier": "",
+                "status": "awaiting_final_selection",
+                "error": (
+                    "신규 업체 제출서류가 "
+                    "반려되었습니다."
+                ),
+            },
+            goto="final_selection",
+        )
+
+    return Command(
+        update={
+            "status": "awaiting_supplier_document_review",
+            "error": (
+                "approve, recheck, reject 중 "
+                "하나를 선택하세요."
+            ),
+        },
+        goto="review_supplier_documents",
     )
