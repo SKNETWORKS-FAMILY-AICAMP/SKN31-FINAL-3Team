@@ -10,6 +10,7 @@ from langgraph.types import Command
 
 from backend_logic2.integrations.erp_client import (
     ERPNextAPIError,
+    erp_cancel,
     get_material_request_detail,
 )
 from backend_logic2.nodes.mr.read_material_request import get_pending_material_requests
@@ -1042,6 +1043,22 @@ def reject_case(case_id: str, *, reason: str, rejected_by: str) -> dict[str, Any
     case = case_repository.get_case(case_id)
     if case is None:
         raise LookupError(case_id)
+
+    # ERPNext는 MR이 Request for Quotation에 링크되어 있으면 MR을
+    # 취소/삭제하지 못하게 막는다(LinkExistsError). 비딩이 RFQ 단계까지
+    # 진행됐던 케이스(예: 공급사 PR 거절 후 취소)는 MR을 취소하기 전에
+    # 케이스에 저장된 RFQ부터 먼저 취소해야 한다.
+    snapshot = case.get("workflow_snapshot") or {}
+    values = snapshot.get("values") if isinstance(snapshot, dict) else {}
+    rfq_name = str((values or {}).get("rfq_name") or "").strip()
+    if rfq_name:
+        try:
+            erp_cancel("Request for Quotation", rfq_name)
+        except ERPNextAPIError as exc:
+            raise ERPNextAPIError(
+                f"MR 취소 실패: 연결된 RFQ({rfq_name})를 먼저 취소하지 못했습니다. {exc}"
+            ) from exc
+
     reject_material_request(case["mr_name"], reason, reason_code="BUYER_REJECTED")
     task_repository.cancel_pending_tasks(case_id, reason=reason)
     _delete_case_notifications_safely(case_id)
