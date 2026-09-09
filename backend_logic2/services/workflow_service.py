@@ -11,10 +11,13 @@ from langgraph.types import Command
 from backend_logic2.integrations.erp_client import (
     ERPNextAPIError,
     erp_cancel,
+    erp_discard_draft,
+    erp_get_one,
     get_material_request_detail,
 )
 from backend_logic2.nodes.mr.read_material_request import get_pending_material_requests
 from backend_logic2.nodes.mr.reject_material_request import reject_material_request
+from backend_logic2.nodes.quotation.sq_evaluation import get_quotations_for_rfq
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.repositories import events as event_repository
 from backend_logic2.repositories import notifications as notification_repository
@@ -1040,24 +1043,47 @@ def resume_task(
         return projected
 
 
+def _cancel_or_discard_erp_doc(doctype: str, name: str) -> None:
+    """docstatus에 맞는 방식으로 문서를 정리한다(Draft=Discard, Submit=Cancel).
+
+    ERPNext는 Draft(docstatus=0) 문서를 docstatus=2로 바로 바꿀 수 없어
+    표준 Cancel이 아니라 Discard를 써야 한다. 이미 취소된 문서는 그대로 둔다.
+    """
+    document = erp_get_one(doctype, name)
+    if document is None:
+        return
+    docstatus = int(document.get("docstatus") or 0)
+    if docstatus == 2:
+        return
+    if docstatus == 0:
+        erp_discard_draft(doctype, name)
+    else:
+        erp_cancel(doctype, name)
+
+
 def reject_case(case_id: str, *, reason: str, rejected_by: str) -> dict[str, Any]:
     case = case_repository.get_case(case_id)
     if case is None:
         raise LookupError(case_id)
 
-    # ERPNext는 MR이 Request for Quotation에 링크되어 있으면 MR을
-    # 취소/삭제하지 못하게 막는다(LinkExistsError). 비딩이 RFQ 단계까지
-    # 진행됐던 케이스(예: 공급사 PR 거절 후 취소)는 MR을 취소하기 전에
-    # 케이스에 저장된 RFQ부터 먼저 취소해야 한다.
+    # ERPNext는 MR이 RFQ에, RFQ가 다시 그 RFQ로 제출된 Supplier Quotation에
+    # 링크되어 있으면 상위 문서를 취소/삭제하지 못하게 막는다(LinkExistsError).
+    # 비딩이 견적 수집 단계까지 진행됐던 케이스(예: 공급사 PR 거절 후 취소)는
+    # 문서 링크의 말단(Supplier Quotation)부터 거슬러 올라가며 정리해야
+    # MR까지 취소할 수 있다.
     snapshot = case.get("workflow_snapshot") or {}
     values = snapshot.get("values") if isinstance(snapshot, dict) else {}
     rfq_name = str((values or {}).get("rfq_name") or "").strip()
     if rfq_name:
         try:
-            erp_cancel("Request for Quotation", rfq_name)
+            for quotation in get_quotations_for_rfq(rfq_name):
+                sq_name = str(quotation.get("name") or "").strip()
+                if sq_name:
+                    _cancel_or_discard_erp_doc("Supplier Quotation", sq_name)
+            _cancel_or_discard_erp_doc("Request for Quotation", rfq_name)
         except ERPNextAPIError as exc:
             raise ERPNextAPIError(
-                f"MR 취소 실패: 연결된 RFQ({rfq_name})를 먼저 취소하지 못했습니다. {exc}"
+                f"MR 취소 실패: 연결된 RFQ({rfq_name})/견적을 먼저 취소하지 못했습니다. {exc}"
             ) from exc
 
     reject_material_request(case["mr_name"], reason, reason_code="BUYER_REJECTED")
