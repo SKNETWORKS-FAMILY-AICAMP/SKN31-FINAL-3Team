@@ -1,0 +1,138 @@
+[
+  {
+    "id": "dashboard-overview",
+    "title": "대시보드",
+    "summary": "진행 중인 구매 요청과 승인 대기 업무를 한눈에 확인합니다.",
+    "target": "dashboard",
+    "keywords": ["대시보드", "전체 현황", "진행률", "승인 대기", "요약"],
+    "steps": ["대시보드 열기", "MR별 현재 단계 확인", "필요한 업무 화면으로 이동"]
+  },
+  {
+    "id": "item-list",
+    "title": "아이템 목록",
+    "summary": "ERPNext 품목과 비활성 신규 품목의 규격 검증 상태를 조회합니다.",
+    "target": "item-register",
+    "keywords": ["아이템", "품목", "신규 품목", "disabled", "비활성", "규격"],
+    "steps": ["아이템 목록 열기", "품목명 또는 코드 검색", "규격과 승인 상태 확인"]
+  },
+  {
+    "id": "mr-review",
+    "title": "구매 요청 검토",
+    "summary": "새 구매 요청의 품목·수량·납기·첨부파일을 확인하고 승인 또는 반려합니다.",
+    "target": "mr-list",
+    "keywords": ["MR", "구매 요청", "검토", "승인", "반려", "첨부파일"],
+    "steps": ["MR 목록 열기", "요청 상세 확인", "승인 또는 반려 선택"]
+  },
+  {
+    "id": "substitute-decision",
+    "title": "대체품 안내",
+    "summary": "대체 가능한 재고가 있으면 요청자가 ERPNext에서 대체품 사용 또는 신규 구매를 결정합니다.",
+    "target": "mr-list",
+    "keywords": ["대체품", "AI 대체품", "재고", "신규 구매", "요청자"],
+    "steps": ["MR 승인", "요청자에게 대체품 안내", "ERPNext에서 선택 결과 확인"]
+  },
+  {
+    "id": "supplier-recommendation",
+    "title": "RFQ 협력사 추천",
+    "summary": "기존 거래처와 외부 탐색 결과를 모아 견적 요청 후보를 구성합니다.",
+    "target": "vendor-select",
+    "keywords": ["RFQ", "협력사 추천", "공급사 탐색", "후보", "직접 입력"],
+    "steps": ["협력사 선정 열기", "RFQ 협력사 버튼 선택", "후보와 연락처 확인"]
+  },
+  {
+    "id": "rfq-send",
+    "title": "견적 요청 발송",
+    "summary": "이메일이 있는 협력사를 선택하고 견적 마감일을 정해 RFQ를 발송합니다.",
+    "target": "vendor-select",
+    "keywords": ["견적 요청", "RFQ 발송", "이메일", "견적 마감일", "협력사 선택"],
+    "steps": ["협력사 선택", "이메일 확인", "마감일 설정", "RFQ 발송"]
+  },
+  {
+    "id": "quotation-deadline",
+    "title": "견적 마감 연장",
+    "summary": "진행 중인 RFQ의 마감일을 변경하며 연장 자체로 독촉 메일을 다시 보내지 않습니다.",
+    "target": "vendor-select",
+    "keywords": ["마감 연장", "견적 마감", "기한 연장", "독촉 메일"],
+    "steps": ["협력사 선정 열기", "마감 연장 선택", "새 마감일 저장"]
+  },
+  {
+    "id": "quotation-compare",
+    "title": "공급사 견적 비교",
+    "summary": "회신된 단가·총액·제시 납기와 AI 분석 근거를 비교합니다.",
+    "target": "vendor-select",
+    "keywords": ["SQ", "Supplier Quotation", "견적 비교", "회신률", "AI 분석", "순위"],
+    "steps": ["견적 상세 비교 열기", "AI 분석 실행", "가격과 납기 비교"]
+  },
+  {
+    "id": "supplier-selection",
+    "title": "최종 공급사 선정",
+    "summary": "회신 견적과 AI 분석을 참고해 사람이 최종 공급사를 선택합니다.",
+    "target": "vendor-select",
+    "keywords": ["업체 선정", "공급사 선정", "최종 선정", "발주 시작"],
+    "steps": ["견적 비교", "공급사 선택", "최종 선정", "발주 시작"]
+  },
+  {
+    "id": "po-approval",
+    "title": "PO 발송 전 승인",
+    "summary": "PO 관리에서 공급사·금액·납기를 확인하고 최종 승인한 뒤 발주서를 보냅니다.",
+    "target": "po-manage",
+    "keywords": ["PO", "발주", "발주 승인", "최종 승인", "발주서"],
+    "steps": ["PO 관리 열기", "발주 내용 확인", "승인 또는 반려"]
+  },
+  {
+    "id": "delivery-tracking",
+    "title": "물품 도착 확인",
+    "summary": "Purchase Receipt 연동 결과로 입고 여부와 실제 납기일을 확인합니다.",
+    "target": "po-manage",
+    "keywords": ["물품 도착", "입고", "Purchase Receipt", "수령", "납기 일자"],
+    "steps": ["PO 관리 열기", "물품 도착 상태 확인", "실제 납기일 확인"]
+  },
+  {
+    "id": "supplier-scorecard",
+    "title": "협력사 평가",
+    "summary": "입고 후 품질·납기·응대 경험을 기록해 다음 공급사 추천에 활용합니다.",
+    "target": "po-manage",
+    "keywords": ["스코어카드", "Scorecard", "협력사 평가", "공급사 등급", "회신률"],
+    "steps": ["물품 도착 확인", "평가 작성", "점수와 의견 저장"]
+  },
+  {
+    "id": "column-filters",
+    "title": "목록 필터와 표 설정",
+    "summary": "각 목록의 컬럼 필터·정렬·너비를 조절하고 초기화할 수 있습니다.",
+    "target": "mr-list",
+    "keywords": ["필터", "정렬", "컬럼", "열 너비", "레이아웃 초기화", "검색"],
+    "steps": ["컬럼의 필터 아이콘 선택", "조건 적용", "필요하면 표 설정 초기화"]
+  },
+  {
+    "id": "notifications",
+    "title": "알림 확인과 삭제",
+    "summary": "새 업무 알림을 확인하고 개별 삭제하거나 모두 읽음 처리할 수 있습니다.",
+    "target": "dashboard",
+    "keywords": ["알림", "새 작업", "읽음", "삭제", "사이드바 숫자"],
+    "steps": ["상단 알림 열기", "알림 선택", "개별 삭제 또는 모두 읽음"]
+  },
+  {
+    "id": "completed-work",
+    "title": "완료된 구매 확인",
+    "summary": "완료된 PO와 AI 처리 기록을 통해 구매 과정과 판단 근거를 검토합니다.",
+    "target": "po-manage",
+    "keywords": ["완료", "완료된 작업", "AI 로그", "이력", "감사"],
+    "steps": ["PO 관리 열기", "완료 상태 선택", "진행 이력 확인"]
+  },
+  {
+    "id": "supplier-pr-confirmation",
+    "title": "공급사 수주 가능 여부 확인",
+    "summary": "최종 선정한 공급사에 주문 수락 가능 여부를 확인하고 응답 상태를 추적합니다.",
+    "target": "po-manage",
+    "keywords": ["PR", "수주 확인", "공급사 응답", "주문 수락", "수주 거절"],
+    "steps": ["PO 관리 열기", "공급사 확인 요청", "응답 대기", "수락 후 PO 생성"]
+  },
+  {
+    "id": "po-progress-tracking",
+    "title": "발주 생성 진행상태 확인",
+    "summary": "공급사 수락 이후 PO 생성 중·생성 완료·물품 도착 단계를 구분해 확인합니다.",
+    "target": "po-manage",
+    "keywords": ["PO 생성 중", "PO 생성 완료", "발주 진행상태", "PO 번호", "물품 도착"],
+    "steps": ["공급사 수락 확인", "PO 생성 상태 확인", "PO 번호 확인", "물품 도착 추적"]
+  }
+]

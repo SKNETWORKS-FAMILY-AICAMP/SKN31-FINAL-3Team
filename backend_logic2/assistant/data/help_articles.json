@@ -1,0 +1,107 @@
+[
+  {
+    "id": "assistant-read-only",
+    "title": "챗봇이 작업을 직접 실행하지 않는 이유",
+    "keywords": ["작업 시작해줘", "승인해줘", "발송해줘", "대신 해줘"],
+    "target": "dashboard",
+    "content": "챗봇은 안전을 위해 읽기 전용입니다. 요청의 현재 단계와 필요한 화면을 안내하며, 승인·반려·RFQ 발송·PO 발송 같은 책임 있는 결정은 사용자가 해당 화면에서 직접 수행합니다."
+  },
+  {
+    "id": "mr-not-visible",
+    "title": "MR이 목록에 보이지 않을 때",
+    "keywords": ["MR 안 보여", "목록 없음", "불러오지 못함", "동기화", "웹훅", "폴링"],
+    "target": "mr-list",
+    "content": "검색어와 단계 필터를 먼저 초기화하고 담당자 배정 범위를 확인하세요. 웹훅 모드에서는 ERPNext 이벤트와 시작 시 대사 결과가 반영되며, 폴링 모드에서는 다음 동기화 주기 뒤 나타날 수 있습니다. 완료·취소된 요청은 기본 목록에서 제외될 수 있습니다."
+  },
+  {
+    "id": "failed-to-fetch",
+    "title": "Failed to fetch가 표시될 때",
+    "keywords": ["Failed to fetch", "fail to fetch", "API 실패", "연결 오류", "네트워크"],
+    "target": "dashboard",
+    "content": "브라우저가 백엔드 API에 연결하지 못한 상태입니다. 먼저 백엔드 헬스 체크와 로그인 세션을 확인하고, 배포 환경에서는 같은 도메인의 /api 프록시 및 HTTPS 설정을 확인하세요. 잠시 뒤 재시도해도 계속되면 서버 로그에서 해당 요청 시각의 오류를 확인합니다."
+  },
+  {
+    "id": "substitute-button",
+    "title": "AI 대체품 버튼이 보이지 않거나 실패할 때",
+    "keywords": ["AI 대체품", "대체품 버튼", "버튼 안 뜸", "대체품 실패"],
+    "target": "mr-list",
+    "content": "대체품 결정은 요청자 화면에서 Draft 상태인 MR에 표시됩니다. 구매 담당자가 대체품 확인을 보낸 직후 MR이 먼저 제출되면 버튼이 사라질 수 있으므로, 현재 단계가 ‘대체품 선택 대기’인지 확인하세요. 연결 오류라면 ERPNext Client Script의 백엔드 주소와 공유 비밀값을 확인합니다."
+  },
+  {
+    "id": "rfq-email-required",
+    "title": "RFQ 발송 후보의 이메일이 없을 때",
+    "keywords": ["RFQ 이메일", "이메일 없음", "발송 거부", "협력사 직접 입력"],
+    "target": "vendor-select",
+    "content": "선택한 협력사 중 이메일이 없는 후보가 있으면 RFQ 발송이 중단됩니다. 후보 목록에서 이메일을 입력하거나 해당 후보를 선택 해제한 뒤 다시 발송하세요. 공급사가 없으면 직접 입력 폼에서 협력사와 이메일을 추가할 수 있습니다."
+  },
+  {
+    "id": "quotation-zero-amount",
+    "title": "공급사 견적 금액이 0원으로 보일 때",
+    "keywords": ["견적 0원", "금액 0", "SQ 금액", "발주금액 안 보임"],
+    "target": "vendor-select",
+    "content": "Supplier Quotation의 품목 단가와 수량이 제출된 문서에 저장되었는지 확인하세요. 초안 견적이거나 RFQ 품목 연결이 끊긴 경우 집계 금액이 비어 보일 수 있습니다. 견적 제출 상태와 MR 품목 연결 후 다시 동기화합니다."
+  },
+  {
+    "id": "quotation-delivery-date",
+    "title": "제시 납기가 보이지 않을 때",
+    "keywords": ["제시 납기", "expected_delivery_date", "배송일자", "납기 안 보임"],
+    "target": "vendor-select",
+    "content": "공급사가 포털 견적 품목의 제시 납기일을 입력하고 견적을 제출해야 표시됩니다. 문서의 품목별 expected_delivery_date가 비어 있거나 초안이면 비교 화면에 값이 없을 수 있습니다."
+  },
+  {
+    "id": "quotation-response-rate",
+    "title": "견적 회신률 계산 기준",
+    "keywords": ["회신률", "견적 퍼센트", "RFQ 협력사 수", "미회신"],
+    "target": "vendor-select",
+    "content": "견적 회신률은 탐색된 전체 후보가 아니라 실제 RFQ를 발송한 협력사 수를 기준으로 계산합니다. 제출된 Supplier Quotation이 회신 건수에 포함되며 미회신 업체는 견적 비교 목록의 아래쪽에 표시됩니다."
+  },
+  {
+    "id": "po-linked-to-mr",
+    "title": "PO와 MR 연결 확인",
+    "keywords": ["PO MR 연동", "발주서 연결", "Material Request", "PO 추적"],
+    "target": "po-manage",
+    "content": "PO 품목에는 원본 Material Request와 품목 행 연결이 유지되어야 합니다. PO 관리에서 MR 번호가 다르거나 비어 있으면 발주 생성 전 선택된 견적과 MR 품목 연결을 확인하세요."
+  },
+  {
+    "id": "delivery-not-updated",
+    "title": "물품 도착 상태가 갱신되지 않을 때",
+    "keywords": ["입고 업데이트", "물품 도착 안 뜸", "Purchase Receipt", "납기 일자"],
+    "target": "po-manage",
+    "content": "제출된 Purchase Receipt가 해당 PO를 참조해야 물품 도착으로 갱신됩니다. 웹훅이 누락된 경우 서버 재시작 대사 또는 구매 문서 대사로 복구할 수 있으며, 취소된 입고 문서는 다시 미도착 상태로 반영되어야 합니다."
+  },
+  {
+    "id": "scorecard-blocking",
+    "title": "협력사 평가가 다음 거래를 막는 것처럼 보일 때",
+    "keywords": ["스코어카드 막힘", "평가 때문에 진행 안됨", "거래 차단"],
+    "target": "po-manage",
+    "content": "협력사 평가는 입고 후 작성하는 후속 작업이며 새 구매의 필수 차단 조건으로 사용하면 안 됩니다. 평가 대기와 신규 구매 진행 상태가 분리되어 있는지 확인하세요."
+  },
+  {
+    "id": "direct-purchase",
+    "title": "입찰 불필요 시 진행 경로",
+    "keywords": ["비딩 불필요", "입찰 불필요", "즉시 구매", "최근 거래처", "카탈로그 구매"],
+    "target": "po-manage",
+    "content": "입찰이 불필요하고 해당 품목의 과거 PO 거래가 있으면 최근 거래 협력사 기준으로 즉시 구매 경로를 사용합니다. 이후에도 PO 발송 전 사람의 최종 승인은 반드시 필요합니다. 긴급하지만 과거 거래처가 없으면 자동 반려 사유를 확인해야 합니다."
+  },
+  {
+    "id": "filters-reset",
+    "title": "목록 필터와 컬럼 설정 초기화",
+    "keywords": ["필터 안됨", "컬럼 초기화", "표 초기화", "정렬 초기화"],
+    "target": "mr-list",
+    "content": "표 바로 위의 초기화 아이콘을 누르면 저장된 컬럼 순서·너비·필터를 기본값으로 되돌릴 수 있습니다. 날짜 필터는 시작일과 종료일, 숫자 필터는 최솟값과 최댓값 범위로 적용합니다."
+  },
+  {
+    "id": "supplier-pr-response",
+    "title": "공급사 수주 확인 이후의 진행 경로",
+    "keywords": ["PR 응답", "수주 수락", "수주 거절", "공급사 응답 대기", "차순위 공급사"],
+    "target": "po-manage",
+    "content": "PO 관리에서 공급사 확인 요청을 보내면 공급사 응답 대기 단계가 됩니다. 공급사가 수락하면 PO 생성으로 진행하고, 거절하면 거절 사유를 확인한 뒤 차순위 공급사 선정이나 재입찰 같은 후속 결정을 진행합니다."
+  },
+  {
+    "id": "po-progress-badge",
+    "title": "PO 생성 중 표시가 계속 남아 있을 때",
+    "keywords": ["PO 생성 중 계속", "PO 생성 완료", "PO 번호 안 보임", "진행상태 배지"],
+    "target": "po-manage",
+    "content": "공급사의 수주 수락만 확인되고 아직 PO 번호가 없으면 ‘PO 생성 중’으로 표시됩니다. PO가 생성되어 번호가 연결되면 ‘PO 생성 완료’와 PO 번호가 표시되고, 이후 Purchase Receipt가 등록되면 물품 도착 단계로 넘어갑니다."
+  }
+]
