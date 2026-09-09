@@ -1,3 +1,16 @@
+# Catch-all for port 80 requests whose Host header matches none of the
+# server_name values below (e.g. traffic actually meant for ERPNext, which
+# shares this EC2 instance's IP on a different port). Without an explicit
+# default_server, nginx falls back to the first server block for this port -
+# which used to be biddingflow.kro.kr below - and silently redirected
+# unrelated requests into the BiddingFlow app instead of leaving them alone.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}
+
 # Public HTTPS reverse proxy used while the kro.kr certificate is rate-limited.
 # Install only after Certbot has created the referenced certificate files.
 server {

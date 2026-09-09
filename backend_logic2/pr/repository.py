@@ -133,12 +133,12 @@ def record_po_result(pr_id: str, *, po_name: str | None, error: str | None = Non
         row = connection.execute(
             """
             UPDATE procurement.supplier_purchase_response
-            SET status = CASE WHEN %(error)s IS NULL THEN 'PO_CREATED' ELSE 'PO_FAILED' END,
+            SET status = CASE WHEN %(error)s::text IS NULL THEN 'PO_CREATED' ELSE 'PO_FAILED' END,
                 po_name = %(po_name)s,
-                po_error = %(error)s,
-                processing_error = CASE WHEN %(error)s IS NULL THEN NULL ELSE processing_error END,
-                processing_error_stage = CASE WHEN %(error)s IS NULL THEN NULL ELSE processing_error_stage END,
-                processing_failed_at = CASE WHEN %(error)s IS NULL THEN NULL ELSE processing_failed_at END,
+                po_error = %(error)s::text,
+                processing_error = CASE WHEN %(error)s::text IS NULL THEN NULL ELSE processing_error END,
+                processing_error_stage = CASE WHEN %(error)s::text IS NULL THEN NULL ELSE processing_error_stage END,
+                processing_failed_at = CASE WHEN %(error)s::text IS NULL THEN NULL ELSE processing_failed_at END,
                 updated_at = now()
             WHERE pr_id = %(pr_id)s AND status IN ('ACCEPTED', 'PO_FAILED')
             RETURNING *
