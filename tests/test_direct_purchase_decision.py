@@ -90,6 +90,54 @@ class DirectPurchaseDecisionTests(unittest.TestCase):
         self.assertEqual(command.update["status"], "resolving_suppliers")
         self.assertEqual(command.update["bidding_items"], ["ITEM-001"])
 
+    @patch("backend_logic2.nodes.mr.decide_bidding.decide_bidding")
+    def test_new_purchase_still_allows_urgent_direct_purchase(self, decide_bidding):
+        decide_bidding.return_value = {
+            "ITEM-001": {
+                "needs_bidding": False,
+                "reasons": ["긴급발주 (납기까지 1일, 긴급 기준 7일 이하)"],
+                "direct_supplier": "공급사 A",
+                "last_rate": 1500,
+                "reference_po": "PUR-ORD-OLD",
+                "reference_date": "2026-08-01",
+            }
+        }
+
+        command = decide_bidding_choice_command({
+            "mr_name": "MAT-MR-0001",
+            "force_bidding": True,
+        })
+
+        self.assertEqual(command.goto, "await_order_start")
+        self.assertEqual(command.update["status"], "supplier_selected")
+        self.assertTrue(command.update["direct_purchase"])
+        self.assertEqual(command.update["selected_supplier"], "공급사 A")
+
+    @patch("backend_logic2.nodes.mr.decide_bidding.decide_bidding")
+    def test_new_purchase_forces_bidding_for_mixed_urgent_and_regular_items(self, decide_bidding):
+        decide_bidding.return_value = {
+            "ITEM-001": {
+                "needs_bidding": False,
+                "reasons": ["긴급발주 (납기까지 1일, 긴급 기준 7일 이하)"],
+                "direct_supplier": "공급사 A",
+                "last_rate": 1500,
+            },
+            "ITEM-002": {
+                "needs_bidding": False,
+                "reasons": ["최근 거래 반복구매"],
+                "direct_supplier": "공급사 B",
+                "last_rate": 900,
+            },
+        }
+
+        command = decide_bidding_choice_command({
+            "mr_name": "MAT-MR-0001",
+            "force_bidding": True,
+        })
+
+        self.assertEqual(command.goto, "resolve_suppliers_choice")
+        self.assertEqual(command.update["bidding_items"], ["ITEM-002"])
+
 
 if __name__ == "__main__":
     unittest.main()

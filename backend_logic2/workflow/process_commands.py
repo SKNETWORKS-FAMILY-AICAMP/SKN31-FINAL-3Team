@@ -281,7 +281,20 @@ def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
     bidding_results = decide_bidding(mr_name)
     bidding_items = [code for code, info in bidding_results.items() if info["needs_bidding"]]
     if state.get("force_bidding"):
-        bidding_items = list(bidding_results)
+        # 대체품 후보를 거절하고 신규구매로 진행한 경우 기본적으로는 다시
+        # 비딩을 거치게 한다(2026-09-08 fix: preserve bidding flow after
+        # substitute rejection). 다만 긴급발주(7일 이내)라 이전 PO
+        # 공급사·확정단가를 그대로 재사용할 수 있는 품목까지 강제로 비딩을
+        # 돌리면 납기를 맞출 수 없으므로, 그 품목만은 강제 비딩에서 제외해
+        # 곧장 직접구매로 진행한다.
+        urgent_direct_purchase_items = {
+            code
+            for code, info in bidding_results.items()
+            if not info["needs_bidding"]
+            and info.get("direct_supplier")
+            and any(str(reason).startswith("긴급발주") for reason in info.get("reasons", []))
+        }
+        bidding_items = [code for code in bidding_results if code not in urgent_direct_purchase_items]
 
     if not bidding_items:
         cancellation_reason = _cancel_urgent_mr_without_supplier(mr_name, bidding_results)
@@ -751,10 +764,21 @@ def await_order_start_command(state: PurchaseProcessState) -> Command:
             goto="inspect_selected_supplier_documents",
         )
 
+    # 대체품 후보를 거절하고 신규구매로 진행한 뒤에도, 그 직접구매가
+    # 긴급발주(7일 이내) 근거로 이전 PO 공급사를 재사용하는 것이라면 다시
+    # 비딩으로 돌려보내지 않는다(위 decide_bidding_choice_command와 동일한
+    # 예외). 그 외의 직접구매(예: 평소 반복구매)만 대체품 거절 이력이 있으면
+    # 안전하게 비딩으로 재확인시킨다.
+    direct_purchase_basis = state.get("direct_purchase_items") or {}
+    is_urgent_direct_purchase = bool(direct_purchase_basis) and all(
+        str(item.get("reason") or "").startswith("긴급발주")
+        for item in direct_purchase_basis.values()
+    )
     if (
         state.get("direct_purchase")
         and state.get("substitute_results")
         and not state.get("order_started")
+        and not is_urgent_direct_purchase
     ):
         return Command(
             update={

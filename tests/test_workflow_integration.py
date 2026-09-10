@@ -303,6 +303,28 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertTrue(command.update["force_bidding"])
         self.assertFalse(command.update["direct_purchase"])
 
+    def test_urgent_direct_purchase_survives_substitute_rejection(self):
+        state = {
+            "mr_name": "MAT-MR-0001",
+            "selected_supplier": "공급사 A",
+            "direct_purchase": True,
+            "direct_purchase_items": {
+                "ITEM-001": {
+                    "supplier": "공급사 A",
+                    "rate": 1500,
+                    "reason": "긴급발주 (납기까지 1일, 긴급 기준 7일 이하)",
+                },
+            },
+            "substitute_results": {"ITEM-001": {"substitutes": [{"item_code": "SUB-1"}]}},
+        }
+        with patch(
+            "backend_logic2.workflow.process_commands.interrupt",
+            return_value={"decision": "start_order"},
+        ):
+            command = await_order_start_command(state)
+        self.assertEqual(command.goto, "request_pr")
+        self.assertEqual(command.update["status"], "awaiting_pr_request")
+
     def test_supplier_pr_acceptance_continues_to_po_creation(self):
         state = {
             "case_id": "case-1",
