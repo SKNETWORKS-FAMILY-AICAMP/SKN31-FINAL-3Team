@@ -792,6 +792,15 @@ def await_order_start_command(state: PurchaseProcessState) -> Command:
             goto="decide_bidding_choice",
         )
 
+    # 긴급발주 직접구매는 비딩으로 새로 고른 업체가 없고 이전 PO 공급사를
+    # 그대로 재사용할 뿐이라, 사람이 "발주 시작"을 눌러 재확인할 대상 자체가
+    # 없다. 다른 건들처럼 곧장 PR 요청 대기 단계로 넘어간다.
+    if state.get("direct_purchase") and is_urgent_direct_purchase and not state.get("order_started"):
+        return Command(
+            update={"order_started": True, "status": "awaiting_pr_request", "error": ""},
+            goto="request_pr",
+        )
+
     answer = interrupt({
         "type": "order_start",
         "mr_name": state["mr_name"],

@@ -317,11 +317,57 @@ class WorkflowIntegrationTests(unittest.TestCase):
             },
             "substitute_results": {"ITEM-001": {"substitutes": [{"item_code": "SUB-1"}]}},
         }
+        with patch("backend_logic2.workflow.process_commands.interrupt") as mock_interrupt:
+            command = await_order_start_command(state)
+        self.assertEqual(command.goto, "request_pr")
+        self.assertEqual(command.update["status"], "awaiting_pr_request")
+        self.assertTrue(command.update["order_started"])
+        mock_interrupt.assert_not_called()
+
+    def test_urgent_direct_purchase_skips_order_start_confirmation(self):
+        # 대체품 확인 단계를 거치지 않은 완전 신규 MR도 동일하게, 긴급발주
+        # 직접구매는 "발주 시작" 확인 없이 다른 건들처럼 곧장 PR 요청
+        # 대기 단계로 넘어가야 한다.
+        state = {
+            "mr_name": "MAT-MR-0001",
+            "selected_supplier": "공급사 A",
+            "direct_purchase": True,
+            "direct_purchase_items": {
+                "ITEM-001": {
+                    "supplier": "공급사 A",
+                    "rate": 1500,
+                    "reason": "긴급발주 (납기까지 1일, 긴급 기준 7일 이하)",
+                },
+            },
+        }
+        with patch("backend_logic2.workflow.process_commands.interrupt") as mock_interrupt:
+            command = await_order_start_command(state)
+        self.assertEqual(command.goto, "request_pr")
+        self.assertEqual(command.update["status"], "awaiting_pr_request")
+        self.assertTrue(command.update["order_started"])
+        mock_interrupt.assert_not_called()
+
+    def test_non_urgent_direct_purchase_still_requires_order_start_confirmation(self):
+        # 평소 반복구매(비긴급) 직접구매는 여전히 사람이 "발주 시작"을
+        # 눌러 확인해야 한다 - 자동 스킵 대상이 아니다.
+        state = {
+            "mr_name": "MAT-MR-0001",
+            "selected_supplier": "공급사 A",
+            "direct_purchase": True,
+            "direct_purchase_items": {
+                "ITEM-001": {
+                    "supplier": "공급사 A",
+                    "rate": 1500,
+                    "reason": "기존 저액거래 + 구매주기 규칙적 + 정상 구매시점",
+                },
+            },
+        }
         with patch(
             "backend_logic2.workflow.process_commands.interrupt",
             return_value={"decision": "start_order"},
-        ):
+        ) as mock_interrupt:
             command = await_order_start_command(state)
+        mock_interrupt.assert_called_once()
         self.assertEqual(command.goto, "request_pr")
         self.assertEqual(command.update["status"], "awaiting_pr_request")
 
