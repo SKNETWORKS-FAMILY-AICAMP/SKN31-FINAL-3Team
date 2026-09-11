@@ -28,10 +28,31 @@ import json
 import argparse
 import logging
 from backend_logic2.integrations.erp_client import erp_get, erp_get_one, erp_submit
+from backend_logic2.repositories.deliveries import get_supplier_latest_scorecards
 
 # 확인 필요: Supplier Quotation Item에서 RFQ를 연결하는 실제 필드명.
 REQUEST_FOR_QUOTATION_LINK_FIELD = "request_for_quotation"
 LOGGER = logging.getLogger(__name__)
+
+
+def _attach_supplier_scorecards(quotations: list[dict]) -> list[dict]:
+    """견적에 공급사의 가장 최근 입고 후 평가를 결합한다."""
+
+    suppliers = [str(row.get("supplier") or "").strip() for row in quotations]
+    try:
+        scorecards = get_supplier_latest_scorecards(suppliers)
+    except Exception as exc:
+        # 평가 저장소 장애가 견적 확인 자체를 막지는 않도록 하되 로그는 남긴다.
+        LOGGER.warning("Supplier Scorecard 집계 실패: %s", exc)
+        scorecards = {}
+
+    return [
+        {
+            **quotation,
+            "supplier_scorecard": scorecards.get(str(quotation.get("supplier") or "").strip()),
+        }
+        for quotation in quotations
+    ]
 
 
 def _number(value) -> float:
@@ -99,6 +120,7 @@ def _enrich_ranking_with_prices(ranking: list[dict], quotations: list[dict]) -> 
             "expected_delivery_date": expected_delivery_date,
             "lead_time_days": first_item.get("lead_time_days"),
             "transaction_date": quotation.get("transaction_date"),
+            "supplier_scorecard": quotation.get("supplier_scorecard"),
         })
     return enriched
 
@@ -298,6 +320,15 @@ def _ai_rank_quotations(requirements: dict, quotations: list) -> list:
         "납기(빠를수록 좋음)를 기준으로 순위를 매기세요. 규격이 명확히 "
         "다르거나 요청 품목 자체가 빠진 견적은 순위 최하위로 두고 "
         "issues에 사유를 남기세요.\n\n"
+        "4. 과거 공급사 평가: supplier_scorecard가 있으면 규격과 수량을 "
+        "충족한 업체들 사이에서 가격·납기와 함께 반영하세요. 평가는 5점 "
+        "만점이며 가장 최근 거래의 납기준수, 품질, 가격만족도, 서비스, "
+        "커뮤니케이션 평가입니다. weighted_score는 품질 30%, 납기 25%, "
+        "가격 20%, 서비스 15%, 커뮤니케이션 10%로 계산된 5점 만점의 "
+        "가중평균입니다. 동일 조건이면 weighted_score가 높은 업체를 우선하되, "
+        "과거 평가가 없다는 이유만으로 신규 업체를 감점하지 마세요. 규격 또는 "
+        "수량 미충족을 높은 과거 평점으로 상쇄해서는 안 됩니다. reason에 과거 "
+        "평가를 반영했는지 명시하세요.\n\n"
         "reason은 한두 문장으로 짧게, 왜 이 순위인지(규격 일치여부 포함)를 "
         "포함하세요.\n\n"
         '반드시 이 JSON 형식으로만 답하세요: {{"ranking": [{{"name": "견적문서명", '
@@ -327,7 +358,7 @@ def evaluate_quotations(rfq_name: str) -> dict:
     if not requirements:
         return {"error": f"RFQ를 찾을 수 없습니다: {rfq_name}"}
 
-    quotations = get_quotations_for_rfq(rfq_name)
+    quotations = _attach_supplier_scorecards(get_quotations_for_rfq(rfq_name))
 
     if not quotations:
         return {

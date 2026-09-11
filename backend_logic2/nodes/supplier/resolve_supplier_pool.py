@@ -7,6 +7,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from backend_logic2.integrations.erp_client import erp_get, erp_get_one
 from backend_logic2.nodes.supplier.tools.case_logging import log_status_change
+from backend_logic2.repositories.deliveries import get_supplier_latest_scorecards
 
 MIN_COMPETING_SUPPLIERS = 3
 SUPPLIER_POOL_REFRESH_YEARS = 3
@@ -154,6 +155,15 @@ def resolve_supplier_pool(bidding_items: list, case_id: str = None) -> dict:
             futures = [executor.submit(_get_supplier_info, s_name) for s_name in all_supplier_names]
             for future in as_completed(futures):
                 existing_candidates.append(future.result())
+
+        try:
+            scorecards = get_supplier_latest_scorecards(list(all_supplier_names))
+        except Exception as exc:
+            # 평가 이력 조회 장애 때문에 RFQ 후보 탐색 전체를 중단하지 않는다.
+            print(f"  [공급사 평가] 최근 Scorecard 조회 실패, 평가 없이 계속: {exc}")
+            scorecards = {}
+        for candidate in existing_candidates:
+            candidate["supplier_scorecard"] = scorecards.get(candidate["name"])
 
     needs_search = len(search_items) > 0
 

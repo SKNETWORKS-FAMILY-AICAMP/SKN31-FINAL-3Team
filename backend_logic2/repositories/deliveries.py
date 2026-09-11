@@ -352,3 +352,74 @@ def complete_scorecard(case_id: str, scorecard: dict[str, Any]) -> dict[str, Any
     if row is None:
         raise ValueError("전체 입고가 확인된 평가 대기 건만 Scorecard를 제출할 수 있습니다.")
     return dict(row)
+
+
+SCORECARD_FIELDS = ("leadTime", "quality", "price", "service", "communication")
+SCORECARD_WEIGHTS = {
+    "leadTime": 0.25,
+    "quality": 0.30,
+    "price": 0.20,
+    "service": 0.15,
+    "communication": 0.10,
+}
+
+
+def calculate_scorecard_weighted_score(
+    scorecard: dict[str, float],
+) -> float | None:
+    """5개 평가 항목이 모두 유효할 때 구매 가중평균 점수를 계산한다."""
+
+    if not all(field in scorecard for field in SCORECARD_WEIGHTS):
+        return None
+    return round(
+        sum(scorecard[field] * weight for field, weight in SCORECARD_WEIGHTS.items()),
+        2,
+    )
+
+
+def get_supplier_latest_scorecards(
+    supplier_names: list[str],
+) -> dict[str, dict[str, Any]]:
+    """공급사별 가장 최근에 완료된 Scorecard의 유효한 원점수를 반환한다.
+
+    JSON 값의 형식이 잘못된 레코드는 해당 항목만 제외한다. 아직 평가
+    이력이 없는 공급사는 반환값에 포함하지 않아 신규 업체에 임의의 불이익을
+    주지 않는다.
+    """
+
+    names = sorted({str(name).strip() for name in supplier_names if str(name).strip()})
+    if not names:
+        return {}
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT ON (supplier) supplier, scorecard
+            FROM procurement.purchase_order_delivery
+            WHERE supplier = ANY(%(supplier_names)s::varchar[])
+              AND scorecard_status = 'COMPLETED'
+              AND scorecard IS NOT NULL
+            ORDER BY supplier, updated_at DESC
+            """,
+            {"supplier_names": names},
+        ).fetchall()
+
+    scorecards: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        supplier = str(row.get("supplier") or "").strip()
+        scorecard = row.get("scorecard") or {}
+        if not supplier or not isinstance(scorecard, dict):
+            continue
+        valid_scorecard: dict[str, float] = {}
+        for field in SCORECARD_FIELDS:
+            try:
+                value = float(scorecard.get(field))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= value <= 5:
+                valid_scorecard[field] = value
+        weighted_score = calculate_scorecard_weighted_score(valid_scorecard)
+        if weighted_score is not None:
+            valid_scorecard["weighted_score"] = weighted_score
+            scorecards[supplier] = valid_scorecard
+    return scorecards
