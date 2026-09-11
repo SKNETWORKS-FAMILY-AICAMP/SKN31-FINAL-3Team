@@ -566,19 +566,19 @@ def create_rfq_command(state: PurchaseProcessState) -> Command:
     ERPNext 자체 로직(Suppliers 하위테이블의 send_email 체크박스)이
     이메일 발송을 트리거하는 구조라, 파이썬 쪽에서 TEST_MODE를 확인 안
     하고 그냥 send_email=True로 넘기면 ERPNext가 실제로 메일을 보내버릴
-    수 있음. TEST_MODE=true면 전체를 차단하고, custom_only면 이번 RFQ에서
-    사용자가 직접 추가한 공급사 행만 발송하며, false일 때만 전체 발송한다."""
+    수 있음. TEST_MODE=true면 전체를 차단하고, custom_only면 정확한 이메일
+    화이트리스트와 일치하는 공급사 행만 발송하며, false일 때만 전체 발송한다."""
     from backend_logic2.integrations.erp_client import get_email_delivery_policy
     from backend_logic2.nodes.rfq.send_rfq import create_and_send_rfq
 
     email_policy = get_email_delivery_policy()
     custom_rfq_suppliers = list(dict.fromkeys(state.get("custom_rfq_suppliers") or []))
     send_email = email_policy != "block_all"
-    email_supplier_names = custom_rfq_suppliers if email_policy == "custom_only" else None
+    email_supplier_names = None
 
     print(f"\n[RFQ 생성] '{state['mr_name']}' -> 대상: {state['selected_suppliers']}")
     if email_policy == "custom_only":
-        print(f"  환경: CUSTOM_ONLY (직접 추가 RFQ 수신처: {custom_rfq_suppliers})")
+        print("  환경: CUSTOM_ONLY (이메일 화이트리스트 일치 수신처만 발송)")
     else:
         print(f"  환경: {'TEST_MODE (실제 이메일 발송 안 함)' if email_policy == 'block_all' else '운영 모드 (실제 이메일 발송됨)'}")
 
@@ -600,7 +600,7 @@ def create_rfq_command(state: PurchaseProcessState) -> Command:
     if email_policy == "block_all":
         delivery_result = "발송 안 함, TEST_MODE"
     elif email_policy == "custom_only":
-        delivery_result = f"직접 추가 {len(custom_rfq_suppliers)}곳만 실제 발송"
+        delivery_result = "이메일 화이트리스트 일치 수신처만 실제 발송"
     else:
         delivery_result = "선택 대상 전체 실제 발송"
     print(f"  -> RFQ 생성 완료: {rfq['name']} (이메일 {delivery_result})\n")
@@ -987,14 +987,14 @@ def create_po_command(state: PurchaseProcessState) -> Command:
     중간에 끊기니까 여기서 SystemExit을 잡아서 정상적인 human_review
     Command로 바꿔줌.
 
-    이메일 발송은 send_rfq.py와 같은 이유로 TEST_MODE면 무조건 강제로
-    막음(send_email=not test_mode) - erp_send_email 자체도 TEST_MODE를
-    다시 확인하지만, 이중 안전장치로 여기서도 명시적으로 막음.
+    이메일 발송은 공통 정책을 따른다. true는 차단하고, custom_only는 PO
+    생성 함수까지 진입한 뒤 공통 메일 게이트에서 정확한 주소 화이트리스트를
+    다시 확인하며, false만 제한 없이 발송한다.
     """
     if str(state.get("pr_status") or "").upper() != "ACCEPTED":
         raise RuntimeError("공급사가 PR을 수락하지 않아 PO를 생성할 수 없습니다.")
 
-    from backend_logic2.integrations.erp_client import is_test_mode
+    from backend_logic2.integrations.erp_client import get_email_delivery_policy
     from backend_logic2.nodes.po.create_and_send_po import (
         create_and_send_direct_po,
         create_and_send_po,
@@ -1019,7 +1019,8 @@ def create_po_command(state: PurchaseProcessState) -> Command:
     direct_purchase = bool(state.get("direct_purchase"))
     rfq_name = state.get("rfq_name")
     supplier = state.get("selected_supplier")
-    test_mode = is_test_mode()
+    email_policy = get_email_delivery_policy()
+    send_email = email_policy != "block_all"
     pr_id = str(state.get("pr_id") or "").strip()
 
     print(
@@ -1027,7 +1028,7 @@ def create_po_command(state: PurchaseProcessState) -> Command:
         f"({'최근 거래 직접구매' if direct_purchase else f'RFQ: {rfq_name}'}) "
         f"-> 공급사: {supplier}"
     )
-    print(f"  환경: {'TEST_MODE (실제 이메일 발송 안 함)' if test_mode else '운영 모드 (실제 이메일 발송됨)'}")
+    print(f"  이메일 정책: {email_policy}")
 
     try:
         if direct_purchase:
@@ -1035,7 +1036,7 @@ def create_po_command(state: PurchaseProcessState) -> Command:
                 state["mr_name"],
                 supplier,
                 state.get("direct_purchase_items", {}),
-                send_email=not test_mode,
+                send_email=send_email,
             )
         else:
             if not rfq_name:
@@ -1044,7 +1045,7 @@ def create_po_command(state: PurchaseProcessState) -> Command:
                 rfq_name,
                 supplier,
                 mr_name=state["mr_name"],
-                send_email=not test_mode,
+                send_email=send_email,
             )
     except SystemExit as exc:
         if pr_id:

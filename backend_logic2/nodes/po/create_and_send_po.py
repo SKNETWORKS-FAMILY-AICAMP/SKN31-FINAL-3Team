@@ -25,7 +25,7 @@ from backend_logic2.integrations.erp_client import (
     ERPNextAPIError,
     erp_get,
     erp_get_one,
-    is_test_mode,
+    get_email_delivery_policy,
 )
 
 from backend_logic2.nodes.quotation.sq_evaluation import (
@@ -55,11 +55,10 @@ def create_and_send_po(
     print(f"RFQ: {rfq_name}")
     print(f"선정 공급사: {supplier_id}")
 
-    test_mode = is_test_mode()
+    email_policy = get_email_delivery_policy()
 
     print(
-        f"현재 환경: "
-        f"{'테스트 모드 (실제 메일 발송 차단됨)' if test_mode else '운영 모드'}"
+        f"현재 이메일 정책: {email_policy}"
     )
     print(f"PO 이메일: {'발송 요청' if send_email else '발송 안 함'}\n")
 
@@ -454,7 +453,7 @@ def create_and_send_po(
     """
 
     try:
-        erp_send_email(
+        email_result = erp_send_email(
             "Purchase Order",
             po_name,
             recipient_email,
@@ -462,10 +461,13 @@ def create_and_send_po(
             content,
         )
 
-        print(
-            f"   -> 이메일 발송 완료 "
-            f"(수신: {recipient_email})"
+        email_sent = not (
+            isinstance(email_result, dict) and email_result.get("email_sent") is False
         )
+        if email_sent:
+            print(f"   -> 이메일 발송 완료 (수신: {recipient_email})")
+        else:
+            print(f"   -> 이메일 정책에 따라 발송 차단 (수신: {recipient_email})")
 
     except ERPNextAPIError as e:
 
@@ -491,7 +493,7 @@ def create_and_send_po(
         "name": po_name,
         "supplier_quotation": quotation_name,
         "status": "submitted",
-        "email_sent": not test_mode,
+        "email_sent": email_sent,
     }
 
 
@@ -616,7 +618,6 @@ def create_and_send_direct_po(
         print(f"[오류] 직접구매 PO '{po_name}' Submit 실패: {exc}")
         sys.exit(1)
 
-    test_mode = is_test_mode()
     if not send_email:
         return {
             "name": po_name,
@@ -658,7 +659,7 @@ def create_and_send_direct_po(
     <p><a href="{portal_link}" target="_blank">발주서 상세 확인하기</a></p>
     """
     try:
-        erp_send_email(
+        email_result = erp_send_email(
             "Purchase Order",
             po_name,
             recipient_email,
@@ -675,11 +676,14 @@ def create_and_send_direct_po(
             "email_error": str(exc),
         }
 
+    email_sent = not (
+        isinstance(email_result, dict) and email_result.get("email_sent") is False
+    )
     return {
         "name": po_name,
         "direct_purchase": True,
         "status": "submitted",
-        "email_sent": not test_mode,
+        "email_sent": email_sent,
     }
 
 

@@ -5,8 +5,11 @@ nexterp 자동화 - ERPNext API 클라이언트
 설정값 바꾸고 싶으면 .env 파일을 수정할 것 (config.py는 더 이상 안 씀).
 """
 
+import json
 import os
+from email.utils import getaddresses
 from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -57,6 +60,93 @@ def is_test_mode() -> bool:
     # 환경 변수가 누락되면 실제 발송보다 차단이 안전하다. 운영 전환은
     # 반드시 TEST_MODE=false를 명시한 경우에만 허용한다.
     return get_email_delivery_policy() != "send_all"
+
+
+def normalize_email_recipients(recipients) -> list[str]:
+    """Return unique, lowercase mailbox addresses from strings or iterables."""
+    if recipients is None:
+        return []
+    values = (
+        list(recipients)
+        if isinstance(recipients, (list, tuple, set, frozenset))
+        else [recipients]
+    )
+    parsed: list[str] = []
+    for value in values:
+        # getaddresses understands display names and comma-separated input.
+        # Frappe screens also commonly produce semicolon-separated addresses.
+        header = (
+            str(value or "")
+            .replace(";", ",")
+            .replace("\r", ",")
+            .replace("\n", ",")
+        )
+        for _display_name, address in getaddresses([header]):
+            normalized = address.strip().lower()
+            if "@" in normalized and normalized not in parsed:
+                parsed.append(normalized)
+    return parsed
+
+
+def get_email_recipient_allowlist() -> set[str]:
+    """Read the exact-address allowlist used by TEST_MODE=custom_only.
+
+    A JSON file is loaded on every delivery decision so operators can update
+    recipients without restarting the API.  Missing or invalid explicitly
+    configured files fail closed.  The inline environment value remains as a
+    backward-compatible fallback when no JSON file is configured.
+    """
+    configured_path = os.getenv("EMAIL_RECIPIENT_ALLOWLIST_PATH", "").strip()
+    if configured_path:
+        allowlist_path = Path(configured_path).expanduser()
+        if not allowlist_path.is_file():
+            print(
+                f"[EMAIL_POLICY] 지정한 화이트리스트 파일이 없어 전부 차단합니다: "
+                f"{allowlist_path}"
+            )
+            return set()
+        try:
+            document = json.loads(allowlist_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(f"[EMAIL_POLICY] 화이트리스트 JSON을 읽지 못해 전부 차단합니다: {exc}")
+            return set()
+
+        if isinstance(document, dict):
+            if document.get("enabled") is False:
+                return set()
+            recipients = document.get("recipients", [])
+        elif isinstance(document, list):
+            recipients = document
+        else:
+            print("[EMAIL_POLICY] 화이트리스트 JSON 형식이 잘못되어 전부 차단합니다.")
+            return set()
+
+        if not isinstance(recipients, list):
+            print("[EMAIL_POLICY] recipients가 배열이 아니어서 전부 차단합니다.")
+            return set()
+        return set(normalize_email_recipients(recipients))
+
+    return set(
+        normalize_email_recipients(os.getenv("EMAIL_RECIPIENT_ALLOWLIST", ""))
+    )
+
+
+def filter_email_recipients(recipients) -> list[str]:
+    """Apply the outbound policy and return only recipients safe to contact."""
+    normalized = normalize_email_recipients(recipients)
+    policy = get_email_delivery_policy()
+    if policy == "send_all":
+        return normalized
+    if policy == "custom_only":
+        allowlist = get_email_recipient_allowlist()
+        return [address for address in normalized if address in allowlist]
+    return []
+
+
+def is_email_recipient_allowed(recipient: str | None) -> bool:
+    """Return whether an address may receive mail under the current policy."""
+    normalized = normalize_email_recipients(recipient)
+    return bool(normalized and normalized[0] in filter_email_recipients(normalized))
 
 
 def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None, start=None):
@@ -337,17 +427,34 @@ def erp_send_email(doctype, name, recipients, subject, content):
     없어서 그동안 실제 이메일이 나가버린 적도 있었고, 비밀번호 같은
     내용을 확인할 방법도 없었음. 이제 이걸로 둘 다 해결됨.
     """
-    if is_test_mode():
-        print(f"\n[TEST_MODE] 실제 발송 생략 — {doctype}/{name}")
-        print(f"  수신자: {recipients}")
+    policy = get_email_delivery_policy()
+    requested_recipients = normalize_email_recipients(recipients)
+    allowed_recipients = filter_email_recipients(requested_recipients)
+    blocked_recipients = [
+        address for address in requested_recipients if address not in allowed_recipients
+    ]
+
+    if not allowed_recipients:
+        print(f"\n[EMAIL_POLICY:{policy}] 실제 발송 생략 — {doctype}/{name}")
+        print(f"  차단 수신자: {blocked_recipients or requested_recipients}")
         print(f"  제목: {subject}")
-        print(f"  내용: {content}\n")
-        return {"test_mode": True, "would_send_to": recipients}
+        return {
+            "test_mode": policy != "send_all",
+            "email_policy": policy,
+            "email_sent": False,
+            "blocked_recipients": blocked_recipients or requested_recipients,
+        }
+
+    if blocked_recipients:
+        print(
+            f"[EMAIL_POLICY:{policy}] 화이트리스트 외 수신자 제외 — "
+            f"{blocked_recipients}"
+        )
 
     payload = {
         "doctype": doctype,
         "name": name,
-        "recipients": recipients,
+        "recipients": allowed_recipients,
         "subject": subject,
         "content": content,
         "send_email": 1,
@@ -1186,9 +1293,30 @@ def send_rfq_native(rfq_name):
     ⚠️ RFQ의 "Message for Supplier" 필드와 각 공급사의 email_id가 이미
     채워져 있어야 함 (create_rfq_from_material_request가 이미 처리함).
     """
-    if is_test_mode():
-        print(f"[TEST_MODE] RFQ 자동발송 생략 — {rfq_name} (ERPNext 내장 send_supplier_emails)")
+    email_policy = get_email_delivery_policy()
+    if email_policy == "block_all":
+        print(f"[EMAIL_POLICY:block_all] RFQ 자동발송 생략 — {rfq_name}")
         return {"test_mode": True, "rfq_name": rfq_name}
+
+    if email_policy == "custom_only":
+        rfq = erp_get_one("Request for Quotation", rfq_name) or {}
+        enabled_rows = [
+            row for row in (rfq.get("suppliers") or []) if int(row.get("send_email") or 0)
+        ]
+        if not enabled_rows or any(
+            not is_email_recipient_allowed(row.get("email_id"))
+            for row in enabled_rows
+        ):
+            print(
+                f"[EMAIL_POLICY:custom_only] RFQ 자동발송 생략 — {rfq_name} "
+                "(화이트리스트 검증 실패)"
+            )
+            return {
+                "test_mode": True,
+                "email_policy": "custom_only",
+                "email_sent": False,
+                "rfq_name": rfq_name,
+            }
 
     res = requests.post(
         f"{SITE_URL}/api/method/erpnext.buying.doctype.request_for_quotation.request_for_quotation.send_supplier_emails",

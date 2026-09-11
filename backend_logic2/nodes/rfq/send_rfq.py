@@ -1,8 +1,8 @@
 """
 nodes/create_and_send_rfq.py — 6번 모듈: RFQ 생성 + 발송
 
-⚠️ .env의 TEST_MODE=true면 실제 발송을 차단하고, custom_only면 UI에서 직접
-추가한 공급사 RFQ만 발송한다. 전체 발송은 TEST_MODE=false에서만 허용한다.
+⚠️ .env의 TEST_MODE=true면 실제 발송을 차단하고, custom_only면 정확한 이메일
+화이트리스트에 등록된 수신자에게만 발송한다. 전체 발송은 false에서만 허용한다.
 
 발송은 ERPNext 내장기능(send_supplier_emails)에 맡김 — 계정생성·Contact
 연결·포털권한을 우리가 직접 API로 흉내내다가 여러 번 문제(500 에러) 생겨서,
@@ -21,8 +21,9 @@ from backend_logic2.integrations.erp_client import (
     HEADERS,
     SITE_URL,
     erp_discard_draft,
+    get_email_delivery_policy,
     erp_get_one,
-    is_test_mode,
+    is_email_recipient_allowed,
     erp_post,
     erp_submit,
 )
@@ -133,11 +134,12 @@ def create_rfq(
     test_override = os.getenv("TEST_RECIPIENT_OVERRIDE")
     suppliers_payload = []
     email_targets = set(email_supplier_names) if email_supplier_names is not None else None
+    email_policy = get_email_delivery_policy()
     
     for s in supplier_names:
         # ERPNext는 Submit 시 이 child-row 체크값을 보고 공급사 메일을 보낸다.
-        should_send_email = send_email and (email_targets is None or s in email_targets)
-        row = {"supplier": s, "send_email": 1 if should_send_email else 0}
+        requested_for_email = send_email and (email_targets is None or s in email_targets)
+        row = {"supplier": s, "send_email": 0}
         supplier_doc = erp_get_one("Supplier", s)
         if supplier_doc:
             if supplier_doc.get("supplier_primary_contact"):
@@ -148,6 +150,15 @@ def create_rfq(
                 
         if test_override and "email_id" not in row:
             row["email_id"] = test_override
+
+        # In unrestricted production mode ERPNext may resolve an address from
+        # the linked Contact even when the child row has no explicit email_id.
+        # custom_only must have an explicit address so it can be allowlisted.
+        should_send_email = requested_for_email and (
+            email_policy == "send_all"
+            or is_email_recipient_allowed(row.get("email_id"))
+        )
+        row["send_email"] = 1 if should_send_email else 0
             
         suppliers_payload.append(row)
 
@@ -196,11 +207,33 @@ def send_rfq(rfq_name: str):
     # 실패해서 TEST_MODE 값을 아예 못 읽는 상황이면, "안전하게 멈추는 쪽"이
     # 맞지 "일단 진짜로 보내는 쪽"으로 가면 안 됨 — 실제로 이거 때문에
     # 실제 벤더한테 잘못 나간 사고가 있었음.
-    if is_test_mode():
-        print(f"[TEST_MODE] 실제 발송 생략 — {rfq_name}")
+    email_policy = get_email_delivery_policy()
+    if email_policy == "block_all":
+        print(f"[EMAIL_POLICY:block_all] 실제 발송 생략 — {rfq_name}")
         print(f"  (진짜 발송이었다면 send_supplier_emails가 호출되어, "
               f"RFQ의 Suppliers 목록 전체에게 계정생성+포털링크 메일이 나갔을 것)")
         return {"test_mode": True, "rfq_name": rfq_name}
+
+    if email_policy == "custom_only":
+        rfq = erp_get_one("Request for Quotation", rfq_name) or {}
+        enabled_rows = [
+            row for row in (rfq.get("suppliers") or []) if int(row.get("send_email") or 0)
+        ]
+        unsafe_rows = [
+            row for row in enabled_rows
+            if not is_email_recipient_allowed(row.get("email_id"))
+        ]
+        if not enabled_rows or unsafe_rows:
+            print(
+                f"[EMAIL_POLICY:custom_only] RFQ 발송 차단 — {rfq_name} "
+                "(허용되지 않은 수신 행 또는 허용 수신자 없음)"
+            )
+            return {
+                "test_mode": True,
+                "email_policy": "custom_only",
+                "email_sent": False,
+                "rfq_name": rfq_name,
+            }
 
     res = requests.post(
         f"{SITE_URL}/api/method/erpnext.buying.doctype.request_for_quotation.request_for_quotation.send_supplier_emails",
@@ -241,6 +274,11 @@ def create_and_send_rfq(
         print(f"[create_and_send_rfq] RFQ Draft 생성 완료: {rfq['name']} (Submit/메일 발송 안 함)")
     elif not send_email or email_supplier_names == []:
         print(f"[create_and_send_rfq] RFQ 생성+Submit 완료: {rfq['name']} (공급사 메일 발송 안 함)")
+    elif get_email_delivery_policy() == "custom_only":
+        print(
+            f"[create_and_send_rfq] RFQ 생성+Submit 완료: {rfq['name']} "
+            "(이메일 화이트리스트 일치 수신처에만 발송)"
+        )
     elif email_supplier_names is not None:
         print(
             f"[create_and_send_rfq] RFQ 생성+Submit 완료: {rfq['name']} "

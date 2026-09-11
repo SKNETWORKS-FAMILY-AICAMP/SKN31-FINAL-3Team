@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "enabled": true,
+  "recipients": [
+    "buyer-test@example.com",
+    "supplier-test@example.com"
+  ],
+  "note": "TEST_MODE=custom_only에서 실제 발송을 허용할 정확한 이메일 주소"
+}

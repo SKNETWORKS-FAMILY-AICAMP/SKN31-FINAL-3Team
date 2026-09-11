@@ -21,6 +21,34 @@ The deploy script fetches the selected branch with an explicit refspec, so a
 repository originally cloned with `--single-branch` can also change its tracked
 branch safely.
 
+## Dynamic outbound email allowlist
+
+Set the file path once in /etc/biddingflow/backend.env:
+
+~~~text
+TEST_MODE=custom_only
+EMAIL_RECIPIENT_ALLOWLIST_PATH=/etc/biddingflow/email-recipient-allowlist.json
+~~~
+
+Create the JSON from deploy/server/email-recipient-allowlist.example.json.
+The API reads this file immediately before each email decision, so recipient
+changes do not require a service restart. Use exact mailbox addresses only.
+When the configured file is missing, malformed, disabled, or empty,
+custom_only blocks every real email.
+
+Recommended server permissions:
+
+~~~bash
+sudo chown root:ubuntu /etc/biddingflow/email-recipient-allowlist.json
+sudo chmod 0640 /etc/biddingflow/email-recipient-allowlist.json
+~~~
+
+After changing only the JSON contents, validate it without restarting:
+
+~~~bash
+python3 -m json.tool /etc/biddingflow/email-recipient-allowlist.json >/dev/null
+~~~
+
 ## Commands
 
 ```bash

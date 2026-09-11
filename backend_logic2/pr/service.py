@@ -8,7 +8,11 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from backend_logic2.integrations.erp_client import erp_get_one, erp_send_email
+from backend_logic2.integrations.erp_client import (
+    erp_get_one,
+    erp_send_email,
+    get_email_delivery_policy,
+)
 from . import repository
 from .email_template import render_email
 
@@ -78,10 +82,18 @@ def create_and_send_pr(
     recipient_email = os.getenv("PR_EMAIL_OVERRIDE", "").strip() or supplier_email
     subject_prefix = "[TEST] " if recipient_email != supplier_email else ""
     try:
-        erp_send_email(
+        email_result = erp_send_email(
             "Material Request", mr_name, [recipient_email],
             f"{subject_prefix}[PR:{pr['pr_id']}] 수주 가능 여부 확인", html,
         )
+        if (
+            get_email_delivery_policy() == "custom_only"
+            and isinstance(email_result, dict)
+            and email_result.get("email_sent") is False
+        ):
+            raise RuntimeError(
+                "PR 수신 이메일이 EMAIL_RECIPIENT_ALLOWLIST에 없어 발송을 차단했습니다."
+            )
     except Exception as exc:
         repository.cancel_draft(str(pr["pr_id"]), error=str(exc))
         raise
