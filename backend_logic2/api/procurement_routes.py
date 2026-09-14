@@ -388,39 +388,55 @@ def search_suppliers_for_frontend(
     current_user: CurrentUser,
     q: str = Query(default="", max_length=200),
 ):
-    """'협력사 직접 입력' 필드의 자동완성 드롭다운이 호출하는 엔드포인트.
+    """협력사 직접 입력 자동완성용 Supplier 검색."""
 
-    Tavily 등 자동탐색으로 못 찾은 협력사를 담당자가 수동으로 추가할 때,
-    이미 등록된 기존 Supplier 풀에서 먼저 이름으로 찾아볼 수 있게 한다.
-    검색 결과가 없으면 프론트는 그대로 신규 등록 입력을 진행하면 된다
-    (이 엔드포인트는 조회 전용이라 부가 동작 없음).
-    """
-    del current_user  # 인증만 필요, 값 자체는 응답에 사용하지 않는다.
+    del current_user
+
     query = q.strip()
-    if len(query) < 1:
+
+    if not query:
         return {"items": []}
+
     try:
         rows = erp_get(
             "Supplier",
-            filters=[["supplier_name", "like", f"%{query}%"]],
-            fields=["name", "supplier_name", "email_id", "mobile_no", "phone"],
+            filters=[
+                ["supplier_name", "like", f"%{query}%"],
+            ],
+            fields=[
+                "name",
+                "supplier_name",
+                "email_id",
+                "mobile_no",
+            ],
             order_by="supplier_name asc",
             limit=10,
         ) or []
+
+        print(
+            f"[Supplier Search] query={query!r}, "
+            f"count={len(rows)}, "
+            f"results={[row.get('supplier_name') for row in rows]}"
+        )
+
     except ERPNextAPIError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        print(f"[Supplier Search ERROR] query={query!r}, error={exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"ERPNext Supplier 검색 실패: {exc}",
+        ) from exc
+
     return {
         "items": [
             {
                 "name": row.get("name"),
                 "supplier_name": row.get("supplier_name") or row.get("name"),
                 "email": row.get("email_id"),
-                "phone": row.get("mobile_no") or row.get("phone"),
+                "phone": row.get("mobile_no"),
             }
             for row in rows
         ]
     }
-
 
 @router.get("/events")
 async def stream_procurement_events(current_user: CurrentUser):
