@@ -57,7 +57,8 @@ class QuotationItem(StrictModel):
     unit: str | None = None
     unit_price: Decimal = Field(ge=0)
     amount: Decimal = Field(ge=0)
-    delivery_date: date | None = None
+    # ERPNext Supplier Quotation Item.expected_delivery_date
+    expected_delivery_date: date | None = None
     lead_time_days: int | None = Field(default=None, ge=0)
     specifications: dict[str, str | int | float] = Field(default_factory=dict)
     raw_description: str | None = None
@@ -70,8 +71,8 @@ class Quotation(StrictModel):
     supplier_name: str
     status: str = "received"
     business_registration_no: str | None = None
-    # Project data contract: quotation_date is the supplier-promised delivery
-    # date; valid_until is the quotation validity deadline.
+    # quotation_date is the date the supplier issued/sent the quotation;
+    # valid_until is the quotation validity deadline.
     quotation_date: date | None = None
     valid_until: date | None = None
     currency: str = "KRW"
@@ -147,7 +148,7 @@ class RankedQuotation(StrictModel):
     supplier_name: str
     total_amount: Decimal
     currency: str
-    delivery_date: date | None = None
+    expected_delivery_date: date | None = None
     late_days: int | None = None
     tied: bool = False
     reason: str

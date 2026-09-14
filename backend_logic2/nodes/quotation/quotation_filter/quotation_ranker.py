@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -37,14 +37,15 @@ except ImportError:
 def _latest_delivery(review: QuotationReview) -> date | None:
     if not review.quotation:
         return None
-    # 외부 견적 공통 모델에서는 quotation_date가 공급사의 납기일이다.
-    if review.quotation.quotation_date:
-        return review.quotation.quotation_date
-
-    # 기존 ERP 포털 변환 데이터와의 하위 호환용 fallback.
-    dates = []
+    dates: list[date] = []
     for item in review.quotation.items:
-        delivery = item.delivery_date
+        delivery = item.expected_delivery_date
+        if (
+            delivery is None
+            and review.quotation.quotation_date
+            and item.lead_time_days is not None
+        ):
+            delivery = review.quotation.quotation_date + timedelta(days=item.lead_time_days)
         if delivery:
             dates.append(delivery)
     return max(dates) if dates else None
@@ -110,7 +111,7 @@ def rank_quotations(
             supplier_name=quotation.supplier_name,
             total_amount=quotation.total_amount,
             currency=quotation.currency,
-            delivery_date=delivery,
+            expected_delivery_date=delivery,
             late_days=late_days,
             tied=tied,
             reason=f"규격·수량·산식 검토 통과, 총금액 {quotation.total_amount} {quotation.currency}{delivery_reason}{late_reason}",

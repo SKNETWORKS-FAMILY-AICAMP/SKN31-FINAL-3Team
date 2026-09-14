@@ -1,0 +1,162 @@
+{
+  "run_name": "final_a_1476_batch8",
+  "model": "Qwen/Qwen3.5-9B",
+  "adapter": "/workspace/SKN31-FINAL-3Team/견적서 학습 데이터/finetuning/outputs/a100/final_a/v1-20260911-114210/checkpoint-1476",
+  "prompt_version": "quotation_json_v1",
+  "prompt_sha256": "7d3e535adfb1dbc9daf4217bec3f25cb2de288fcc2a7686e8398d8b66fd97ad9",
+  "quantization": "bnb-nf4-double-quant-4bit",
+  "compute_dtype": "torch.bfloat16",
+  "min_pixels": 200704,
+  "max_pixels": 802816,
+  "max_new_tokens": 512,
+  "model_load_seconds": 75.15675829723477,
+  "overall": {
+    "samples": 100,
+    "json_parse_rate": 1.0,
+    "schema_ok_rate": 1.0,
+    "critical_exact_rate": 0.93,
+    "document_exact_rate": 0.88,
+    "micro_field_accuracy": 0.9922330097087378,
+    "macro_field_accuracy": 0.9923809523809524,
+    "mean_elapsed_seconds": 3.3354142547026275,
+    "mean_generation_seconds": 2.977026879307814,
+    "output_limit_reached": 0,
+    "mismatch_path_frequency": [
+      [
+        "quotation_id",
+        3
+      ],
+      [
+        "tax_amount",
+        2
+      ],
+      [
+        "total_amount",
+        2
+      ],
+      [
+        "supplier_name",
+        2
+      ],
+      [
+        "quotation_date",
+        2
+      ],
+      [
+        "subtotal",
+        1
+      ],
+      [
+        "items.0.quantity",
+        1
+      ],
+      [
+        "items.0.unit_price",
+        1
+      ],
+      [
+        "items.0.amount",
+        1
+      ],
+      [
+        "items.0.item_code",
+        1
+      ]
+    ]
+  },
+  "by_generation_mode": {
+    "computer_filled": {
+      "samples": 20,
+      "json_parse_rate": 1.0,
+      "schema_ok_rate": 1.0,
+      "critical_exact_rate": 1.0,
+      "document_exact_rate": 1.0,
+      "micro_field_accuracy": 1.0,
+      "macro_field_accuracy": 1.0,
+      "mean_elapsed_seconds": 3.34936169681896,
+      "mean_generation_seconds": 2.987222743127495,
+      "output_limit_reached": 0,
+      "mismatch_path_frequency": []
+    },
+    "font_composite": {
+      "samples": 16,
+      "json_parse_rate": 1.0,
+      "schema_ok_rate": 1.0,
+      "critical_exact_rate": 1.0,
+      "document_exact_rate": 1.0,
+      "micro_field_accuracy": 1.0,
+      "macro_field_accuracy": 1.0,
+      "mean_elapsed_seconds": 3.2721517701720586,
+      "mean_generation_seconds": 2.9082905121613294,
+      "output_limit_reached": 0,
+      "mismatch_path_frequency": []
+    },
+    "handwriting_composite": {
+      "samples": 60,
+      "json_parse_rate": 1.0,
+      "schema_ok_rate": 1.0,
+      "critical_exact_rate": 0.8833333333333333,
+      "document_exact_rate": 0.8,
+      "micro_field_accuracy": 0.9873015873015873,
+      "macro_field_accuracy": 0.9873015873015873,
+      "mean_elapsed_seconds": 3.3193782882541805,
+      "mean_generation_seconds": 2.965217172228343,
+      "output_limit_reached": 0,
+      "mismatch_path_frequency": [
+        [
+          "quotation_id",
+          3
+        ],
+        [
+          "tax_amount",
+          2
+        ],
+        [
+          "total_amount",
+          2
+        ],
+        [
+          "supplier_name",
+          2
+        ],
+        [
+          "quotation_date",
+          2
+        ],
+        [
+          "subtotal",
+          1
+        ],
+        [
+          "items.0.quantity",
+          1
+        ],
+        [
+          "items.0.unit_price",
+          1
+        ],
+        [
+          "items.0.amount",
+          1
+        ],
+        [
+          "items.0.item_code",
+          1
+        ]
+      ]
+    },
+    "layout_negative": {
+      "samples": 4,
+      "json_parse_rate": 1.0,
+      "schema_ok_rate": 1.0,
+      "critical_exact_rate": 1.0,
+      "document_exact_rate": 1.0,
+      "micro_field_accuracy": 1.0,
+      "macro_field_accuracy": 1.0,
+      "mean_elapsed_seconds": 3.7592664789699484,
+      "mean_generation_seconds": 3.3781386349874083,
+      "output_limit_reached": 0,
+      "mismatch_path_frequency": []
+    }
+  }
+}

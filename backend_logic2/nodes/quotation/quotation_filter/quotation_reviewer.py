@@ -404,13 +404,14 @@ def review_quotation(
                 if not matched:
                     issues.append(_issue("SPECIFICATION_MISMATCH", IssueSeverity.ERROR, f"items.{index}.specifications.{key}", "RFQ 규격과 견적 규격이 부합하지 않습니다.", evidence[-1]))
 
-            # 프로젝트 데이터 계약상 quotation_date가 공급사의 납기일이다.
-            # 품목별 필드는 기존 ERP 포털 데이터와의 하위 호환용 보조값이다.
-            has_calculable_delivery = quotation.quotation_date or item.delivery_date or (
-                item.lead_time_days is not None
+            # 배송 예정일은 품목의 ERPNext expected_delivery_date를 우선한다.
+            # lead_time_days만 있는 경우에는 견적일(transaction_date)이 있어야 계산할 수 있다.
+            has_calculable_delivery = bool(
+                item.expected_delivery_date
+                or (quotation.quotation_date and item.lead_time_days is not None)
             )
             if required.required_delivery_date and not has_calculable_delivery:
-                issues.append(_issue("MISSING_DELIVERY_DATE", IssueSeverity.ERROR, "quotation_date", "비교에 필요한 견적 납기일이 누락되었습니다.", f"RFQ 요구 납기={required.required_delivery_date}"))
+                issues.append(_issue("MISSING_DELIVERY_DATE", IssueSeverity.ERROR, f"items.{index}.expected_delivery_date", "비교에 필요한 배송 예정일이 누락되었습니다.", f"RFQ 요구 납기={required.required_delivery_date}"))
 
         item_results.append(ItemCompliance(
             item_code=item.item_code,
