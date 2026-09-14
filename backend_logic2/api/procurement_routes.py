@@ -8,7 +8,7 @@ import json
 import secrets
 from contextlib import suppress
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote
 
 import psycopg
@@ -387,8 +387,17 @@ def get_item_group_required_specs_for_frontend(
 def search_suppliers_for_frontend(
     current_user: CurrentUser,
     q: str = Query(default="", max_length=200),
+    field: Literal["name", "email", "all"] = Query(default="all"),
 ):
-    """협력사명 또는 이메일로 기존 Supplier를 검색한다."""
+    """협력사명 또는 이메일로 기존 Supplier를 검색한다.
+
+    field="name"이면 협력사명(supplier_name)만, field="email"이면
+    이메일(email_id)만 대조한다. 프런트엔드의 협력사명 입력란과 이메일
+    입력란이 각자의 드롭다운에 서로 다른 후보를 보여줘야 해서(이름란에
+    이메일 검색 결과가 섞여 나오면 안 됨) 필드별로 분리했다. field를
+    안 넘기거나 "all"이면 기존처럼 이름+이메일을 합쳐서 반환한다(하위
+    호환용).
+    """
 
     del current_user
 
@@ -405,29 +414,35 @@ def search_suppliers_for_frontend(
     ]
 
     try:
-        # 1. 협력사명 substring 검색
-        name_rows = erp_get(
-            "Supplier",
-            filters=[
-                ["supplier_name", "like", f"%{query}%"],
-            ],
-            fields=fields,
-            order_by="supplier_name asc",
-            limit=10,
-        ) or []
+        name_rows: list[dict] = []
+        email_rows: list[dict] = []
 
-        # 2. 이메일 substring 검색
-        email_rows = erp_get(
-            "Supplier",
-            filters=[
-                ["email_id", "like", f"%{query}%"],
-            ],
-            fields=fields,
-            order_by="supplier_name asc",
-            limit=10,
-        ) or []
+        if field in ("name", "all"):
+            # 협력사명 substring 검색
+            name_rows = erp_get(
+                "Supplier",
+                filters=[
+                    ["supplier_name", "like", f"%{query}%"],
+                ],
+                fields=fields,
+                order_by="supplier_name asc",
+                limit=10,
+            ) or []
 
-        # 이름/이메일 검색 결과 합치기 + 중복 제거
+        if field in ("email", "all"):
+            # 이메일 substring 검색
+            email_rows = erp_get(
+                "Supplier",
+                filters=[
+                    ["email_id", "like", f"%{query}%"],
+                ],
+                fields=fields,
+                order_by="supplier_name asc",
+                limit=10,
+            ) or []
+
+        # 이름/이메일 검색 결과 합치기 + 중복 제거 (field="all"일 때만
+        # 둘 다 채워지므로, name/email 단독 조회일 때는 그대로 통과됨)
         merged = {}
 
         for row in [*name_rows, *email_rows]:
