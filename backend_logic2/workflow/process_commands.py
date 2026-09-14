@@ -633,19 +633,83 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         "rfq_name": state["rfq_name"],
         "message": "제출된 견적을 확인하시겠습니까? "
                     "(check: 지금 조회만 하고 계속 대기 / later: 그냥 대기 / "
-                    "finalize: 지금까지 견적으로 최종선정 단계로 진행)",
-        "allowed": ["check", "later", "finalize"],
+                    "finalize: 지금까지 견적으로 최종선정 단계로 진행 / "
+                    "rebid: 지금까지 들어온 견적을 버리고 새 RFQ로 재비딩)",
+        "allowed": ["check", "later", "finalize", "rebid"],
     })
     choice = _decision_value(answer)
-    if choice not in ("check", "later", "finalize"):
+    if choice not in ("check", "later", "finalize", "rebid"):
         return Command(
-            update={"status": "awaiting_quotation_check", "error": "check, later, finalize 중 선택하세요."},
+            update={"status": "awaiting_quotation_check", "error": "check, later, finalize, rebid 중 선택하세요."},
             goto="check_quotations",
         )
     if choice == "later":
         return Command(
             update={"status": "awaiting_quotation_check", "error": ""},
             goto="check_quotations",
+        )
+
+    if choice == "rebid":
+        # 견적 마감이 지났는데 아직 아무도 선정하지 않은 상태에서 구매
+        # 담당자가 "지금까지 들어온 견적은 버리고 새로 RFQ를 다시
+        # 보낸다"를 선택한 경우. workflow_service.reject_case()가 MR을
+        # 아예 취소할 때 쓰는 것과 같은 정리 순서(Supplier Quotation ->
+        # RFQ 순으로 취소/폐기)를 그대로 따른다 - ERPNext는 RFQ에 이미
+        # 제출된 Supplier Quotation이 걸려 있으면 RFQ 자체를 취소/폐기하지
+        # 못하게 막기 때문에, 자식 문서부터 정리해야 한다.
+        from backend_logic2.integrations.erp_client import (
+            ERPNextAPIError,
+            erp_cancel,
+            erp_discard_draft,
+            erp_get_one,
+        )
+        from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
+            get_quotations_for_rfq,
+        )
+
+        def _cancel_or_discard(doctype: str, name: str) -> None:
+            document = erp_get_one(doctype, name)
+            if document is None:
+                return
+            docstatus = int(document.get("docstatus") or 0)
+            if docstatus == 2:
+                return
+            if docstatus == 0:
+                erp_discard_draft(doctype, name)
+            else:
+                erp_cancel(doctype, name)
+
+        rfq_name = str(state.get("rfq_name") or "").strip()
+        if rfq_name:
+            try:
+                for quotation in get_quotations_for_rfq(rfq_name):
+                    sq_name = str(quotation.get("name") or "").strip()
+                    if sq_name:
+                        _cancel_or_discard("Supplier Quotation", sq_name)
+                _cancel_or_discard("Request for Quotation", rfq_name)
+            except ERPNextAPIError as exc:
+                return Command(
+                    update={
+                        "status": "awaiting_quotation_check",
+                        "error": f"재비딩 실패: 기존 RFQ({rfq_name})/견적을 먼저 정리하지 못했습니다. {exc}",
+                    },
+                    goto="check_quotations",
+                )
+
+        # supplier_candidates(추천/직접추가 협력사 풀)는 그대로 남겨서
+        # select_rfq_targets에서 같은 후보 목록으로 다시 고를 수 있게 한다.
+        return Command(
+            update={
+                "rfq_name": "",
+                "quotation_ranking": [],
+                "requested_supplier": "",
+                "selected_suppliers": [],
+                "supplier_registration_results": [],
+                "quotation_deadline": "",
+                "status": "awaiting_supplier_approval",
+                "error": "",
+            },
+            goto="select_rfq_targets",
         )
 
     # check와 finalize 둘 다 일단 지금 시점 견적을 조회함
