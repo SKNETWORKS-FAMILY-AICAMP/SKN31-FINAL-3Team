@@ -1,8 +1,5 @@
 """검토 통과 견적을 규격 적합성, 총금액, 납기 순으로 정렬한다.
 
-단독 실행 예:
-    python quotation_ranker.py reviewed.json --rfq rfq_requirements.json \
-        --top-k 3 --output ranked.json
 """
 
 from __future__ import annotations
@@ -24,7 +21,7 @@ try:
         load_json,
     )
     from .get_supplier_quotations import get_quotations_for_rfq, get_reviewable_quotations
-    from .quotation_reviewer import load_rfq_requirements, review_quotation
+    from .quotation_reviewer import load_rfq_requirements, match_requirement, review_quotation
 except ImportError:
     from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
         QuotationReview,
@@ -41,6 +38,7 @@ except ImportError:
     )
     from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import (
         load_rfq_requirements,
+        match_requirement,
         review_quotation,
     )
 
@@ -50,10 +48,15 @@ from backend_logic2.repositories.deliveries import get_supplier_latest_scorecard
 LOGGER = logging.getLogger(__name__)
 
 
-def _latest_delivery(review: QuotationReview) -> date | None:
+def _delivery_metrics(
+    review: QuotationReview,
+    rfq: RFQRequirements,
+) -> tuple[date | None, int | None]:
+    """전체 최종 납기와 품목별 요구일 대비 최대 지연일을 계산한다."""
     if not review.quotation:
-        return None
+        return None, None
     dates: list[date] = []
+    item_late_days: list[int] = []
     for item in review.quotation.items:
         delivery = item.expected_delivery_date
         if (
@@ -64,12 +67,14 @@ def _latest_delivery(review: QuotationReview) -> date | None:
             delivery = review.quotation.quotation_date + timedelta(days=item.lead_time_days)
         if delivery:
             dates.append(delivery)
-    return max(dates) if dates else None
-
-
-def _required_delivery(rfq: RFQRequirements) -> date | None:
-    dates = [item.required_delivery_date for item in rfq.items if item.required_delivery_date]
-    return max(dates) if dates else None
+            required = match_requirement(item, rfq)
+            if required and required.required_delivery_date:
+                item_late_days.append(
+                    (delivery - required.required_delivery_date).days
+                )
+    latest_delivery = max(dates) if dates else None
+    late_days = max(0, max(item_late_days)) if item_late_days else None
+    return latest_delivery, late_days
 
 
 def rank_quotations(
@@ -91,11 +96,15 @@ def rank_quotations(
     reviews = [row if isinstance(row, QuotationReview) else QuotationReview.model_validate(row) for row in review_data]
 
     supplier_scorecards = supplier_scorecards or {}
-    candidates: list[tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]] = []
+    rankable_reviews: list[QuotationReview] = []
     excluded: list[dict[str, Any]] = []
-    required_delivery = _required_delivery(rfq)
     for review in reviews:
-        if review.status != ReviewStatus.ACCEPTED or not review.valid or not review.specification_compliant or not review.quotation:
+        if not (
+            review.status == ReviewStatus.ACCEPTED
+            and review.valid
+            and review.specification_compliant
+            and review.quotation is not None
+        ):
             excluded.append({
                 "quotation_id": review.quotation_id,
                 "supplier_name": review.supplier_name,
@@ -103,13 +112,35 @@ def rank_quotations(
                 "evidence": review.rejection_evidence or [issue.evidence for issue in review.issues],
             })
             continue
+        rankable_reviews.append(review)
+
+    currencies = {review.quotation.currency for review in rankable_reviews if review.quotation}
+    use_base_amount = len(currencies) > 1
+    if use_base_amount and any(
+        review.quotation is None or review.quotation.base_total_amount is None
+        for review in rankable_reviews
+    ):
+        raise ValueError(
+            "서로 다른 통화의 견적을 비교하려면 모든 Supplier Quotation에 "
+            "ERPNext base_grand_total 환산금액이 필요합니다."
+        )
+    candidates: list[tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]] = []
+    for review in rankable_reviews:
         quotation = review.quotation
-        delivery = _latest_delivery(review)
-        late_days = max(0, (delivery - required_delivery).days) if delivery and required_delivery else None
+        if quotation is None:
+            raise ValueError(f"검토 통과 견적에 원본 데이터가 없습니다: {review.quotation_id}")
+        delivery, late_days = _delivery_metrics(review, rfq)
+        comparison_amount = (
+            quotation.base_total_amount
+            if use_base_amount
+            else quotation.total_amount
+        )
+        if comparison_amount is None:
+            raise ValueError(f"견적 비교금액이 없습니다: {review.quotation_id}")
         # 규격 통과 견적만 남은 뒤 총액을 우선하고, 동액이면 납기를 비교한다.
         delivery_sort = delivery.toordinal() if delivery else 10**9
         late_sort = late_days if late_days is not None else 10**9
-        key = (quotation.total_amount, late_sort, delivery_sort)
+        key = (comparison_amount, late_sort, delivery_sort)
         candidates.append((key, review, delivery, late_days))
 
     grouped: dict[tuple[Decimal, int, int], list[tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]]] = {}
@@ -124,7 +155,8 @@ def rank_quotations(
         scored: list[tuple[Decimal, tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]]] = []
         for candidate in group:
             quotation = candidate[1].quotation
-            assert quotation is not None
+            if quotation is None:
+                raise ValueError(f"순위 후보에 원본 견적이 없습니다: {candidate[1].quotation_id}")
             card = supplier_scorecards.get(str(quotation.supplier_id or ""))
             score = card.get("weighted_score") if isinstance(card, dict) else None
             if score is None:
@@ -154,7 +186,8 @@ def rank_quotations(
         if current_rank > top_k:
             break
         quotation = review.quotation
-        assert quotation is not None
+        if quotation is None:
+            raise ValueError(f"순위 후보에 원본 견적이 없습니다: {review.quotation_id}")
         tied = sum(
             1
             for _, other_review, *_ in candidates
@@ -169,17 +202,23 @@ def rank_quotations(
             if review.quotation_id in scorecard_tiebreaks
             else ""
         )
+        comparison_reason = (
+            f", ERP 회사 기준 환산금액 {key[0]}"
+            if use_base_amount
+            else ""
+        )
         recommended.append(RankedQuotation(
             rank=current_rank,
             quotation_id=quotation.quotation_id,
             supplier_id=quotation.supplier_id,
             supplier_name=quotation.supplier_name,
             total_amount=quotation.total_amount,
+            comparison_amount=key[0],
             currency=quotation.currency,
             expected_delivery_date=delivery,
             late_days=late_days,
             tied=tied,
-            reason=f"규격·수량·산식 검토 통과, 총금액 {quotation.total_amount} {quotation.currency}{delivery_reason}{late_reason}{score_reason}",
+            reason=f"규격·수량·산식 검토 통과, 총금액 {quotation.total_amount} {quotation.currency}{comparison_reason}{delivery_reason}{late_reason}{score_reason}",
         ))
 
     return RankingResult(
@@ -226,47 +265,61 @@ def _enrich_ranking_with_prices(
     ranking: list[dict[str, Any]],
     quotations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """결정론적 순위에 ERP 원문의 가격·납기·평가 정보를 결합한다."""
+    """검증된 순위 값을 보존하고 ERP 원문의 부가 정보만 결합한다."""
     by_name = {str(row.get("name") or "").strip(): row for row in quotations}
-    by_supplier = {str(row.get("supplier") or "").strip(): row for row in quotations}
     enriched: list[dict[str, Any]] = []
     for ranked in ranking:
-        quotation = (
-            by_name.get(str(ranked.get("name") or ranked.get("quotation_id") or "").strip())
-            or by_supplier.get(str(ranked.get("supplier") or "").strip())
-            or {}
-        )
+        quotation_id = str(
+            ranked.get("name") or ranked.get("quotation_id") or ""
+        ).strip()
+        quotation = by_name.get(quotation_id)
+        if quotation is None:
+            LOGGER.warning(
+                "검증된 순위 %s에 대응하는 ERP 원문을 찾지 못해 부가 정보 보강을 생략합니다.",
+                quotation_id,
+            )
+            quotation = {}
         items = quotation.get("items") or []
         first_item = items[0] if items else {}
-        total_amount = _first_non_zero(
-            quotation.get("grand_total"),
-            quotation.get("rounded_total"),
-            quotation.get("net_total"),
-            sum(_number(item.get("amount")) for item in items),
-        )
+        total_amount = ranked.get("total_amount")
+        if total_amount is None and quotation:
+            total_amount = _first_non_zero(
+                quotation.get("grand_total"),
+                quotation.get("rounded_total"),
+                quotation.get("net_total"),
+                sum(_number(item.get("amount")) for item in items),
+            )
+        expected_delivery_date = ranked.get("expected_delivery_date")
+        if expected_delivery_date is None and first_item:
+            expected_delivery_date = (
+                first_item.get("expected_delivery_date")
+                or first_item.get("schedule_date")
+                or first_item.get("delivery_date")
+            )
         enriched.append({
             **ranked,
             "name": ranked.get("name") or ranked.get("quotation_id") or quotation.get("name"),
             "supplier": ranked.get("supplier") or quotation.get("supplier"),
-            "currency": quotation.get("currency") or ranked.get("currency") or "KRW",
-            "rate": _first_non_zero(first_item.get("rate"), first_item.get("net_rate")),
-            "amount": _first_non_zero(first_item.get("amount"), first_item.get("net_amount")),
-            "total_amount": total_amount,
-            "grand_total": total_amount,
-            "expected_delivery_date": (
-                first_item.get("expected_delivery_date")
-                or first_item.get("schedule_date")
-                or first_item.get("delivery_date")
-                or ranked.get("expected_delivery_date")
+            "currency": ranked.get("currency") or quotation.get("currency") or "KRW",
+            "rate": (
+                _first_non_zero(first_item.get("rate"), first_item.get("net_rate"))
+                if first_item else None
             ),
-            "lead_time_days": first_item.get("lead_time_days"),
-            "transaction_date": quotation.get("transaction_date"),
-            "supplier_scorecard": quotation.get("supplier_scorecard"),
+            "amount": (
+                _first_non_zero(first_item.get("amount"), first_item.get("net_amount"))
+                if first_item else None
+            ),
+            "total_amount": total_amount,
+            "grand_total": ranked.get("grand_total", total_amount),
+            "expected_delivery_date": expected_delivery_date,
+            "lead_time_days": first_item.get("lead_time_days") if first_item else None,
+            "transaction_date": quotation.get("transaction_date") or ranked.get("transaction_date"),
+            "supplier_scorecard": quotation.get("supplier_scorecard") or ranked.get("supplier_scorecard"),
         })
     return enriched
 
 
-def evaluate_quotations(rfq_name: str) -> dict[str, Any]:
+def evaluate_quotations(rfq_name: str, *, top_k: int = 3) -> dict[str, Any]:
     """ERP 견적을 reviewer로 검증하고 외부 AI 없이 결정론적으로 순위를 매긴다."""
     try:
         rfq = load_rfq_requirements(rfq_name)
@@ -289,12 +342,20 @@ def evaluate_quotations(rfq_name: str) -> dict[str, Any]:
         for row in quotations
         if row.get("supplier_scorecard") is not None
     }
-    result = rank_quotations(
-        reviews,
-        rfq,
-        top_k=max(1, len(reviews)),
-        supplier_scorecards=scorecards,
-    )
+    try:
+        result = rank_quotations(
+            reviews,
+            rfq,
+            top_k=top_k,
+            supplier_scorecards=scorecards,
+        )
+    except ValueError as exc:
+        return {
+            "requirements": rfq.model_dump(mode="json"),
+            "quotations": quotations,
+            "ranking": [],
+            "error": str(exc),
+        }
     reviews_by_id = {review.quotation_id: review for review in reviews}
     ranking: list[dict[str, Any]] = []
     for ranked in result.recommended:
@@ -310,11 +371,16 @@ def evaluate_quotations(rfq_name: str) -> dict[str, Any]:
             "reason": ranked.reason,
             "issues": [issue.message for issue in review.issues],
             "currency": ranked.currency,
+            "total_amount": ranked.total_amount,
+            "grand_total": ranked.total_amount,
+            "comparison_amount": ranked.comparison_amount,
             "expected_delivery_date": (
                 ranked.expected_delivery_date.isoformat()
                 if ranked.expected_delivery_date
                 else None
             ),
+            "late_days": ranked.late_days,
+            "tied": ranked.tied,
         })
     return {
         "requirements": rfq.model_dump(mode="json"),
