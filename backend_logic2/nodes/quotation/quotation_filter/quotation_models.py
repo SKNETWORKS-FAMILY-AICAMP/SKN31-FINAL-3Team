@@ -20,6 +20,7 @@ class StrictModel(BaseModel):
 
 class SourceKind(str, Enum):
     EXCEL = "excel"
+    DOCX = "docx"
     PDF = "pdf"
     IMAGE = "image"
     EMAIL = "email"

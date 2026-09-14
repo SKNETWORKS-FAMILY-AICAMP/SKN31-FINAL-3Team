@@ -505,6 +505,40 @@ def material_request_file_webhook(
     return {"accepted": True, "duplicate": not created, "case": case}
 
 
+@webhook_router.post("/quotation-email")
+def quotation_email_webhook(
+    background_tasks: BackgroundTasks,
+    payload: dict[str, Any] = Body(...),
+    x_erpnext_webhook_secret: Optional[str] = Header(default=None),
+    x_erpnext_event_id: Optional[str] = Header(default=None),
+):
+    """Queue an inbound RFQ Communication for local quotation extraction."""
+    _require_webhook_secret(x_erpnext_webhook_secret)
+    background_tasks.add_task(
+        quotation_service.register_quotation_email_event,
+        payload,
+        event_id=x_erpnext_event_id,
+    )
+    return {"accepted": True, "queued": True}
+
+
+@webhook_router.post("/quotation-email-file")
+def quotation_email_file_webhook(
+    background_tasks: BackgroundTasks,
+    payload: dict[str, Any] = Body(...),
+    x_erpnext_webhook_secret: Optional[str] = Header(default=None),
+    x_erpnext_event_id: Optional[str] = Header(default=None),
+):
+    """Queue a File attached to an RFQ reply after ERPNext finishes saving it."""
+    _require_webhook_secret(x_erpnext_webhook_secret)
+    background_tasks.add_task(
+        quotation_service.register_quotation_email_event,
+        payload,
+        event_id=x_erpnext_event_id,
+    )
+    return {"accepted": True, "queued": True}
+
+
 @webhook_router.post("/purchase-receipt")
 def purchase_receipt_webhook(
     payload: dict[str, Any] = Body(...),

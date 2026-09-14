@@ -17,7 +17,7 @@ from backend_logic2.integrations.erp_client import (
 )
 from backend_logic2.nodes.mr.read_material_request import get_pending_material_requests
 from backend_logic2.nodes.mr.reject_material_request import reject_material_request
-from backend_logic2.nodes.quotation.sq_evaluation import get_quotations_for_rfq
+from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import get_quotations_for_rfq
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.repositories import events as event_repository
 from backend_logic2.repositories import notifications as notification_repository

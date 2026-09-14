@@ -26,7 +26,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.append(str(BACKEND_ROOT))
 
-from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_get, erp_get_one, erp_post  # noqa: E402
+from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_get, erp_get_one, erp_post, erp_submit  # noqa: E402
 
 
 GetOne = Callable[[str, str], dict[str, Any] | None]
@@ -36,6 +36,35 @@ PostOne = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 class SupplierQuotationRegistrationError(RuntimeError):
     """ERP 등록 전에 발견된 RFQ 매핑·중복 충돌 오류."""
+
+
+def submit_finalized_quotations(rfq_name: str, ranking: list[dict[str, Any]]) -> list[str]:
+    """최종 순위에 포함된 RFQ 견적을 제출해 이후 수정을 막는다."""
+    quotation_names = {
+        str(row.get("name") or row.get("quotation_id") or "").strip()
+        for row in ranking
+        if str(row.get("name") or row.get("quotation_id") or "").strip()
+    }
+    if not quotation_names:
+        raise ValueError("확정할 Supplier Quotation 문서명이 없습니다.")
+
+    submitted: list[str] = []
+    for quotation_name in sorted(quotation_names):
+        quotation = erp_get_one("Supplier Quotation", quotation_name)
+        if not quotation:
+            raise ValueError(f"Supplier Quotation을 찾을 수 없습니다: {quotation_name}")
+        if not any(
+            item.get("request_for_quotation") == rfq_name
+            for item in quotation.get("items") or []
+        ):
+            raise ValueError(f"{quotation_name}은(는) RFQ {rfq_name}에 연결된 견적이 아닙니다.")
+        docstatus = int(quotation.get("docstatus") or 0)
+        if docstatus == 0:
+            erp_submit("Supplier Quotation", quotation_name)
+        elif docstatus != 1:
+            raise ValueError(f"확정할 수 없는 견적 상태입니다: {quotation_name}")
+        submitted.append(quotation_name)
+    return submitted
 
 
 def _normalized_text(value: Any) -> str:
@@ -180,10 +209,13 @@ def build_supplier_quotation_payload(
         lead_time_days = quotation_item.lead_time_days
         if (
             lead_time_days is None
-            and quotation_item.delivery_date
+            and quotation_item.expected_delivery_date
             and quotation.quotation_date
         ):
-            lead_time_days = max((quotation_item.delivery_date - quotation.quotation_date).days, 0)
+            lead_time_days = max(
+                (quotation_item.expected_delivery_date - quotation.quotation_date).days,
+                0,
+            )
 
         row = {
             "item_code": rfq_item.get("item_code"),
@@ -200,8 +232,8 @@ def build_supplier_quotation_payload(
             # 프로젝트 ERPNext에 추가된 실제 견적 납기 필드. lead_time_days도
             # 함께 유지해 표준 ERPNext와 기존 평가 모듈 모두 호환한다.
             "expected_delivery_date": (
-                quotation_item.delivery_date.isoformat()
-                if quotation_item.delivery_date
+                quotation_item.expected_delivery_date.isoformat()
+                if quotation_item.expected_delivery_date
                 else None
             ),
             "request_for_quotation": quotation.rfq_name,

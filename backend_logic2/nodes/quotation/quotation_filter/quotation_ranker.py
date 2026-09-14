@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -22,6 +23,8 @@ try:
         dump_json,
         load_json,
     )
+    from .get_supplier_quotations import get_quotations_for_rfq, get_reviewable_quotations
+    from .quotation_reviewer import load_rfq_requirements, review_quotation
 except ImportError:
     from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
         QuotationReview,
@@ -32,6 +35,19 @@ except ImportError:
         dump_json,
         load_json,
     )
+    from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
+        get_quotations_for_rfq,
+        get_reviewable_quotations,
+    )
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import (
+        load_rfq_requirements,
+        review_quotation,
+    )
+
+from backend_logic2.repositories.deliveries import get_supplier_latest_scorecards
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _latest_delivery(review: QuotationReview) -> date | None:
@@ -61,13 +77,20 @@ def rank_quotations(
     rfq_data: RFQRequirements | dict[str, Any],
     *,
     top_k: int = 3,
+    supplier_scorecards: dict[str, dict[str, Any]] | None = None,
 ) -> RankingResult:
-    """결정론적 규칙으로 정렬하며 top-k 경계의 동점은 모두 포함한다."""
+    """결정론적 규칙으로 정렬하며 top-k 경계의 동점은 모두 포함한다.
+
+    가격과 납기가 모두 같은 후보에만 최근 공급사 평가를 최종 타이브레이커로
+    사용한다. 같은 조건의 후보 중 평가가 없는 신규 업체가 하나라도 있으면
+    과거 평가를 정렬에 사용하지 않아 신규 업체를 감점하지 않는다.
+    """
     if top_k < 1:
         raise ValueError("top_k는 1 이상이어야 합니다.")
     rfq = rfq_data if isinstance(rfq_data, RFQRequirements) else RFQRequirements.model_validate(rfq_data)
     reviews = [row if isinstance(row, QuotationReview) else QuotationReview.model_validate(row) for row in review_data]
 
+    supplier_scorecards = supplier_scorecards or {}
     candidates: list[tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]] = []
     excluded: list[dict[str, Any]] = []
     required_delivery = _required_delivery(rfq)
@@ -89,21 +112,63 @@ def rank_quotations(
         key = (quotation.total_amount, late_sort, delivery_sort)
         candidates.append((key, review, delivery, late_days))
 
-    candidates.sort(key=lambda row: (row[0], row[1].quotation_id))
+    grouped: dict[tuple[Decimal, int, int], list[tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]]] = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate[0], []).append(candidate)
+
+    candidates = []
+    ranking_keys: dict[str, tuple[Any, ...]] = {}
+    scorecard_tiebreaks: set[str] = set()
+    for base_key in sorted(grouped):
+        group = grouped[base_key]
+        scored: list[tuple[Decimal, tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]]] = []
+        for candidate in group:
+            quotation = candidate[1].quotation
+            assert quotation is not None
+            card = supplier_scorecards.get(str(quotation.supplier_id or ""))
+            score = card.get("weighted_score") if isinstance(card, dict) else None
+            if score is None:
+                scored = []
+                break
+            scored.append((Decimal(str(score)), candidate))
+        if scored:
+            scored.sort(key=lambda row: (-row[0], row[1][1].quotation_id))
+            candidates.extend(candidate for _, candidate in scored)
+            for score, candidate in scored:
+                quotation_id = candidate[1].quotation_id
+                ranking_keys[quotation_id] = (*base_key, -score)
+                scorecard_tiebreaks.add(quotation_id)
+        else:
+            sorted_group = sorted(group, key=lambda row: row[1].quotation_id)
+            candidates.extend(sorted_group)
+            for candidate in sorted_group:
+                ranking_keys[candidate[1].quotation_id] = base_key
     recommended: list[RankedQuotation] = []
-    previous_key: tuple[Decimal, int, int] | None = None
+    previous_key: tuple[Any, ...] | None = None
     current_rank = 0
     for position, (key, review, delivery, late_days) in enumerate(candidates, 1):
-        if key != previous_key:
+        ranking_key = ranking_keys[review.quotation_id]
+        if ranking_key != previous_key:
             current_rank = position
-            previous_key = key
+            previous_key = ranking_key
         if current_rank > top_k:
             break
         quotation = review.quotation
         assert quotation is not None
-        tied = sum(1 for other, *_ in candidates if other == key) > 1
+        tied = sum(
+            1
+            for _, other_review, *_ in candidates
+            if ranking_keys[other_review.quotation_id] == ranking_key
+        ) > 1
         delivery_reason = f", 최종 납기 {delivery.isoformat()}" if delivery else ", 납기 미기재"
         late_reason = f" (RFQ 대비 {late_days}일 지연)" if late_days is not None else ""
+        scorecard = supplier_scorecards.get(str(quotation.supplier_id or ""))
+        score = scorecard.get("weighted_score") if isinstance(scorecard, dict) else None
+        score_reason = (
+            f", 동일 가격·납기 내 공급사 평가 {score}/5 반영"
+            if review.quotation_id in scorecard_tiebreaks
+            else ""
+        )
         recommended.append(RankedQuotation(
             rank=current_rank,
             quotation_id=quotation.quotation_id,
@@ -114,7 +179,7 @@ def rank_quotations(
             expected_delivery_date=delivery,
             late_days=late_days,
             tied=tied,
-            reason=f"규격·수량·산식 검토 통과, 총금액 {quotation.total_amount} {quotation.currency}{delivery_reason}{late_reason}",
+            reason=f"규격·수량·산식 검토 통과, 총금액 {quotation.total_amount} {quotation.currency}{delivery_reason}{late_reason}{score_reason}",
         ))
 
     return RankingResult(
@@ -123,6 +188,152 @@ def rank_quotations(
         recommended=recommended,
         excluded=excluded,
     )
+
+
+def _attach_supplier_scorecards(quotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """최근 공급사 평가를 붙이되 저장소 장애나 신규 업체는 중립으로 둔다."""
+    suppliers = [str(row.get("supplier") or "").strip() for row in quotations]
+    try:
+        scorecards = get_supplier_latest_scorecards(suppliers)
+    except Exception as exc:
+        LOGGER.warning("Supplier Scorecard 집계 실패: %s", exc)
+        scorecards = {}
+    return [
+        {
+            **quotation,
+            "supplier_scorecard": scorecards.get(str(quotation.get("supplier") or "").strip()),
+        }
+        for quotation in quotations
+    ]
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _first_non_zero(*values: Any) -> float:
+    for value in values:
+        number = _number(value)
+        if number:
+            return number
+    return 0.0
+
+
+def _enrich_ranking_with_prices(
+    ranking: list[dict[str, Any]],
+    quotations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """결정론적 순위에 ERP 원문의 가격·납기·평가 정보를 결합한다."""
+    by_name = {str(row.get("name") or "").strip(): row for row in quotations}
+    by_supplier = {str(row.get("supplier") or "").strip(): row for row in quotations}
+    enriched: list[dict[str, Any]] = []
+    for ranked in ranking:
+        quotation = (
+            by_name.get(str(ranked.get("name") or ranked.get("quotation_id") or "").strip())
+            or by_supplier.get(str(ranked.get("supplier") or "").strip())
+            or {}
+        )
+        items = quotation.get("items") or []
+        first_item = items[0] if items else {}
+        total_amount = _first_non_zero(
+            quotation.get("grand_total"),
+            quotation.get("rounded_total"),
+            quotation.get("net_total"),
+            sum(_number(item.get("amount")) for item in items),
+        )
+        enriched.append({
+            **ranked,
+            "name": ranked.get("name") or ranked.get("quotation_id") or quotation.get("name"),
+            "supplier": ranked.get("supplier") or quotation.get("supplier"),
+            "currency": quotation.get("currency") or ranked.get("currency") or "KRW",
+            "rate": _first_non_zero(first_item.get("rate"), first_item.get("net_rate")),
+            "amount": _first_non_zero(first_item.get("amount"), first_item.get("net_amount")),
+            "total_amount": total_amount,
+            "grand_total": total_amount,
+            "expected_delivery_date": (
+                first_item.get("expected_delivery_date")
+                or first_item.get("schedule_date")
+                or first_item.get("delivery_date")
+                or ranked.get("expected_delivery_date")
+            ),
+            "lead_time_days": first_item.get("lead_time_days"),
+            "transaction_date": quotation.get("transaction_date"),
+            "supplier_scorecard": quotation.get("supplier_scorecard"),
+        })
+    return enriched
+
+
+def evaluate_quotations(rfq_name: str) -> dict[str, Any]:
+    """ERP 견적을 reviewer로 검증하고 외부 AI 없이 결정론적으로 순위를 매긴다."""
+    try:
+        rfq = load_rfq_requirements(rfq_name)
+    except Exception as exc:
+        return {"error": f"RFQ를 찾거나 읽을 수 없습니다: {rfq_name} ({exc})"}
+
+    quotations = _attach_supplier_scorecards(get_quotations_for_rfq(rfq_name))
+    if not quotations:
+        return {
+            "requirements": rfq.model_dump(mode="json"),
+            "quotations": [],
+            "ranking": [],
+            "message": "제출된 견적이 아직 없습니다.",
+        }
+
+    reviewable = get_reviewable_quotations(rfq_name)
+    reviews = [review_quotation(quotation, rfq) for quotation in reviewable]
+    scorecards = {
+        str(row.get("supplier") or ""): row["supplier_scorecard"]
+        for row in quotations
+        if row.get("supplier_scorecard") is not None
+    }
+    result = rank_quotations(
+        reviews,
+        rfq,
+        top_k=max(1, len(reviews)),
+        supplier_scorecards=scorecards,
+    )
+    reviews_by_id = {review.quotation_id: review for review in reviews}
+    ranking: list[dict[str, Any]] = []
+    for ranked in result.recommended:
+        review = reviews_by_id[ranked.quotation_id]
+        ranking.append({
+            "name": ranked.quotation_id,
+            "quotation_id": ranked.quotation_id,
+            "supplier": ranked.supplier_id or ranked.supplier_name,
+            "supplier_name": ranked.supplier_name,
+            "rank": ranked.rank,
+            "fulfills_qty": all(item.quantity_compliant for item in review.item_compliance),
+            "spec_match": review.specification_compliant,
+            "reason": ranked.reason,
+            "issues": [issue.message for issue in review.issues],
+            "currency": ranked.currency,
+            "expected_delivery_date": (
+                ranked.expected_delivery_date.isoformat()
+                if ranked.expected_delivery_date
+                else None
+            ),
+        })
+    return {
+        "requirements": rfq.model_dump(mode="json"),
+        "quotations": quotations,
+        "ranking": _enrich_ranking_with_prices(ranking, quotations),
+        "excluded": result.excluded,
+    }
+
+
+def print_evaluation(result: dict[str, Any]) -> None:
+    """워크플로 로그에 외부 AI 없는 견적 평가 결과를 간결하게 출력한다."""
+    if result.get("error") or result.get("message"):
+        print(result.get("error") or result.get("message"))
+        return
+    print(f"\n=== 견적 평가 결과 ({len(result.get('quotations') or [])}건 제출됨) ===")
+    for row in result.get("ranking") or []:
+        print(f"#{row.get('rank')} {row.get('supplier_name') or row.get('supplier')}: {row.get('reason')}")
+    for row in result.get("excluded") or []:
+        print(f"제외 {row.get('supplier_name') or row.get('quotation_id')}: {row.get('evidence')}")
 
 
 def main() -> None:

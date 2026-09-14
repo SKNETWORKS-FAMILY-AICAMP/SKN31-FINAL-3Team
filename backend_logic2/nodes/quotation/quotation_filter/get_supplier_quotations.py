@@ -38,6 +38,22 @@ GetOne = Callable[[str, str], dict[str, Any] | None]
 GetMany = Callable[..., list[dict[str, Any]] | None]
 
 
+def _number(value: Any) -> float:
+    """ERPNext 숫자/문자열 값을 UI 투영에 안전한 숫자로 바꾼다."""
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _first_non_zero(*values: Any) -> float:
+    for value in values:
+        number = _number(value)
+        if number:
+            return number
+    return 0.0
+
+
 class _TextExtractor(HTMLParser):
     """ERPNext Rich Text 필드에서 표시 텍스트만 안전하게 꺼낸다."""
 
@@ -141,8 +157,12 @@ def _normalize_item(detail: dict[str, Any], item: dict[str, Any]) -> dict[str, A
         "uom": item.get("uom"),
         "stock_uom": item.get("stock_uom"),
         "conversion_factor": item.get("conversion_factor"),
-        "rate": item.get("rate"),
-        "amount": item.get("amount"),
+        "rate": _first_non_zero(item.get("rate"), item.get("net_rate")),
+        "amount": _first_non_zero(
+            item.get("amount"),
+            item.get("net_amount"),
+            _number(item.get("qty")) * _number(item.get("rate")),
+        ),
         "net_rate": item.get("net_rate"),
         "net_amount": item.get("net_amount"),
         "lead_time_days": lead_time_days,
@@ -209,6 +229,58 @@ def get_supplier_quotations(
     return results
 
 
+def get_quotations_for_rfq(
+    rfq_name: str,
+    *,
+    get_many: GetMany | None = None,
+    get_one: GetOne | None = None,
+) -> list[dict[str, Any]]:
+    """RFQ별 Supplier Quotation을 헤더와 품목이 결합된 호환 형식으로 반환한다.
+
+    워크플로 투영과 PO 생성이 사용하는 구조이며 외부 AI 호출은 수행하지 않는다.
+    """
+    quotations: list[dict[str, Any]] = []
+    for detail in get_supplier_quotation_documents(
+        rfq_name,
+        get_many=get_many,
+        get_one=get_one,
+    ):
+        items = [
+            _normalize_item(detail, item)
+            for item in detail.get("items") or []
+            if item.get("request_for_quotation") == rfq_name
+        ]
+        first_item = items[0] if items else {}
+        grand_total = _first_non_zero(
+            detail.get("grand_total"),
+            detail.get("rounded_total"),
+            detail.get("net_total"),
+            sum(_number(item.get("amount")) for item in items),
+        )
+        quotations.append({
+            "name": detail.get("name"),
+            "supplier": detail.get("supplier"),
+            "supplier_name": detail.get("supplier_name") or detail.get("supplier"),
+            "docstatus": detail.get("docstatus"),
+            "status": detail.get("status"),
+            "modified": detail.get("modified"),
+            "transaction_date": detail.get("transaction_date"),
+            "valid_till": detail.get("valid_till"),
+            "currency": detail.get("currency") or "KRW",
+            "conversion_rate": detail.get("conversion_rate"),
+            "grand_total": grand_total,
+            "rounded_total": detail.get("rounded_total"),
+            "net_total": detail.get("net_total"),
+            "base_grand_total": detail.get("base_grand_total"),
+            "rate": first_item.get("rate"),
+            "amount": first_item.get("amount"),
+            "expected_delivery_date": first_item.get("expected_delivery_date"),
+            "lead_time_days": first_item.get("lead_time_days"),
+            "items": items,
+        })
+    return quotations
+
+
 def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation:
     """ERPNext Supplier Quotation 하나를 reviewer 공통 모델로 변환한다."""
     transaction_date = detail.get("transaction_date")
@@ -227,7 +299,7 @@ def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation
             "unit": item.get("uom") or item.get("stock_uom"),
             "unit_price": net_rate if net_rate is not None else item.get("rate"),
             "amount": net_amount if net_amount is not None else item.get("amount"),
-            "delivery_date": (
+            "expected_delivery_date": (
                 item.get("expected_delivery_date")
                 or item.get("schedule_date")
                 or item.get("delivery_date")

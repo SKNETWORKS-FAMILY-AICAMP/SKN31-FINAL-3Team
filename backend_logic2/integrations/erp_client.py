@@ -498,6 +498,9 @@ def erp_get_document_email_communications(doctype, name):
             "content",
             "creation",
             "communication_date",
+            "communication_medium",
+            "reference_doctype",
+            "reference_name",
         ],
         order_by="creation asc",
     ) or []

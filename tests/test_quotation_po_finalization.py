@@ -5,8 +5,10 @@ from backend_logic2.nodes.po.create_and_send_po import (
     create_and_send_direct_po,
     create_and_send_po,
 )
-from backend_logic2.nodes.quotation.sq_evaluation import (
+from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import (
     _enrich_ranking_with_prices,
+)
+from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
     submit_finalized_quotations,
 )
 from backend_logic2.workflow.process_commands import check_quotations_command
@@ -37,9 +39,9 @@ class QuotationAndPurchaseOrderFinalizationTests(unittest.TestCase):
         self.assertEqual(enriched[0]["expected_delivery_date"], "2026-09-10")
         self.assertEqual(enriched[0]["transaction_date"], "2026-09-03")
 
-    @patch("backend_logic2.nodes.quotation.sq_evaluation.submit_finalized_quotations")
-    @patch("backend_logic2.nodes.quotation.sq_evaluation.print_evaluation")
-    @patch("backend_logic2.nodes.quotation.sq_evaluation.evaluate_quotations")
+    @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_registrar.submit_finalized_quotations")
+    @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_ranker.print_evaluation")
+    @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_ranker.evaluate_quotations")
     @patch("backend_logic2.workflow.process_commands.interrupt")
     def test_finalize_submits_ranked_quotes_before_supplier_selection(
         self,
@@ -58,8 +60,8 @@ class QuotationAndPurchaseOrderFinalizationTests(unittest.TestCase):
         self.assertEqual(command.goto, "final_selection")
         self.assertEqual(command.update["requested_supplier"], "공급사 A")
 
-    @patch("backend_logic2.nodes.quotation.sq_evaluation.erp_submit")
-    @patch("backend_logic2.nodes.quotation.sq_evaluation.erp_get_one")
+    @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_registrar.erp_submit")
+    @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_registrar.erp_get_one")
     def test_finalize_submits_draft_supplier_quotation(self, get_one, submit):
         get_one.return_value = {
             "name": "SUP-QTN-0001",

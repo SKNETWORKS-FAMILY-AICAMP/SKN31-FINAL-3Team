@@ -6,6 +6,7 @@ cryptography
 pydantic
 jinja2
 python-dotenv
+python-docx
 openai
 psycopg[binary,pool]
 sentence-transformers

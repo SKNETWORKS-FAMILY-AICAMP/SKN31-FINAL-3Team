@@ -3,7 +3,7 @@ nodes/po/create_and_send_po.py
 - 선정된 Supplier Quotation을 기반으로 Purchase Order 생성 + Submit + 이메일 발송
 
 데이터 출처:
-  backend_logic2.nodes.quotation.sq_evaluation.get_quotations_for_rfq
+  backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations.get_quotations_for_rfq
 
 흐름:
   1. RFQ에 제출된 Supplier Quotation 조회
@@ -28,7 +28,7 @@ from backend_logic2.integrations.erp_client import (
     get_email_delivery_policy,
 )
 
-from backend_logic2.nodes.quotation.sq_evaluation import (
+from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
     get_quotations_for_rfq,
 )
 
@@ -170,7 +170,7 @@ def create_and_send_po(
     # ---------------------------------------------------------
     # 4. 납기일 확인
     #
-    # sq_evaluation에서는 Supplier Quotation Item의
+    # get_supplier_quotations에서는 Supplier Quotation Item의
     # expected_delivery_date를 사용함.
     # ---------------------------------------------------------
 

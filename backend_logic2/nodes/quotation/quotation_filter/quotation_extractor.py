@@ -6,7 +6,7 @@
     - 런타임 모델 다운로드와 원격 코드는 허용하지 않는다.
 
 단독 실행 예:
-    python -m backend_logic2.nodes.quotation_filter.quotation_extractor `
+    python -m backend_logic2.nodes.quotation.quotation_filter.quotation_extractor `
       "C:/Users/Playdata/Desktop/1.png" `
       --rfq PUR-RFQ-2026-00295 `
       --supplier-name "화진에스텍" `
@@ -55,13 +55,65 @@ except ImportError:  # nodes 폴더에서 직접 실행할 때
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 EXCEL_SUFFIXES = {".xlsx", ".xls", ".xlsm", ".csv"}
+DOCX_SUFFIXES = {".docx"}
 PDF_SUFFIXES = {".pdf"}
 EMAIL_SUFFIXES = {".eml"}
 TEXT_SUFFIXES = {".txt", ".md"}
 
 DEFAULT_TEXT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
-DEFAULT_VISION_MODEL = "Qwen/Qwen2-VL-2B-Instruct"
-PROJECT_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
+DEFAULT_VISION_MODEL = "Qwen/Qwen3.5-9B"
+DEFAULT_VISION_ADAPTER = "lyc9872/qwen_3.5_9b_peft"
+PROJECT_ENV_FILE = Path(__file__).resolve().parents[4] / ".env"
+
+FINETUNED_SYSTEM_PROMPT = (
+    "견적서 이미지에서 값을 읽어 지정된 JSON만 출력한다. "
+    "이미지에 없는 값은 null로 출력한다."
+)
+FINETUNED_USER_PROMPT = """이 견적서의 정보를 아래 규칙과 JSON 스키마에 맞게 추출하세요.
+
+[추출 규칙]
+
+1. supplier_name은 견적서를 발행하거나 물품을 공급하는 회사명입니다. 문서에 '공급사명' 또는 '공급자명' 필드가 있으면 그 값을 우선하고, 없으면 발행사명으로 판단되는 상호를 사용합니다. 고객사·수신처명은 supplier_name으로 사용하지 않습니다.
+2. quotation_id와 item_code의 영문, 숫자, 하이픈을 한 글자씩 구분합니다. 불명확한 값을 임의로 완성하지 않습니다.
+3. 날짜는 의미가 명확한 경우 YYYY-MM-DD로 변환합니다. 일부만 보이거나 날짜인지 확실하지 않으면 null입니다.
+4. 금액과 수량은 통화 기호와 천 단위 쉼표를 제거한 JSON 숫자로 출력합니다. 이미지의 금액이 계산 결과와 다르더라도 이미지에 적힌 값을 그대로 사용합니다.
+5. currency는 문서에 통화명이나 통화 기호가 명시된 경우에만 ISO 통화 코드(KRW, USD, JPY 등)로 출력하고, 표시가 없으면 null입니다.
+6. subtotal은 문서 전체의 세전 공급가액 합계이고, item.amount는 해당 품목 행의 공급가액입니다. 두 값을 서로 대신 사용하지 않습니다.
+7. item_name에는 제품명만, description에는 규격·사양·설명 내용을 기록합니다. specifications에는 문서에 표시된 규격 항목을 키-값으로 기록합니다.
+8. raw_description에는 해당 품목 행에 보이는 품목명과 규격·설명 원문을 읽는 순서대로 보존합니다. 원문에 없는 구분 문구를 만들지 않습니다.
+9. 품목이 여러 개이면 생략하거나 합치지 말고 items 배열에 위에서 아래 순서로 모두 출력합니다.
+10. notes에는 문서에 실제로 표시된 특이사항, 비고 또는 조건만 기록합니다.
+
+[출력 스키마]
+{
+  "quotation_id": string|null,
+  "supplier_name": string|null,
+  "business_registration_no": string|null,
+  "quotation_date": string|null,
+  "valid_until": string|null,
+  "currency": string|null,
+  "subtotal": number|null,
+  "tax_amount": number|null,
+  "total_amount": number|null,
+  "items": [
+    {
+      "item_code": string|null,
+      "item_name": string|null,
+      "description": string|null,
+      "quantity": number|null,
+      "unit": string|null,
+      "unit_price": number|null,
+      "amount": number|null,
+      "expected_delivery_date": string|null,
+      "lead_time_days": number|null,
+      "specifications": object,
+      "raw_description": string|null
+    }
+  ],
+  "notes": string|null
+}
+
+유효한 JSON 객체 하나만 출력하세요."""
 
 
 def _project_model_setting(name: str) -> str | None:
@@ -88,7 +140,7 @@ class _ParsedItem(BaseModel):
     unit: str | None = None
     unit_price: Decimal = Field(ge=0)
     amount: Decimal = Field(ge=0)
-    delivery_date: date | None = None
+    expected_delivery_date: date | None = None
     lead_time_days: int | None = Field(default=None, ge=0)
     specifications: dict[str, str | int | float] = Field(default_factory=dict)
     raw_description: str | None = None
@@ -137,6 +189,8 @@ def classify_source(path: str | Path) -> SourceKind:
     suffix = Path(path).suffix.lower()
     if suffix in EXCEL_SUFFIXES:
         return SourceKind.EXCEL
+    if suffix in DOCX_SUFFIXES:
+        return SourceKind.DOCX
     if suffix in PDF_SUFFIXES:
         return SourceKind.PDF
     if suffix in IMAGE_SUFFIXES:
@@ -188,8 +242,8 @@ def _render_scanned_pdf(data: bytes, filename: str) -> list[VisionInput]:
     return images
 
 
-def _pdf_tables_to_text(tables: list[list[list[str]]]) -> str:
-    """pdf_table_extractor.py의 행x열 그리드를 LLM 프롬프트용 평문으로 렌더링한다.
+def _tables_to_text(tables: list[list[list[str]]]) -> str:
+    """행x열 표 그리드를 LLM 프롬프트용 평문으로 렌더링한다.
 
     " | "로 열을 구분해 좌표 정보 없이도 어느 값이 어느 열인지 LLM이 구분할 수
     있게 한다. pypdf.extract_text()의 통짜 평문화(열 순서가 보장되지 않음)와
@@ -202,6 +256,34 @@ def _pdf_tables_to_text(tables: list[list[list[str]]]) -> str:
             lines.append(" | ".join(cell.replace("\n", " ").strip() for cell in row))
         rendered.append("\n".join(lines))
     return "\n\n".join(rendered)
+
+
+def _docx_to_text(source: str | Path | bytes, filename: str | None = None) -> tuple[str, list[str]]:
+    """DOCX 본문과 표를 XML 기반으로 직접 읽어 텍스트 모델 입력을 만든다."""
+    try:
+        from .docx_table_extractor import extract_paragraphs, extract_tables_from_docx
+    except ImportError:  # nodes 폴더에서 직접 실행하는 경우
+        from backend_logic2.nodes.quotation.quotation_filter.docx_table_extractor import (
+            extract_paragraphs,
+            extract_tables_from_docx,
+        )
+
+    paragraphs = extract_paragraphs(source)
+    tables = extract_tables_from_docx(source)
+    sections: list[str] = []
+    if paragraphs:
+        sections.append("[본문]\n" + "\n".join(paragraphs))
+    if tables:
+        sections.append(_tables_to_text(tables))
+    if not sections:
+        source_name = filename or (Path(source).name if not isinstance(source, bytes) else "attachment.docx")
+        raise ValueError(f"DOCX에서 읽을 수 있는 본문이나 표가 없습니다: {source_name}")
+
+    evidence = [
+        f"DOCX 본문 {len(paragraphs)}개, 표 {len(tables)}개 로컬 추출",
+        "DOCX XML 텍스트와 표 구조 직접 판독(OCR 미사용)",
+    ]
+    return "\n\n".join(sections), evidence
 
 
 def _pdf_to_source(data: bytes, filename: str) -> tuple[str, list[VisionInput], list[str]]:
@@ -220,45 +302,10 @@ def _pdf_to_source(data: bytes, filename: str) -> tuple[str, list[VisionInput], 
         ]
         return "[스캔 PDF]", _render_scanned_pdf(data, filename), evidence
 
-    # 디지털 텍스트가 있으면(스캔본이 아니면) pypdf 평문화 대신 표 좌표 기반
-    # 추출을 우선 시도한다. pypdf 평문화는 표의 열 순서를 보장하지 않는다
-    # (실측: 견적서 표가 한 줄 텍스트로 뒤섞여 나오는 문제를 확인함).
-    try:
-        try:
-            from .pdf_table_extractor import (
-                extract_page_text_outside_tables,
-                extract_tables_from_pdf,
-            )
-        except ImportError:  # nodes 폴더에서 직접 실행할 때
-            from backend_logic2.nodes.quotation.quotation_filter.pdf_table_extractor import (
-                extract_page_text_outside_tables,
-                extract_tables_from_pdf,
-            )
-
-        tables = extract_tables_from_pdf(io.BytesIO(data))
-        outside_text = "\n\n".join(extract_page_text_outside_tables(io.BytesIO(data)))
-        if tables:
-            table_text = _pdf_tables_to_text(tables)
-            structured_text = "\n\n".join(part for part in (outside_text, table_text) if part.strip())
-            evidence = [
-                f"PDF {len(reader.pages)}페이지에서 디지털 텍스트 확인",
-                f"pdfplumber 좌표 기반 표 추출: 표 {len(tables)}개(병합 셀 반영, OCR 미사용)",
-            ]
-            return structured_text, [], evidence
-
-        # 표가 감지되지 않은 디지털 PDF(순수 텍스트 문서 등)는 표 밖 텍스트만으로 충분하다.
-        evidence = [
-            f"PDF {len(reader.pages)}페이지에서 디지털 텍스트 확인, 감지된 표 없음",
-        ]
-        return outside_text or flat_text, [], evidence
-    except Exception as exc:
-        # pdfplumber 처리 중 어떤 이유로든 실패하면(예: pdfplumber 미설치, 손상된
-        # 표 구조) 기존 pypdf 평문화로 안전하게 폴백한다 — 추출 자체가 죽지 않게 함.
-        evidence = [
-            f"PDF {len(reader.pages)}페이지에서 텍스트 {len(flat_text)}자 로컬 추출",
-            f"표 좌표 기반 추출 실패로 평문 추출로 폴백: {type(exc).__name__}: {exc}",
-        ]
-        return flat_text, [], evidence
+    return flat_text, [], [
+        f"PDF {len(reader.pages)}페이지에서 디지털 텍스트 {len(flat_text)}자 로컬 추출",
+        "pypdf 텍스트 레이어 직접 판독(OCR 미사용)",
+    ]
 
 
 def _strip_html(value: str) -> str:
@@ -292,6 +339,10 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
         evidence.append(f"이메일 첨부 로컬 처리: {attachment_name}")
         if suffix in EXCEL_SUFFIXES:
             body_parts.append(f"[attachment: {attachment_name}]\n{_spreadsheet_to_text(payload, attachment_name)}")
+        elif suffix in DOCX_SUFFIXES:
+            docx_text, docx_evidence = _docx_to_text(payload, attachment_name)
+            body_parts.append(f"[attachment: {attachment_name}]\n{docx_text}")
+            evidence.extend(docx_evidence)
         elif suffix in PDF_SUFFIXES:
             pdf_text, pdf_images, pdf_evidence = _pdf_to_source(payload, attachment_name)
             body_parts.append(f"[attachment: {attachment_name}]\n{pdf_text}")
@@ -310,26 +361,32 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
     )
 
 
-def prepare_source(path: str | Path) -> PreparedSource:
-    path = Path(path)
-    kind = classify_source(path)
-    data = path.read_bytes()
-
+def prepare_source_bytes(data: bytes, filename: str) -> PreparedSource:
+    """파일을 디스크에 저장하지 않고 이름과 바이트만으로 모델 입력을 준비한다."""
+    kind = classify_source(filename)
+    if kind == SourceKind.DOCX:
+        text, evidence = _docx_to_text(data, filename)
+        return PreparedSource(kind=kind, text=text, evidence=evidence)
     if kind == SourceKind.EXCEL:
-        return PreparedSource(kind=kind, text=_spreadsheet_to_text(data, path.name), evidence=[f"표 파일 로컬 파싱: {path.name}"])
+        return PreparedSource(kind=kind, text=_spreadsheet_to_text(data, filename), evidence=[f"표 파일 메모리 파싱: {filename}"])
     if kind == SourceKind.PDF:
-        text, vision_inputs, evidence = _pdf_to_source(data, path.name)
+        text, vision_inputs, evidence = _pdf_to_source(data, filename)
         return PreparedSource(kind=kind, text=text, vision_inputs=vision_inputs, evidence=evidence)
     if kind == SourceKind.IMAGE:
         return PreparedSource(
             kind=kind,
             text="[견적서 이미지]",
-            vision_inputs=[VisionInput(data=data, filename=path.name)],
-            evidence=[f"로컬 비전 입력 준비: {path.name}"],
+            vision_inputs=[VisionInput(data=data, filename=filename)],
+            evidence=[f"메모리 비전 입력 준비: {filename}"],
         )
     if kind == SourceKind.EMAIL:
-        return _email_to_source(data, path.name)
-    return PreparedSource(kind=kind, text=data.decode("utf-8-sig", errors="replace"), evidence=[f"텍스트 파일 로컬 파싱: {path.name}"])
+        return _email_to_source(data, filename)
+    return PreparedSource(kind=kind, text=data.decode("utf-8-sig", errors="replace"), evidence=[f"텍스트 파일 메모리 파싱: {filename}"])
+
+
+def prepare_source(path: str | Path) -> PreparedSource:
+    path = Path(path)
+    return prepare_source_bytes(path.read_bytes(), path.name)
 
 
 def _enforce_offline_mode() -> None:
@@ -546,7 +603,13 @@ def _normalize_generated_quotation(
             "unit": unit,
             "unit_price": unit_price,
             "amount": amount,
-            "delivery_date": _normalize_date(raw_item.get("delivery_date")) if has_delivery_field else None,
+            "expected_delivery_date": (
+                _normalize_date(
+                    raw_item.get("expected_delivery_date", raw_item.get("delivery_date"))
+                )
+                if has_delivery_field
+                else None
+            ),
             "lead_time_days": raw_item.get("lead_time_days") if has_delivery_field else None,
             "specifications": specifications,
             "raw_description": raw_description,
@@ -604,10 +667,54 @@ def _normalize_generated_quotation(
     }
 
 
-class LocalHuggingFaceQuotationParser:
-    """텍스트 모델과 비전 모델을 지연 로딩하고 프로세스 내에서 재사용한다."""
+def _normalize_finetuned_quotation(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the image-to-JSON adapter output without recalculating document values."""
+    raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    items: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        specifications = raw_item.get("specifications")
+        items.append({
+            "item_code": raw_item.get("item_code"),
+            "item_name": raw_item.get("item_name"),
+            "description": raw_item.get("description"),
+            "quantity": _normalize_decimal(raw_item.get("quantity")),
+            "unit": raw_item.get("unit"),
+            "unit_price": _normalize_decimal(raw_item.get("unit_price")),
+            "amount": _normalize_decimal(raw_item.get("amount")),
+            "expected_delivery_date": _normalize_date(
+                raw_item.get("expected_delivery_date", raw_item.get("delivery_date"))
+            ),
+            "lead_time_days": raw_item.get("lead_time_days"),
+            "specifications": specifications if isinstance(specifications, dict) else {},
+            "raw_description": raw_item.get("raw_description"),
+        })
+    return {
+        "quotation_id": payload.get("quotation_id"),
+        # The application supplies and overwrites the trusted supplier name.
+        "supplier_name": None,
+        "business_registration_no": payload.get("business_registration_no"),
+        "quotation_date": _normalize_date(payload.get("quotation_date")),
+        "valid_until": _normalize_date(payload.get("valid_until")),
+        "currency": payload.get("currency") or "KRW",
+        "subtotal": _normalize_decimal(payload.get("subtotal")),
+        "tax_amount": _normalize_decimal(payload.get("tax_amount")),
+        "total_amount": _normalize_decimal(payload.get("total_amount")),
+        "items": items,
+        "notes": payload.get("notes"),
+    }
 
-    def __init__(self, text_model: str | None = None, vision_model: str | None = None):
+
+class LocalHuggingFaceQuotationParser:
+    """텍스트 모델과 파인튜닝 비전 adapter를 지연 로딩해 재사용한다."""
+
+    def __init__(
+        self,
+        text_model: str | None = None,
+        vision_model: str | None = None,
+        vision_adapter: str | None = None,
+    ):
         _enforce_offline_mode()
         self.text_model_name = (
             text_model
@@ -621,6 +728,12 @@ class LocalHuggingFaceQuotationParser:
             or os.getenv("HF_QUOTATION_VISION_MODEL")
             or DEFAULT_VISION_MODEL
         )
+        self.vision_adapter_name = (
+            vision_adapter
+            or _project_model_setting("HF_QUOTATION_VISION_ADAPTER")
+            or os.getenv("HF_QUOTATION_VISION_ADAPTER")
+            or DEFAULT_VISION_ADAPTER
+        )
         self.max_new_tokens = int(
             _project_model_setting("HF_QUOTATION_MAX_NEW_TOKENS")
             or os.getenv("HF_QUOTATION_MAX_NEW_TOKENS")
@@ -629,12 +742,17 @@ class LocalHuggingFaceQuotationParser:
         self.vision_max_new_tokens = int(
             _project_model_setting("HF_QUOTATION_VISION_MAX_NEW_TOKENS")
             or os.getenv("HF_QUOTATION_VISION_MAX_NEW_TOKENS")
-            or "384"
+            or "512"
         )
         self.vision_max_pixels = int(
             _project_model_setting("HF_QUOTATION_VISION_MAX_PIXELS")
             or os.getenv("HF_QUOTATION_VISION_MAX_PIXELS")
-            or str(512 * 28 * 28)
+            or "802816"
+        )
+        self.vision_attn_implementation = (
+            _project_model_setting("HF_QUOTATION_ATTN_IMPLEMENTATION")
+            or os.getenv("HF_QUOTATION_ATTN_IMPLEMENTATION")
+            or "sdpa"
         )
         self._text_tokenizer: Any = None
         self._text_model: Any = None
@@ -659,7 +777,8 @@ class LocalHuggingFaceQuotationParser:
         return RuntimeError(
             f"로컬 Hugging Face 모델 '{model_name}'을 찾거나 로드할 수 없습니다. "
             "보안상 런타임 다운로드는 차단되어 있습니다. 승인된 환경에서 모델을 미리 캐시하거나 "
-            "HF_QUOTATION_TEXT_MODEL/HF_QUOTATION_VISION_MODEL에 사내 로컬 경로를 지정하세요. "
+            "HF_QUOTATION_TEXT_MODEL/HF_QUOTATION_VISION_MODEL/"
+            "HF_QUOTATION_VISION_ADAPTER에 사내 로컬 경로를 지정하세요. "
             f"원인: {exc}"
         )
 
@@ -688,7 +807,12 @@ class LocalHuggingFaceQuotationParser:
     def _load_vision_model(self) -> None:
         if self._vision_model is not None:
             return
-        from transformers import AutoModelForImageTextToText, AutoProcessor
+        from transformers import AutoProcessor, BitsAndBytesConfig
+
+        try:
+            from transformers import AutoModelForMultimodalLM as AutoVisionModel
+        except ImportError:  # pragma: no cover - 구버전 Transformers 호환
+            from transformers import AutoModelForImageTextToText as AutoVisionModel
 
         _, device, dtype = self._runtime()
         try:
@@ -698,14 +822,39 @@ class LocalHuggingFaceQuotationParser:
                 trust_remote_code=False,
                 max_pixels=self.vision_max_pixels,
             )
-            self._vision_model = AutoModelForImageTextToText.from_pretrained(
+            model_kwargs: dict[str, Any] = {
+                "local_files_only": True,
+                "trust_remote_code": False,
+                "dtype": dtype,
+                "low_cpu_mem_usage": True,
+                "attn_implementation": self.vision_attn_implementation,
+            }
+            if device == "cuda":
+                model_kwargs.update({
+                    "device_map": "auto",
+                    "quantization_config": BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_compute_dtype=dtype,
+                    ),
+                })
+            self._vision_model = AutoVisionModel.from_pretrained(
                 self.vision_model_name,
+                **model_kwargs,
+            )
+            if device != "cuda":
+                self._vision_model = self._vision_model.to(device)
+            from peft import PeftModel
+
+            self._vision_model = PeftModel.from_pretrained(
+                self._vision_model,
+                self.vision_adapter_name,
                 local_files_only=True,
-                trust_remote_code=False,
-                dtype=dtype,
-            ).to(device).eval()
+            ).eval()
         except Exception as exc:
-            raise self._local_model_error(self.vision_model_name, exc) from exc
+            model_label = f"{self.vision_model_name} + {self.vision_adapter_name}"
+            raise self._local_model_error(model_label, exc) from exc
         self._device = device
 
     def _transcribe_image(self, vision_input: VisionInput) -> str:
@@ -729,13 +878,82 @@ class LocalHuggingFaceQuotationParser:
         inputs = self._vision_processor(text=prompt, images=[image], return_tensors="pt")
         inputs = _move_inputs_to_device(inputs, self._device or "cpu")
         input_length = inputs["input_ids"].shape[-1]
-        outputs = self._vision_model.generate(
-            **inputs,
-            max_new_tokens=self.vision_max_new_tokens,
-            do_sample=False,
-        )
-        generated = outputs[:, input_length:]
-        return self._vision_processor.batch_decode(generated, skip_special_tokens=True)[0].strip()
+        try:
+            outputs = self._vision_model.generate(
+                **inputs,
+                max_new_tokens=self.vision_max_new_tokens,
+                do_sample=False,
+            )
+            generated = outputs[:, input_length:]
+            return self._vision_processor.batch_decode(
+                generated, skip_special_tokens=True
+            )[0].strip()
+        finally:
+            image.close()
+
+    def _extract_images(
+        self,
+        prepared: PreparedSource,
+        reflection_errors: list[str],
+    ) -> _ParsedQuotation:
+        """Run the quotation-specific Qwen3.5 adapter directly on document images."""
+        from PIL import Image
+
+        self._load_vision_model()
+        images = [
+            Image.open(io.BytesIO(vision_input.data)).convert("RGB")
+            for vision_input in prepared.vision_inputs
+        ]
+        correction = ""
+        if reflection_errors:
+            correction = (
+                "\n\n[이전 검토에서 확인된 오류]\n"
+                + "\n".join(f"- {error}" for error in reflection_errors)
+                + "\n위 오류를 이미지와 다시 대조해 교정하세요."
+            )
+        messages = [
+            {"role": "system", "content": FINETUNED_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    *({"type": "image", "image": image} for image in images),
+                    {"type": "text", "text": FINETUNED_USER_PROMPT + correction},
+                ],
+            },
+        ]
+        try:
+            prompt = self._vision_processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            inputs = self._vision_processor(
+                text=[prompt],
+                images=images,
+                return_tensors="pt",
+            )
+            inputs = _move_inputs_to_device(inputs, self._device or "cpu")
+            input_length = inputs["input_ids"].shape[-1]
+            outputs = self._vision_model.generate(
+                **inputs,
+                max_new_tokens=self.vision_max_new_tokens,
+                do_sample=False,
+                use_cache=True,
+            )
+            generated = outputs[:, input_length:]
+            decoded = self._vision_processor.batch_decode(
+                generated,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0].strip()
+            payload = _extract_json_object(decoded)
+            return _ParsedQuotation.model_validate(
+                _normalize_finetuned_quotation(payload)
+            )
+        finally:
+            for image in images:
+                image.close()
 
     def _structure_text(
         self,
@@ -785,6 +1003,9 @@ class LocalHuggingFaceQuotationParser:
         supplier_name: str | None,
         reflection_errors: list[str],
     ) -> _ParsedQuotation:
+        if prepared.vision_inputs and prepared.kind in {SourceKind.IMAGE, SourceKind.PDF}:
+            return self._extract_images(prepared, reflection_errors)
+
         transcriptions = []
         for image in prepared.vision_inputs:
             transcriptions.append(f"[local vision: {image.filename}]\n{self._transcribe_image(image)}")
@@ -798,7 +1019,7 @@ class LocalHuggingFaceQuotationParser:
             "문서에 없는 선택값은 null, specifications는 빈 객체로 두세요. "
             "RFQ 번호와 공급사명은 추출하지 마세요. 두 값은 애플리케이션이 별도로 지정합니다. "
             "견적번호는 원문에 실제로 적힌 Supplier Quotation 문서번호만 사용하고 없으면 null로 두세요. "
-            "quotation_date에는 견적서의 납기일자를, valid_until에는 견적 유효기간을 넣으세요. "
+            "quotation_date에는 견적서 발행일자를, valid_until에는 견적 유효기간을 넣으세요. "
             "통화 기호와 천 단위 쉼표는 숫자에서 제거하고 DD-MM-YYYY 날짜는 YYYY-MM-DD로 변환하세요.\n"
             f"specifications에 사용할 수 있는 규격 키: {specification_keys}\n"
             f"이전 검토 오류(재추출 시 교정):\n{reflection}\n"
@@ -806,7 +1027,7 @@ class LocalHuggingFaceQuotationParser:
             "quotation_date, valid_until, currency, subtotal, tax_amount, total_amount, items, notes.\n"
             "각 items 원소의 필수 키: item_code, item_name, description, quantity, unit, "
             "unit_price, amount, specifications, raw_description. "
-            "품목별 delivery_date와 lead_time_days는 보조 필드이며 원문에 명시된 경우에만 넣으세요.\n"
+            "품목별 expected_delivery_date와 lead_time_days는 보조 필드이며 원문에 명시된 경우에만 넣으세요.\n"
             "subtotal은 세전 공급가액, tax_amount는 세액, total_amount는 세금 포함 총액입니다.\n\n"
             f"견적 원문:\n{document_text}"
         )
@@ -823,19 +1044,24 @@ def get_local_parser() -> LocalHuggingFaceQuotationParser:
     return _LOCAL_PARSER
 
 
-def extract_quotation(
-    path: str | Path,
+def _extract_prepared_quotation(
+    prepared: PreparedSource,
     rfq_name: str,
     *,
+    source_filename: str,
+    source_path: str | None = None,
+    message_id: str | None = None,
+    content_type: str | None = None,
     supplier_name: str | None = None,
     supplier_id: str | None = None,
     quotation_id: str | None = None,
+    fallback_quotation_id: str | None = None,
     attempt: int = 1,
     reflection_errors: list[str] | None = None,
     rfq_requirements: dict[str, Any] | None = None,
     model_parser: QuotationParser | None = None,
 ) -> Quotation:
-    """한 개 외부 견적을 추출한다. parser 미지정 시 로컬 HF 모델만 사용한다."""
+    """준비된 외부 견적 입력을 공통 Quotation 모델로 변환한다."""
     rfq_name = str(rfq_name or "").strip()
     supplier_name = str(supplier_name or "").strip()
     if not rfq_name:
@@ -843,7 +1069,6 @@ def extract_quotation(
     if not supplier_name:
         raise ValueError("supplier_name은 필수 입력값입니다.")
 
-    prepared = prepare_source(path)
     if prepared.kind == SourceKind.PORTAL:
         raise ValueError("포털 Supplier Quotation은 외부 견적 추출 대상이 아닙니다.")
     if rfq_requirements:
@@ -873,11 +1098,11 @@ def extract_quotation(
     parsed_quotation_id = str(parsed.quotation_id or "").strip()
     if parsed_quotation_id.casefold() == rfq_name.casefold():
         parsed_quotation_id = ""
-    fallback_quotation_id = f"EXT-{Path(path).stem}"
+    resolved_fallback_id = fallback_quotation_id or f"EXT-{Path(source_filename).stem}"
     payload["quotation_id"] = (
         str(quotation_id).strip()
         if quotation_id
-        else (parsed_quotation_id or fallback_quotation_id)
+        else (parsed_quotation_id or resolved_fallback_id)
     )
     payload["rfq_name"] = rfq_name
     payload["supplier_id"] = supplier_id
@@ -885,26 +1110,100 @@ def extract_quotation(
     payload["items"] = [QuotationItem.model_validate(item) for item in payload["items"]]
     payload["source"] = QuotationSource(
         kind=prepared.kind,
-        filename=Path(path).name,
-        path=str(Path(path).resolve()),
+        filename=source_filename,
+        path=source_path,
+        message_id=message_id,
+        content_type=content_type,
     )
     payload["extraction_attempt"] = attempt
-    model_label = parser.text_model_name if isinstance(parser, LocalHuggingFaceQuotationParser) else "주입 파서"
+    if isinstance(parser, LocalHuggingFaceQuotationParser):
+        if prepared.vision_inputs and prepared.kind in {SourceKind.IMAGE, SourceKind.PDF}:
+            model_label = (
+                f"{parser.vision_model_name} + LoRA {parser.vision_adapter_name}"
+            )
+        else:
+            model_label = parser.text_model_name
+    else:
+        model_label = "주입 파서"
     payload["extraction_evidence"] = [
         *prepared.evidence,
-        f"로컬 HF 텍스트 모델: {model_label}",
+        f"로컬 HF 모델: {model_label}",
         "외부 API 전송 없음",
     ]
     if not quotation_id and not parsed_quotation_id:
         payload["extraction_evidence"].append(
-            f"문서에서 견적번호를 확인하지 못해 파일명 기반 번호 사용: {fallback_quotation_id}"
+            f"문서에서 견적번호를 확인하지 못해 대체 번호 사용: {resolved_fallback_id}"
         )
     return Quotation.model_validate(payload)
 
 
+def extract_quotation_bytes(
+    data: bytes,
+    filename: str,
+    rfq_name: str,
+    *,
+    supplier_name: str | None = None,
+    supplier_id: str | None = None,
+    quotation_id: str | None = None,
+    fallback_quotation_id: str | None = None,
+    attempt: int = 1,
+    reflection_errors: list[str] | None = None,
+    rfq_requirements: dict[str, Any] | None = None,
+    model_parser: QuotationParser | None = None,
+    message_id: str | None = None,
+    content_type: str | None = None,
+) -> Quotation:
+    """ERPNext 첨부파일 바이트를 로컬 파일 생성 없이 추출한다."""
+    prepared = prepare_source_bytes(data, filename)
+    return _extract_prepared_quotation(
+        prepared,
+        rfq_name,
+        source_filename=filename,
+        message_id=message_id,
+        content_type=content_type,
+        supplier_name=supplier_name,
+        supplier_id=supplier_id,
+        quotation_id=quotation_id,
+        fallback_quotation_id=fallback_quotation_id,
+        attempt=attempt,
+        reflection_errors=reflection_errors,
+        rfq_requirements=rfq_requirements,
+        model_parser=model_parser,
+    )
+
+
+def extract_quotation(
+    path: str | Path,
+    rfq_name: str,
+    *,
+    supplier_name: str | None = None,
+    supplier_id: str | None = None,
+    quotation_id: str | None = None,
+    attempt: int = 1,
+    reflection_errors: list[str] | None = None,
+    rfq_requirements: dict[str, Any] | None = None,
+    model_parser: QuotationParser | None = None,
+) -> Quotation:
+    """한 개 로컬 견적을 추출한다. parser 미지정 시 로컬 HF 모델만 사용한다."""
+    path = Path(path)
+    return _extract_prepared_quotation(
+        prepare_source(path),
+        rfq_name,
+        source_filename=path.name,
+        source_path=str(path.resolve()),
+        supplier_name=supplier_name,
+        supplier_id=supplier_id,
+        quotation_id=quotation_id,
+        attempt=attempt,
+        reflection_errors=reflection_errors,
+        rfq_requirements=rfq_requirements,
+        model_parser=model_parser,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="로컬 Hugging Face 기반 외부 견적 추출")
-    parser.add_argument("input", help="xlsx/xls/csv/pdf/png/jpg/eml/txt 파일")
+    parser.add_argument("input", help="xlsx/xls/csv/docx/pdf/png/jpg/eml/txt 파일")
     parser.add_argument("--rfq", required=True, help="RFQ 이름")
     parser.add_argument(
         "--supplier-name",
@@ -917,7 +1216,14 @@ def main() -> None:
     parser.add_argument("--reflection", action="append", default=[], help="이전 추출 오류(여러 번 지정 가능)")
     parser.add_argument("--rfq-context", help="선택: RFQ 요구사항 JSON. 규격 키 추출에 사용")
     parser.add_argument("--text-model", help="로컬 캐시 또는 사내 로컬 텍스트 모델 경로")
-    parser.add_argument("--vision-model", help="로컬 캐시 또는 사내 로컬 비전 모델 경로")
+    parser.add_argument(
+        "--vision-model",
+        help=f"로컬 Qwen3.5 기반 모델 경로(기본: {DEFAULT_VISION_MODEL})",
+    )
+    parser.add_argument(
+        "--vision-adapter",
+        help=f"로컬 견적서 LoRA adapter 경로(기본: {DEFAULT_VISION_ADAPTER})",
+    )
     parser.add_argument(
         "--register-erp",
         action="store_true",
@@ -933,7 +1239,11 @@ def main() -> None:
     if args.erp_dry_run and not args.register_erp:
         parser.error("--erp-dry-run은 --register-erp와 함께 사용해야 합니다.")
 
-    local_parser = LocalHuggingFaceQuotationParser(args.text_model, args.vision_model)
+    local_parser = LocalHuggingFaceQuotationParser(
+        args.text_model,
+        args.vision_model,
+        args.vision_adapter,
+    )
     quotation = extract_quotation(
         args.input,
         args.rfq,

@@ -23,8 +23,29 @@ docx는 표 데이터가 이미지가 아니라 문서 안에 진짜 텍스트�
 from __future__ import annotations
 
 import argparse
+import io
 import json
 from pathlib import Path
+from typing import TypeAlias
+
+
+DocxSource: TypeAlias = str | Path | bytes
+
+
+def _open_document(source: DocxSource):
+    """경로 또는 이메일 첨부 바이트에서 Word 문서를 연다."""
+    from docx import Document
+
+    if isinstance(source, bytes):
+        return Document(io.BytesIO(source))
+
+    suffix = Path(source).suffix.lower()
+    if suffix != ".docx":
+        raise ValueError(
+            f"지원하지 않는 확장자입니다: {suffix or '(없음)'}. "
+            ".doc(구형 이진 형식)는 Word/한글/LibreOffice에서 .docx로 변환한 뒤 사용하세요."
+        )
+    return Document(str(source))
 
 
 def _cell_text(cell) -> str:
@@ -46,18 +67,9 @@ def _cell_text(cell) -> str:
     return "; ".join(p for p in parts if p)
 
 
-def extract_tables_from_docx(path: str | Path) -> list[list[list[str]]]:
+def extract_tables_from_docx(path: DocxSource) -> list[list[list[str]]]:
     """docx 안의 모든 표를 행 x 열 텍스트 그리드로 읽는다."""
-    from docx import Document
-
-    suffix = Path(path).suffix.lower()
-    if suffix != ".docx":
-        raise ValueError(
-            f"지원하지 않는 확장자입니다: {suffix or '(없음)'}. "
-            ".doc(구형 이진 형식)는 Word/한글/LibreOffice에서 .docx로 변환한 뒤 사용하세요."
-        )
-
-    document = Document(str(path))
+    document = _open_document(path)
     tables: list[list[list[str]]] = []
     for table in document.tables:
         grid = [[_cell_text(cell) for cell in row.cells] for row in table.rows]
@@ -65,11 +77,9 @@ def extract_tables_from_docx(path: str | Path) -> list[list[list[str]]]:
     return tables
 
 
-def extract_paragraphs(path: str | Path) -> list[str]:
+def extract_paragraphs(path: DocxSource) -> list[str]:
     """표 밖의 본문 문단(회사명, 비고 등)을 읽는다."""
-    from docx import Document
-
-    document = Document(str(path))
+    document = _open_document(path)
     return [p.text.strip() for p in document.paragraphs if p.text.strip()]
 
 

@@ -649,9 +649,11 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         )
 
     # check와 finalize 둘 다 일단 지금 시점 견적을 조회함
-    from backend_logic2.nodes.quotation.sq_evaluation import (
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import (
         evaluate_quotations,
         print_evaluation,
+    )
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
         submit_finalized_quotations,
     )
 
