@@ -388,7 +388,7 @@ def search_suppliers_for_frontend(
     current_user: CurrentUser,
     q: str = Query(default="", max_length=200),
 ):
-    """협력사 직접 입력 자동완성용 Supplier 검색."""
+    """협력사명 또는 이메일로 기존 Supplier를 검색한다."""
 
     del current_user
 
@@ -397,30 +397,48 @@ def search_suppliers_for_frontend(
     if not query:
         return {"items": []}
 
+    fields = [
+        "name",
+        "supplier_name",
+        "email_id",
+        "mobile_no",
+    ]
+
     try:
-        rows = erp_get(
+        # 1. 협력사명 substring 검색
+        name_rows = erp_get(
             "Supplier",
             filters=[
                 ["supplier_name", "like", f"%{query}%"],
             ],
-            fields=[
-                "name",
-                "supplier_name",
-                "email_id",
-                "mobile_no",
-            ],
+            fields=fields,
             order_by="supplier_name asc",
             limit=10,
         ) or []
 
-        print(
-            f"[Supplier Search] query={query!r}, "
-            f"count={len(rows)}, "
-            f"results={[row.get('supplier_name') for row in rows]}"
-        )
+        # 2. 이메일 substring 검색
+        email_rows = erp_get(
+            "Supplier",
+            filters=[
+                ["email_id", "like", f"%{query}%"],
+            ],
+            fields=fields,
+            order_by="supplier_name asc",
+            limit=10,
+        ) or []
+
+        # 이름/이메일 검색 결과 합치기 + 중복 제거
+        merged = {}
+
+        for row in [*name_rows, *email_rows]:
+            supplier_id = row.get("name")
+
+            if supplier_id:
+                merged[supplier_id] = row
+
+        rows = list(merged.values())[:10]
 
     except ERPNextAPIError as exc:
-        print(f"[Supplier Search ERROR] query={query!r}, error={exc}")
         raise HTTPException(
             status_code=502,
             detail=f"ERPNext Supplier 검색 실패: {exc}",
