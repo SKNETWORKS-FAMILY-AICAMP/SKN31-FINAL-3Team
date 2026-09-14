@@ -61,6 +61,12 @@ class PurchaseProcessState(TypedDict, total=False):
     pr_status: str
     pr_rejection_reason: str
     pr_supplier_email: str
+    # 수주(PR) 단계에서 거절한 공급사들의 누적 이력. 재비딩 없이 "기존
+    # 견적서에서 재선택"만 반복하는 경우, 예전에 거절했던 공급사가 남은
+    # 후보 목록에 다시 등장할 수 있어(예: A거절->B선택->B도거절 시 남은
+    # 후보에 A가 다시 포함됨) 프론트에서 "이미 거절당함" 표시를 하려면
+    # 이 누적 이력이 필요하다.
+    rejected_suppliers: list[dict[str, Any]]
     po_name: str
     cancellation_reason: str
     error: str
@@ -996,8 +1002,19 @@ def await_supplier_pr_response_command(state: PurchaseProcessState) -> Command:
             goto="create_po",
         )
     if decision == "reject" and len(reason) >= 2:
+        rejected_supplier = str(state.get("selected_supplier") or "").strip()
+        rejected_history = list(state.get("rejected_suppliers") or [])
+        if rejected_supplier:
+            rejected_history.append({
+                "supplier": rejected_supplier,
+                "reason": reason,
+                "rejected_at": datetime.now().isoformat(),
+            })
         return Command(
-            update={"pr_status": "REJECTED", "pr_rejection_reason": reason, "status": "supplier_pr_rejected", "error": ""},
+            update={
+                "pr_status": "REJECTED", "pr_rejection_reason": reason, "status": "supplier_pr_rejected",
+                "rejected_suppliers": rejected_history, "error": "",
+            },
             goto="handle_pr_rejection",
         )
     return Command(
@@ -1015,6 +1032,10 @@ def handle_pr_rejection_command(state: PurchaseProcessState) -> Command:
         "mr_name": state["mr_name"], "rejected_supplier": rejected,
         "rejection_reason": state.get("pr_rejection_reason"),
         "remaining_suppliers": remaining,
+        # 이번 한 번만 거절한 공급사가 아니라, 이 케이스에서 지금까지
+        # 수주를 거절한 공급사 전체 누적 이력 - 프론트가 remaining_suppliers
+        # 중 "예전에 이미 거절했던 공급사"를 빨간 배지로 표시하는 데 쓴다.
+        "rejected_suppliers": state.get("rejected_suppliers") or [],
         "allowed": ["select_next_supplier", "rebid", "cancel"],
     })
     decision = _decision_value(answer)
@@ -1028,14 +1049,63 @@ def handle_pr_rejection_command(state: PurchaseProcessState) -> Command:
             goto="request_pr",
         )
     if decision == "rebid":
+        # ⚠️ 예전엔 여기서 decide_bidding_choice로 되돌려서
+        # resolve_suppliers_choice -> search_new_suppliers를 다시 타게
+        # 했는데, search_new_suppliers_command가 supplier_candidates를
+        # existing_supplier_candidates + 새로 검색된 후보로 통째로
+        # 교체해버려서 직접 추가(수동 입력)했던 협력사와 그 이메일이
+        # 전부 날아가는 버그가 있었다. check_quotations_command의
+        # "rebid"(마감 후 재비딩)와 완전히 같은 방식으로 - 기존
+        # RFQ/Supplier Quotation만 정리하고 select_rfq_targets로 바로
+        # 돌아가 supplier_candidates(추천/직접추가 협력사 풀)는 그대로
+        # 남긴다.
+        from backend_logic2.integrations.erp_client import (
+            ERPNextAPIError,
+            erp_cancel,
+            erp_discard_draft,
+            erp_get_one,
+        )
+        from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
+            get_quotations_for_rfq,
+        )
+
+        def _cancel_or_discard(doctype: str, name: str) -> None:
+            document = erp_get_one(doctype, name)
+            if document is None:
+                return
+            docstatus = int(document.get("docstatus") or 0)
+            if docstatus == 2:
+                return
+            if docstatus == 0:
+                erp_discard_draft(doctype, name)
+            else:
+                erp_cancel(doctype, name)
+
+        rfq_name = str(state.get("rfq_name") or "").strip()
+        if rfq_name:
+            try:
+                for quotation in get_quotations_for_rfq(rfq_name):
+                    sq_name = str(quotation.get("name") or "").strip()
+                    if sq_name:
+                        _cancel_or_discard("Supplier Quotation", sq_name)
+                _cancel_or_discard("Request for Quotation", rfq_name)
+            except ERPNextAPIError as exc:
+                return Command(
+                    update={
+                        "status": "supplier_pr_rejected",
+                        "error": f"재비딩 실패: 기존 RFQ({rfq_name})/견적을 먼저 정리하지 못했습니다. {exc}",
+                    },
+                    goto="handle_pr_rejection",
+                )
+
         return Command(
             update={
-                "entrypoint": "bidding_recheck", "selected_supplier": "", "pr_id": "", "pr_status": "",
-                "pr_supplier_email": "", "rfq_name": "", "quotation_ranking": [], "requested_supplier": "",
+                "selected_supplier": "", "pr_id": "", "pr_status": "", "pr_supplier_email": "",
+                "rfq_name": "", "quotation_ranking": [], "requested_supplier": "",
                 "selected_suppliers": [], "supplier_registration_results": [], "quotation_deadline": "",
-                "status": "checking_bidding", "error": "",
+                "status": "awaiting_supplier_approval", "error": "",
             },
-            goto="decide_bidding_choice",
+            goto="select_rfq_targets",
         )
     if decision == "cancel":
         return Command(update={"status": "human_review", "error": "공급사가 수주를 거절하여 구매 담당자 확인이 필요합니다."}, goto=END)
