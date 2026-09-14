@@ -89,7 +89,26 @@ def extract_structured_item(raw_item_name: str) -> dict:
     )
     result = (prompt | llm).invoke({"item_name": raw_item_name}).content
     cleaned = result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(cleaned)
+    return _normalize_nullish_strings(json.loads(cleaned))
+
+
+_NULLISH_STRINGS = {"null", "none", "n/a", ""}
+
+
+def _normalize_nullish_strings(value):
+    """LLM이 JSON null 대신 문자열 "null"/"None"을 그대로 출력하는 경우를 방지.
+
+    예: {"safety_grade": "null"} (진짜 None이 아니라 문자열 "null") -> {"safety_grade": None}
+    이걸 안 걸러내면 `if safety_grade:` 같은 truthy 체크가 문자열이라 그대로
+    통과해버려서, 검색어에 "물티슈 null"처럼 리터럴 "null"이 섞여 들어간다.
+    """
+    if isinstance(value, str):
+        return None if value.strip().casefold() in _NULLISH_STRINGS else value
+    if isinstance(value, list):
+        return [_normalize_nullish_strings(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _normalize_nullish_strings(v) for k, v in value.items()}
+    return value
 
 
 def build_source_queries(structured: dict) -> dict:

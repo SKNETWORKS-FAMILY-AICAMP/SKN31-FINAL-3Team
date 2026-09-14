@@ -29,10 +29,20 @@ def _build_po_preview(
 ) -> dict[str, Any]:
     source = erp_get_one("Supplier Quotation", supplier_quotation) if supplier_quotation else None
     if source:
+        # ERPNext Supplier Quotation Item 원본에는 schedule_date/delivery_date
+        # 필드가 없어서(그래서 수주 접수 이메일의 납기 칸이 항상 비어 있었음),
+        # get_supplier_quotations.py가 이미 쓰는 _normalize_item()으로 같은
+        # expected_delivery_date -> schedule_date -> delivery_date ->
+        # (transaction_date + lead_time_days) 계산 로직을 재사용해서 채운다.
+        from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
+            _normalize_item,
+        )
+
+        normalized_items = [_normalize_item(source, item) for item in source.get("items") or []]
         return {
             "currency": source.get("currency") or "KRW",
             "total": source.get("grand_total") or source.get("rounded_total") or source.get("net_total"),
-            "items": source.get("items") or [],
+            "items": normalized_items,
         }
     mr = erp_get_one("Material Request", mr_name) or {}
     items = []

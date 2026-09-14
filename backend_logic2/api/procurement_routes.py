@@ -17,7 +17,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth_service.dependencies import CurrentUser
-from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_download_file
+from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_download_file, erp_get
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.repositories import tasks as task_repository
 from backend_logic2.repositories import deliveries as delivery_repository
@@ -380,6 +380,45 @@ def get_item_group_required_specs_for_frontend(
     return {
         "item_group": requirements["item_group"],
         "required_specs": requirements["required_specs"],
+    }
+
+
+@router.get("/suppliers/search")
+def search_suppliers_for_frontend(
+    current_user: CurrentUser,
+    q: str = Query(default="", max_length=200),
+):
+    """'협력사 직접 입력' 필드의 자동완성 드롭다운이 호출하는 엔드포인트.
+
+    Tavily 등 자동탐색으로 못 찾은 협력사를 담당자가 수동으로 추가할 때,
+    이미 등록된 기존 Supplier 풀에서 먼저 이름으로 찾아볼 수 있게 한다.
+    검색 결과가 없으면 프론트는 그대로 신규 등록 입력을 진행하면 된다
+    (이 엔드포인트는 조회 전용이라 부가 동작 없음).
+    """
+    del current_user  # 인증만 필요, 값 자체는 응답에 사용하지 않는다.
+    query = q.strip()
+    if len(query) < 1:
+        return {"items": []}
+    try:
+        rows = erp_get(
+            "Supplier",
+            filters=[["supplier_name", "like", f"%{query}%"]],
+            fields=["name", "supplier_name", "email_id", "mobile_no", "phone"],
+            order_by="supplier_name asc",
+            limit=10,
+        ) or []
+    except ERPNextAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "items": [
+            {
+                "name": row.get("name"),
+                "supplier_name": row.get("supplier_name") or row.get("name"),
+                "email": row.get("email_id"),
+                "phone": row.get("mobile_no") or row.get("phone"),
+            }
+            for row in rows
+        ]
     }
 
 
