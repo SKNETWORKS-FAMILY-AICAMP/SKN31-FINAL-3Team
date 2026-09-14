@@ -4,8 +4,7 @@
 품목 단위 평탄화 결과와 review/ranker 공통 ``Quotation`` 모델을 모두 제공한다.
 이 모듈에서는 LLM을 사용하지 않는다.
 
-실행:
-    python -m backend_logic2.nodes.quotation_filter.get_supplier_quotations PUR-RFQ-2026-00295
+
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = Path(__file__).resolve().parents[4]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.append(str(BACKEND_ROOT))
 
@@ -324,6 +323,7 @@ def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation
         "subtotal": detail.get("net_total") if detail.get("net_total") is not None else detail.get("total"),
         "tax_amount": detail.get("total_taxes_and_charges") or 0,
         "total_amount": detail.get("grand_total") if detail.get("grand_total") is not None else detail.get("rounded_total"),
+        "base_total_amount": detail.get("base_grand_total"),
         "items": items,
         "notes": html_to_text(detail.get("terms")),
         "source": {

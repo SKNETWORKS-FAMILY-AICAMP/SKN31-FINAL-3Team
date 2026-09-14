@@ -15,9 +15,6 @@ docx는 표 데이터가 이미지가 아니라 문서 안에 진짜 텍스트�
 그 반복을 그대로 둔다 — 값이 사라지거나 엉뚱한 칸으로 새는 이미지 추출기의
 문제와는 다른 종류의(더 안전한) 결과다.
 
-단독 실행 예:
-    python -m backend_logic2.nodes.quotation.quotation_filter.docx_table_extractor `
-      --docx "견적서.docx" --output-html docx_report.html
 """
 
 from __future__ import annotations

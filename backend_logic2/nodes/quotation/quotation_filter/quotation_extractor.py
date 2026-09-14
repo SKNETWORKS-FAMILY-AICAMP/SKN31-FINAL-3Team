@@ -5,12 +5,7 @@
     - Hugging Face 모델은 ``local_files_only=True``로만 로드한다.
     - 런타임 모델 다운로드와 원격 코드는 허용하지 않는다.
 
-단독 실행 예:
-    python -m backend_logic2.nodes.quotation.quotation_filter.quotation_extractor `
-      "C:/Users/Playdata/Desktop/1.png" `
-      --rfq PUR-RFQ-2026-00295 `
-      --supplier-name "화진에스텍" `
-      --output "./extracted.json"
+
 """
 
 from __future__ import annotations
@@ -60,7 +55,24 @@ PDF_SUFFIXES = {".pdf"}
 EMAIL_SUFFIXES = {".eml"}
 TEXT_SUFFIXES = {".txt", ".md"}
 
-DEFAULT_TEXT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+DELIVERY_FIELD_PATTERN = re.compile(
+    r"(?:"
+    r"delivery(?:\s+date)?(?!\s+(?:fee|charge|cost))|deliver(?:y|ed)?\s+by|"
+    r"lead[\s_-]*time|ETA|"
+    r"ship(?:ping|ment)?(?:\s+date)?|dispatch(?:\s+date)?|arrival(?:\s+date)?|"
+    r"납기(?:일|일자|예정일|기한)?|"
+    r"납품(?:일|일자|예정일|기한)?|"
+    r"배송(?:일|일자|예정일)?(?!비|료)|"
+    r"인도(?:일|일자|예정일|기한)?|"
+    r"출고(?:일|일자|예정일)?|"
+    r"도착(?:일|일자|예정일)?|"
+    r"발송(?:일|일자|예정일)?|"
+    r"리드\s*타임|소요\s*기간|제작\s*기간|공급\s*기간"
+    r")",
+    re.IGNORECASE,
+)
+
+DEFAULT_TEXT_MODEL = "Qwen/Qwen3.5-9B"
 DEFAULT_VISION_MODEL = "Qwen/Qwen3.5-9B"
 DEFAULT_VISION_ADAPTER = "lyc9872/qwen_3.5_9b_peft"
 PROJECT_ENV_FILE = Path(__file__).resolve().parents[4] / ".env"
@@ -539,9 +551,10 @@ def _normalize_generated_quotation(
     raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
     erpnext_prices = _erpnext_pdf_item_prices(document_text, len(raw_items))
     erpnext_totals = _erpnext_document_totals(document_text)
-    has_delivery_field = bool(re.search(r"(?i)delivery|납기", document_text))
-    color_match = re.search(r"색상\s*[:：]\s*([가-힣A-Za-z]+)", document_text)
-    document_color = color_match.group(1) if color_match else None
+    # 모델이 만든 날짜를 그대로 신뢰하지는 않되, 공급사별 다양한 배송 라벨을
+    # 원문 근거로 인정한다. 이미지용 파인튜닝 경로는 이 함수가 아닌 별도
+    # normalization을 사용하므로 해당 경로의 모델 출력은 여기서 지워지지 않는다.
+    has_delivery_field = bool(DELIVERY_FIELD_PATTERN.search(document_text))
     items: list[dict[str, Any]] = []
     for index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict):
@@ -569,26 +582,13 @@ def _normalize_generated_quotation(
                 pass
         description = raw_item.get("description")
         specifications = raw_item.get("specifications") if isinstance(raw_item.get("specifications"), dict) else {}
-        if document_color:
-            specifications = dict(specifications)
-            specifications["color"] = document_color
-            if description and re.search(r"색상\s*[:：]\s*[가-힣A-Za-z]+", description):
-                description = re.sub(
-                    r"색상\s*[:：]\s*[가-힣A-Za-z]+",
-                    f"색상: {document_color}",
-                    description,
-                )
-            elif description:
-                description = f"{description} 색상: {document_color}"
-            else:
-                description = f"색상: {document_color}"
+        raw_description = raw_item.get("raw_description")
         item_name = raw_item.get("item_name")
         if not item_name or item_name == original_item_code:
             item_name = item_code or description or "품목명 미기재"
         unit = raw_item.get("unit")
         if str(unit or "").upper() in {"KRW", "USD", "EUR", "JPY", "CNY"}:
             unit = None
-        raw_description = raw_item.get("raw_description")
         raw_description_text = str(raw_description or "").strip()
         if (
             raw_description_text.lower() in {"", "none", "null", "n/a"}

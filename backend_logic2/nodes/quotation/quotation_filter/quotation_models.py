@@ -80,6 +80,8 @@ class Quotation(StrictModel):
     subtotal: Decimal = Field(ge=0)
     tax_amount: Decimal = Field(ge=0)
     total_amount: Decimal = Field(ge=0)
+    # ERPNext 회사 기준통화로 환산된 총액. 서로 다른 통화의 견적 비교에만 사용한다.
+    base_total_amount: Decimal | None = Field(default=None, ge=0)
     items: list[QuotationItem] = Field(min_length=1)
     notes: str | None = None
     source: QuotationSource
@@ -103,13 +105,14 @@ class RFQItemRequirement(StrictModel):
 
 class RFQRequirements(StrictModel):
     rfq_name: str
-    currency: str = "KRW"
+    # 과거 JSON 입력 호환용이다. ERPNext RFQ에는 통화 제약이 없으며 검토에도 사용하지 않는다.
+    currency: str | None = None
     items: list[RFQItemRequirement] = Field(min_length=1)
 
     @field_validator("currency")
     @classmethod
-    def normalize_currency(cls, value: str) -> str:
-        return value.upper()
+    def normalize_currency(cls, value: str | None) -> str | None:
+        return value.upper() if value else None
 
 
 class ReviewIssue(StrictModel):
@@ -148,6 +151,7 @@ class RankedQuotation(StrictModel):
     supplier_id: str | None = None
     supplier_name: str
     total_amount: Decimal
+    comparison_amount: Decimal
     currency: str
     expected_delivery_date: date | None = None
     late_days: int | None = None

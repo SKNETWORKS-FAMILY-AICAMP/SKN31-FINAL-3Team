@@ -1,8 +1,5 @@
 """추출된 견적의 형식·산식·RFQ 규격 부합 여부를 검토한다.
 
-단독 실행 예(PowerShell):
-    python -m backend_logic2.nodes.quotation_filter.quotation_reviewer `
-        extracted.json --rfq PUR-RFQ-2026-00297 --output reviewed.json
 
 ``--rfq``에는 ERPNext RFQ 이름 또는 기존 RFQ 요구사항 JSON 경로를 지정한다.
 """
@@ -52,6 +49,12 @@ except ImportError:
 
 
 MONEY_QUANTUM = Decimal("1")
+EXCLUSION_ERROR_CODES = frozenset({
+    "SPECIFICATION_MISMATCH",
+    "INSUFFICIENT_QUANTITY",
+    "QUOTATION_EXPIRED",
+    "RFQ_MISMATCH",
+})
 UNIT_FACTORS: dict[str, tuple[str, Decimal]] = {
     "mm": ("length", Decimal("0.001")),
     "cm": ("length", Decimal("0.01")),
@@ -62,21 +65,13 @@ UNIT_FACTORS: dict[str, tuple[str, Decimal]] = {
     "ml": ("volume", Decimal("0.001")),
     "l": ("volume", Decimal("1")),
 }
-SYNONYMS = {
-    "스테인리스": "sus304",
-    "스테인레스": "sus304",
-    "stainlesssteel": "sus304",
-    "stainless": "sus304",
-    "sus-304": "sus304",
-    "에스유에스304": "sus304",
-}
 NUMERIC_SPEC = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*([a-zA-Z㎜㎝㎏㎎㎖ℓ]+)\s*$")
 GetOne = Callable[[str, str], dict[str, Any] | None]
 
 
 def _erp_get_one() -> GetOne:
     """JSON 입력만 사용할 때는 ERP 모듈을 불러오지 않도록 지연 import한다."""
-    backend_root = Path(__file__).resolve().parents[2]
+    backend_root = Path(__file__).resolve().parents[4]
     if str(backend_root) not in sys.path:
         sys.path.insert(0, str(backend_root))
     from backend_logic2.integrations.erp_client import erp_get_one
@@ -155,11 +150,6 @@ def load_rfq_requirements_from_erp(
     if int(rfq.get("docstatus") or 0) == 2:
         raise ValueError(f"ERPNext RFQ '{rfq_name}'는 취소된 문서입니다.")
 
-    currency = rfq.get("currency")
-    if not currency and rfq.get("company"):
-        company = get_one("Company", str(rfq["company"])) or {}
-        currency = company.get("default_currency")
-
     items = []
     for row in rfq.get("items") or []:
         items.append({
@@ -172,7 +162,6 @@ def load_rfq_requirements_from_erp(
         })
     return RFQRequirements.model_validate({
         "rfq_name": rfq.get("name") or rfq_name,
-        "currency": currency or "KRW",
         "items": items,
     })
 
@@ -200,10 +189,8 @@ def _issue(code: str, severity: IssueSeverity, field: str | None, message: str, 
 
 
 def _normalize_text(value: Any) -> str:
-    normalized = re.sub(r"[\s_\-/]", "", str(value).lower())
-    for source, target in SYNONYMS.items():
-        normalized = normalized.replace(source, target)
-    return normalized
+    """표기 구분자와 대소문자만 정규화하고 의미를 임의로 치환하지 않는다."""
+    return re.sub(r"[\s_\-/]", "", str(value).casefold())
 
 
 def _parse_measurement(value: Any) -> tuple[str, Decimal] | None:
@@ -267,7 +254,8 @@ def _valid_business_number(value: str) -> bool:
     return (10 - checksum % 10) % 10 == nums[9]
 
 
-def _match_requirement(quotation_item: Any, requirements: RFQRequirements) -> RFQItemRequirement | None:
+def match_requirement(quotation_item: Any, requirements: RFQRequirements) -> RFQItemRequirement | None:
+    """견적 품목을 RFQ의 단일 품목과 연결한다."""
     if quotation_item.item_code:
         for required in requirements.items:
             if required.item_code and required.item_code == quotation_item.item_code:
@@ -352,8 +340,6 @@ def review_quotation(
 
     if quotation.rfq_name != rfq.rfq_name:
         issues.append(_issue("RFQ_MISMATCH", IssueSeverity.ERROR, "rfq_name", "견적의 RFQ가 검토 대상과 다릅니다.", f"견적={quotation.rfq_name}, 대상={rfq.rfq_name}"))
-    if quotation.currency != rfq.currency:
-        issues.append(_issue("CURRENCY_MISMATCH", IssueSeverity.ERROR, "currency", "RFQ와 견적 통화가 다릅니다.", f"견적={quotation.currency}, RFQ={rfq.currency}"))
     if quotation.business_registration_no and not _valid_business_number(quotation.business_registration_no):
         issues.append(_issue("INVALID_BUSINESS_NUMBER", IssueSeverity.ERROR, "business_registration_no", "사업자등록번호 형식 또는 체크섬이 올바르지 않습니다.", quotation.business_registration_no))
     if quotation.valid_until and quotation.valid_until < today:
@@ -367,7 +353,7 @@ def review_quotation(
             issues.append(_issue("ITEM_AMOUNT_MISMATCH", IssueSeverity.ERROR, f"items.{index}.amount", "수량 × 단가와 품목 금액이 일치하지 않습니다.", f"{item.quantity} × {item.unit_price} = {calculated}, 기재={stated}"))
         item_sum += item.amount
 
-        required = _match_requirement(item, rfq)
+        required = match_requirement(item, rfq)
         evidence: list[str] = []
         spec_ok = True
         qty_ok = True
@@ -376,11 +362,6 @@ def review_quotation(
             evidence.append("RFQ에서 품목 코드/이름이 일치하는 단일 품목을 찾지 못함")
             issues.append(_issue("RFQ_ITEM_NOT_FOUND", IssueSeverity.ERROR, f"items.{index}", "견적 품목을 RFQ 품목과 연결할 수 없습니다.", f"item_code={item.item_code}, item_name={item.item_name}"))
         else:
-            exact_item_code = bool(
-                item.item_code
-                and required.item_code
-                and item.item_code == required.item_code
-            )
             qty_ok = item.quantity >= required.quantity
             evidence.append(f"수량: 견적={item.quantity}, RFQ={required.quantity}")
             if not qty_ok:
@@ -388,15 +369,9 @@ def review_quotation(
 
             for key, expected in required.specifications.items():
                 if key not in item.specifications:
-                    if exact_item_code:
-                        evidence.append(
-                            f"규격 '{key}': item_code 정확히 일치({item.item_code})하여 "
-                            f"RFQ 품목 규격 {expected}로 확인"
-                        )
-                        continue
                     spec_ok = False
                     evidence.append(f"규격 '{key}' 누락 (RFQ={expected})")
-                    issues.append(_issue("MISSING_SPECIFICATION", IssueSeverity.ERROR, f"items.{index}.specificatio ns.{key}", "필수 규격이 누락되었습니다.", evidence[-1]))
+                    issues.append(_issue("MISSING_SPECIFICATION", IssueSeverity.ERROR, f"items.{index}.specifications.{key}", "필수 규격이 누락되었습니다.", evidence[-1]))
                     continue
                 matched, match_evidence = _spec_matches(item.specifications[key], expected, required.numeric_tolerance_percent)
                 spec_ok = spec_ok and matched
@@ -429,19 +404,22 @@ def review_quotation(
         issues.append(_issue("TOTAL_MISMATCH", IssueSeverity.ERROR, "total_amount", "공급가액 + 세액과 총금액이 일치하지 않습니다.", f"{_money(quotation.subtotal)} + {_money(quotation.tax_amount)} = {calculated_total}, 총금액={_money(quotation.total_amount)}"))
     expected_vat = _money(quotation.subtotal * Decimal("0.1"))
     if quotation.currency == "KRW" and quotation.tax_amount not in (Decimal("0"), expected_vat):
-        issues.append(_issue("UNUSUAL_VAT", IssueSeverity.WARNING, "tax_amount", "세액이 면세(0) 또는 공급가액의 10%와 다릅니다.", f"세액={quotation.tax_amount}, 일반 부가세={expected_vat}"))
+        issues.append(_issue("UNUSUAL_VAT", IssueSeverity.ERROR, "tax_amount", "세액이 면세(0) 또는 공급가액의 10%와 다릅니다.", f"세액={quotation.tax_amount}, 일반 부가세={expected_vat}"))
 
     errors = [issue for issue in issues if issue.severity == IssueSeverity.ERROR]
     spec_ok = all(item.specification_compliant and item.quantity_compliant for item in item_results)
     if not errors:
         status = ReviewStatus.ACCEPTED
-    elif any(issue.code in {"SPECIFICATION_MISMATCH", "INSUFFICIENT_QUANTITY", "QUOTATION_EXPIRED", "CURRENCY_MISMATCH", "RFQ_MISMATCH"} for issue in errors):
+    elif any(issue.code in EXCLUSION_ERROR_CODES for issue in errors):
         status = ReviewStatus.EXCLUDED
     elif quotation.source.kind == SourceKind.EXCEL:
         status = ReviewStatus.EXCLUDED
     elif quotation.extraction_attempt < 3:
+        # 누락·스키마·산식 오류는 OCR/구조화 오류일 수도 있으므로 먼저 재추출한다.
+        # 원문 자체의 오류인지 확정할 수 없는 상태에서 공급사를 자동 탈락시키지 않는다.
         status = ReviewStatus.REEXTRACT
     else:
+        # 재추출로도 해소되지 않은 누락·산식·사업자번호 오류는 사람에게 넘긴다.
         status = ReviewStatus.HUMAN_REVIEW
 
     rejection_evidence = [issue.evidence for issue in errors] if status != ReviewStatus.ACCEPTED else []

@@ -22,7 +22,7 @@ except ImportError:  # quotation_filter 폴더에서 직접 실행할 때
     from backend_logic2.nodes.quotation.quotation_filter.quotation_models import Quotation, load_json
 
 
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = Path(__file__).resolve().parents[4]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.append(str(BACKEND_ROOT))
 
@@ -32,6 +32,8 @@ from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_get, erp
 GetOne = Callable[[str, str], dict[str, Any] | None]
 GetMany = Callable[..., list[dict[str, Any]] | None]
 PostOne = Callable[[str, dict[str, Any]], dict[str, Any]]
+FingerprintItem = tuple[str, Decimal, Decimal, Decimal]
+QuotationFingerprint = tuple[str, str, tuple[FingerprintItem, ...], Decimal]
 
 
 class SupplierQuotationRegistrationError(RuntimeError):
@@ -162,15 +164,39 @@ def _default_tax_row(
         raise SupplierQuotationRegistrationError("기본 매입세 템플릿에 세금 계정이 없습니다.")
 
     source = template_rows[0]
-    rate = tax_amount / subtotal * Decimal("100")
+    charge_type = str(source.get("charge_type") or "On Net Total")
+    if charge_type != "On Net Total":
+        raise SupplierQuotationRegistrationError(
+            "기본 매입세 템플릿의 첫 행이 'On Net Total' 방식이 아닙니다."
+        )
+    try:
+        official_rate = Decimal(str(source.get("rate")))
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        raise SupplierQuotationRegistrationError(
+            "기본 매입세 템플릿에 유효한 공식 세율이 없습니다."
+        ) from exc
+    if official_rate < 0:
+        raise SupplierQuotationRegistrationError("기본 매입세 템플릿 세율은 0 이상이어야 합니다.")
+
+    expected_tax = _money(subtotal * official_rate / Decimal("100"))
+    stated_tax = _money(tax_amount)
+    # ERP/통화별 최소 단위 반올림 차이는 허용하지만, 견적 금액을 역산해
+    # 9.8%, 10.3% 같은 새로운 세율을 만들어 저장하지 않는다.
+    if abs(stated_tax - expected_tax) > Decimal("1"):
+        raise SupplierQuotationRegistrationError(
+            "견적 세액이 기본 매입세 템플릿과 일치하지 않습니다: "
+            f"기재 세액={stated_tax}, 공식 세율={official_rate}%, 예상 세액={expected_tax}"
+        )
     return [{
         "category": source.get("category") or "Total",
         "add_deduct_tax": source.get("add_deduct_tax") or "Add",
-        "charge_type": "On Net Total",
+        "charge_type": charge_type,
         "account_head": source["account_head"],
         "description": source.get("description") or "매입세",
         "included_in_print_rate": source.get("included_in_print_rate") or 0,
-        "rate": float(rate),
+        # Decimal을 float로 바꾸지 않아 JSON 직렬화 전 이진 부동소수 오차를 피한다.
+        # Frappe의 Percent 필드는 고정소수 문자열을 숫자로 파싱한다.
+        "rate": format(official_rate, "f"),
         "cost_center": source.get("cost_center"),
     }]
 
@@ -251,6 +277,7 @@ def build_supplier_quotation_payload(
         get_one=get_one,
     )
     currency = quotation.currency or company_doc.get("default_currency") or "KRW"
+    company_currency = str(company_doc.get("default_currency") or "KRW").upper()
     payload: dict[str, Any] = {
         "supplier": supplier,
         "company": company,
@@ -258,7 +285,9 @@ def build_supplier_quotation_payload(
         "valid_till": quotation.valid_until.isoformat() if quotation.valid_until else None,
         "quotation_number": quotation.quotation_id,
         "currency": currency,
-        "conversion_rate": 1,
+        # 회사 기준통화와 같을 때만 1이다. 외화는 ERPNext가 거래일의 환율을
+        # 조회하도록 생략하며, 조회할 수 없으면 잘못된 1로 저장하는 대신 등록이 실패한다.
+        "conversion_rate": 1 if currency.upper() == company_currency else None,
         "price_list_currency": currency,
         "plc_conversion_rate": 1,
         "ignore_pricing_rule": 1,
@@ -269,36 +298,49 @@ def build_supplier_quotation_payload(
     return {key: value for key, value in payload.items() if value is not None}
 
 
-def _fingerprint_document(document: dict[str, Any], rfq_name: str) -> tuple[Any, ...]:
+def _fingerprint_items(rows: list[dict[str, Any]]) -> tuple[FingerprintItem, ...]:
+    """품목 순서와 nullable item_code에 영향받지 않는 비교 키를 만든다."""
+    items: list[FingerprintItem] = []
+    for row in rows:
+        quantity = _money(row.get("qty"))
+        rate = _money(row.get("rate"))
+        raw_amount = row.get("amount")
+        amount = _money(raw_amount) if raw_amount is not None else _money(quantity * rate)
+        items.append((
+            str(row.get("item_code") or ""),
+            quantity,
+            rate,
+            amount,
+        ))
+    return tuple(sorted(items))
+
+
+def _fingerprint_document(document: dict[str, Any], rfq_name: str) -> QuotationFingerprint:
     items = [
-        (
-            row.get("item_code"),
-            _money(row.get("qty")),
-            _money(row.get("rate")),
-            _money(row.get("amount", _money(row.get("qty")) * _money(row.get("rate")))),
-        )
+        row
         for row in document.get("items") or []
         if row.get("request_for_quotation", rfq_name) == rfq_name
     ]
     return (
-        document.get("supplier"),
-        document.get("currency") or "KRW",
-        tuple(sorted(items)),
+        str(document.get("supplier") or ""),
+        str(document.get("currency") or "KRW").upper(),
+        _fingerprint_items(items),
         _money(document.get("grand_total")),
     )
 
 
-def _fingerprint_incoming(quotation: Quotation, supplier: str) -> tuple[Any, ...]:
-    items = tuple(sorted(
-        (
-            row.item_code,
-            _money(row.quantity),
-            _money(row.unit_price),
-            _money(row.amount),
-        )
-        for row in quotation.items
-    ))
-    return supplier, quotation.currency, items, _money(quotation.total_amount)
+def _fingerprint_incoming(
+    quotation: Quotation,
+    payload: dict[str, Any],
+) -> QuotationFingerprint:
+    # 등록 payload에는 공급사 자체 코드가 RFQ의 ERP item_code로 매핑되어 있다.
+    # 기존 ERP 문서와 같은 코드 체계로 비교해야 동일 견적을 정확히 찾을 수 있다.
+    return (
+        str(payload.get("supplier") or ""),
+        str(payload.get("currency") or quotation.currency or "KRW").upper(),
+        _fingerprint_items(payload.get("items") or []),
+        _money(quotation.total_amount),
+    )
 
 
 def register_supplier_quotation(
@@ -336,7 +378,7 @@ def register_supplier_quotation(
             if summary.get("name"):
                 summaries_by_name[str(summary["name"])] = summary
     summaries = list(summaries_by_name.values())
-    incoming_fingerprint = _fingerprint_incoming(quotation, str(payload["supplier"]))
+    incoming_fingerprint = _fingerprint_incoming(quotation, payload)
     for summary in summaries:
         if summary.get("supplier") != payload["supplier"]:
             continue
