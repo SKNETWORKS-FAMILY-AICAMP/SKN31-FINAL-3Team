@@ -710,10 +710,15 @@ def project_case_from_checkpoint(case_id: str) -> dict[str, Any]:
         last_error=projection_error,
     )
 
-    if values.get("quotation_deadline"):
-        updated = case_repository.update_quotation_deadline(
-            case_id, str(values["quotation_deadline"])
-        )
+    # ⚠️ "값이 있을 때만" 갱신하면(예전 코드: if values.get("quotation_deadline")),
+    # 재비딩처럼 그래프 state에서 quotation_deadline을 명시적으로 ""로
+    # 리셋한 경우가 falsy라 이 갱신 자체가 스킵돼서, DB(procurement_case.
+    # quotation_deadline_at)에는 이미 지나버린 옛 마감일이 그대로 남는다.
+    # state에 이 키가 있는지 여부로만 판단하고, 값이 비어 있으면 NULL로
+    # 명시적으로 지워야 한다.
+    if "quotation_deadline" in values:
+        deadline_value = str(values["quotation_deadline"] or "").strip() or None
+        updated = case_repository.update_quotation_deadline(case_id, deadline_value)
 
     if graph_status == "po_sent" and values.get("po_name"):
         from backend_logic2.services.receipt_service import ensure_delivery_for_po

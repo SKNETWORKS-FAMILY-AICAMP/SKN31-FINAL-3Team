@@ -576,7 +576,9 @@ def transition_case(
     return dict(row)
 
 
-def update_quotation_deadline(case_id: str, deadline_at: datetime | str) -> dict[str, Any]:
+def update_quotation_deadline(case_id: str, deadline_at: datetime | str | None) -> dict[str, Any]:
+    """deadline_at=None이면 마감일을 지운다(NULL) - 재비딩처럼 기존 RFQ/견적을
+    버리고 새로 마감일을 정할 때까지 옛 마감일이 남아있지 않도록 하기 위함."""
     with get_connection() as connection:
         row = connection.execute(
             """
