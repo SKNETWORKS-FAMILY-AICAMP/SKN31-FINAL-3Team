@@ -54,6 +54,13 @@ class PurchaseProcessState(TypedDict, total=False):
     custom_rfq_suppliers: list[str]
     quotation_deadline: str
     rfq_name: str
+    # 재비딩으로 이미 마감된 지난 라운드들의 이력. 재비딩할 때 ERPNext의
+    # RFQ/Supplier Quotation을 취소·폐기하지 않고 그대로 둔 채 새 RFQ를
+    # 하나 더 만들기 때문에(한 MR에 여러 RFQ가 연결됨), "몇 차"인지와
+    # 지난 라운드 RFQ 이름을 여기 쌓아둔다 - 협력사 선정 화면의 차수
+    # 배지/팝업이 이걸로 지난 견적을 다시 조회한다. 현재 진행 중인
+    # 라운드는 rfq_name/quotation_deadline로 따로 관리하고 여기엔 안 넣는다.
+    rfq_rounds: list[dict[str, Any]]
     quotation_ranking: list[dict[str, Any]]
     requested_supplier: str
     selected_supplier: str
@@ -95,6 +102,25 @@ def _decision_value(value: Any) -> str:
     if isinstance(value, dict):
         value = value.get("decision") or value.get("action")
     return str(value or "").strip().lower()
+
+
+def _archive_current_rfq_round(state: PurchaseProcessState) -> list[dict[str, Any]]:
+    """재비딩 시 지금 라운드를 rfq_rounds 이력에 추가해서 반환한다.
+
+    ⚠️ ERPNext의 RFQ/Supplier Quotation 문서는 여기서 취소·폐기하지
+    않는다 - 그대로 살려두고 새 RFQ를 하나 더 만드는 방식으로 바꿨기
+    때문에, 지난 라운드 견적은 언제든 이 rfq_name으로 다시 조회할 수
+    있다(협력사 선정 화면의 '차수' 배지/팝업이 이 이력을 사용한다)."""
+    rounds_history = list(state.get("rfq_rounds") or [])
+    rfq_name = str(state.get("rfq_name") or "").strip()
+    if rfq_name:
+        rounds_history.append({
+            "round": len(rounds_history) + 1,
+            "rfq_name": rfq_name,
+            "deadline": state.get("quotation_deadline") or "",
+            "closed_at": datetime.now().isoformat(),
+        })
+    return rounds_history
 
 
 def route_entrypoint_command(state: PurchaseProcessState) -> Command:
@@ -658,54 +684,19 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
     if choice == "rebid":
         # 견적 마감이 지났는데 아직 아무도 선정하지 않은 상태에서 구매
         # 담당자가 "지금까지 들어온 견적은 버리고 새로 RFQ를 다시
-        # 보낸다"를 선택한 경우. workflow_service.reject_case()가 MR을
-        # 아예 취소할 때 쓰는 것과 같은 정리 순서(Supplier Quotation ->
-        # RFQ 순으로 취소/폐기)를 그대로 따른다 - ERPNext는 RFQ에 이미
-        # 제출된 Supplier Quotation이 걸려 있으면 RFQ 자체를 취소/폐기하지
-        # 못하게 막기 때문에, 자식 문서부터 정리해야 한다.
-        from backend_logic2.integrations.erp_client import (
-            ERPNextAPIError,
-            erp_cancel,
-            erp_discard_draft,
-            erp_get_one,
-        )
-        from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
-            get_quotations_for_rfq,
-        )
-
-        def _cancel_or_discard(doctype: str, name: str) -> None:
-            document = erp_get_one(doctype, name)
-            if document is None:
-                return
-            docstatus = int(document.get("docstatus") or 0)
-            if docstatus == 2:
-                return
-            if docstatus == 0:
-                erp_discard_draft(doctype, name)
-            else:
-                erp_cancel(doctype, name)
-
-        rfq_name = str(state.get("rfq_name") or "").strip()
-        if rfq_name:
-            try:
-                for quotation in get_quotations_for_rfq(rfq_name):
-                    sq_name = str(quotation.get("name") or "").strip()
-                    if sq_name:
-                        _cancel_or_discard("Supplier Quotation", sq_name)
-                _cancel_or_discard("Request for Quotation", rfq_name)
-            except ERPNextAPIError as exc:
-                return Command(
-                    update={
-                        "status": "awaiting_quotation_check",
-                        "error": f"재비딩 실패: 기존 RFQ({rfq_name})/견적을 먼저 정리하지 못했습니다. {exc}",
-                    },
-                    goto="check_quotations",
-                )
-
-        # supplier_candidates(추천/직접추가 협력사 풀)는 그대로 남겨서
-        # select_rfq_targets에서 같은 후보 목록으로 다시 고를 수 있게 한다.
+        # 보낸다"를 선택한 경우.
+        #
+        # ⚠️ 예전엔 여기서 기존 RFQ/Supplier Quotation을 ERPNext에서
+        # 취소·폐기했는데, 협력사 선정 화면에 "차수(라운드)" 기록/조회
+        # 기능이 추가되면서 지난 RFQ를 지우지 않고 그대로 둔 채 새 RFQ를
+        # 하나 더 만드는 방식으로 바꿨다 - 한 MR에 RFQ가 여러 건 연결될
+        # 수 있고, 지난 라운드 견적은 rfq_rounds 이력의 rfq_name으로
+        # 언제든 다시 조회 가능하다. supplier_candidates(추천/직접추가
+        # 협력사 풀)도 그대로 남겨서 select_rfq_targets에서 같은 후보
+        # 목록으로 다시 고를 수 있게 한다.
         return Command(
             update={
+                "rfq_rounds": _archive_current_rfq_round(state),
                 "rfq_name": "",
                 "quotation_ranking": [],
                 "requested_supplier": "",
@@ -1055,51 +1046,13 @@ def handle_pr_rejection_command(state: PurchaseProcessState) -> Command:
         # existing_supplier_candidates + 새로 검색된 후보로 통째로
         # 교체해버려서 직접 추가(수동 입력)했던 협력사와 그 이메일이
         # 전부 날아가는 버그가 있었다. check_quotations_command의
-        # "rebid"(마감 후 재비딩)와 완전히 같은 방식으로 - 기존
-        # RFQ/Supplier Quotation만 정리하고 select_rfq_targets로 바로
-        # 돌아가 supplier_candidates(추천/직접추가 협력사 풀)는 그대로
-        # 남긴다.
-        from backend_logic2.integrations.erp_client import (
-            ERPNextAPIError,
-            erp_cancel,
-            erp_discard_draft,
-            erp_get_one,
-        )
-        from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
-            get_quotations_for_rfq,
-        )
-
-        def _cancel_or_discard(doctype: str, name: str) -> None:
-            document = erp_get_one(doctype, name)
-            if document is None:
-                return
-            docstatus = int(document.get("docstatus") or 0)
-            if docstatus == 2:
-                return
-            if docstatus == 0:
-                erp_discard_draft(doctype, name)
-            else:
-                erp_cancel(doctype, name)
-
-        rfq_name = str(state.get("rfq_name") or "").strip()
-        if rfq_name:
-            try:
-                for quotation in get_quotations_for_rfq(rfq_name):
-                    sq_name = str(quotation.get("name") or "").strip()
-                    if sq_name:
-                        _cancel_or_discard("Supplier Quotation", sq_name)
-                _cancel_or_discard("Request for Quotation", rfq_name)
-            except ERPNextAPIError as exc:
-                return Command(
-                    update={
-                        "status": "supplier_pr_rejected",
-                        "error": f"재비딩 실패: 기존 RFQ({rfq_name})/견적을 먼저 정리하지 못했습니다. {exc}",
-                    },
-                    goto="handle_pr_rejection",
-                )
-
+        # "rebid"(마감 후 재비딩)와 완전히 같은 방식으로 select_rfq_targets로
+        # 바로 돌아가 supplier_candidates(추천/직접추가 협력사 풀)는 그대로
+        # 남긴다. 기존 RFQ/Supplier Quotation도 취소·폐기하지 않고 그대로
+        # 둔 채 rfq_rounds 이력에 남기기만 한다("차수" 기록/조회 기능).
         return Command(
             update={
+                "rfq_rounds": _archive_current_rfq_round(state),
                 "selected_supplier": "", "pr_id": "", "pr_status": "", "pr_supplier_email": "",
                 "rfq_name": "", "quotation_ranking": [], "requested_supplier": "",
                 "selected_suppliers": [], "supplier_registration_results": [], "quotation_deadline": "",

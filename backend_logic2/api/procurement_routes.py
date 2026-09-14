@@ -195,6 +195,34 @@ def get_case(case_id: str, current_user: CurrentUser):
     return row
 
 
+@router.get("/cases/{case_id}/rfq-rounds/{rfq_name}/quotations")
+def get_rfq_round_quotations(case_id: str, rfq_name: str, current_user: CurrentUser):
+    """지난 재비딩 라운드(또는 현재 라운드)의 RFQ 하나에 대해 실제로 받은
+    Supplier Quotation을 다시 조회한다.
+
+    ⚠️ 재비딩할 때 지난 RFQ를 더 이상 취소·폐기하지 않고 그대로 두기
+    때문에(rfq_rounds 이력), 협력사 선정 화면의 "차수" 배지를 눌렀을 때
+    이 엔드포인트로 그 라운드의 RFQ 이름을 넘겨 단가·납기일 등 견적
+    내용을 그때그때 ERPNext에서 직접 다시 읽어온다 - quotation_snapshot
+    컬럼은 항상 "현재 진행 중인 라운드"만 담고 있어서 지난 라운드 조회에는
+    쓸 수 없다."""
+    case = _require_case_access(case_id, current_user)
+
+    values = (case.get("workflow_snapshot") or {}).get("values") or {}
+    known_rfqs = {str(values.get("rfq_name") or "").strip()}
+    for round_entry in values.get("rfq_rounds") or []:
+        if isinstance(round_entry, dict):
+            known_rfqs.add(str(round_entry.get("rfq_name") or "").strip())
+    known_rfqs.discard("")
+    if rfq_name not in known_rfqs:
+        raise HTTPException(status_code=404, detail="이 구매 작업에 속한 RFQ가 아닙니다.")
+
+    try:
+        return quotation_service.build_quotation_snapshot(case, rfq_name)
+    except ERPNextAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.get("/attachments/download")
 def download_material_request_attachment(
     current_user: CurrentUser,
