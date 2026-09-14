@@ -323,6 +323,18 @@ def refresh_case_quotations(
     if not resolved_rfq:
         raise ValueError("구매 작업에 연결된 Request for Quotation이 없습니다.")
 
+    # ⚠️ 재비딩한 케이스는 지난 라운드의 RFQ도 ERPNext에 그대로 남아있어서
+    # (rfq_rounds 이력), 그 지난 RFQ 앞으로 뒤늦게 들어온 Supplier
+    # Quotation 웹훅이 이 함수를 다시 호출할 수 있다. 그때 여기서 그냥
+    # 진행하면 quotation_snapshot(협력사 선정 화면에 보이는 "현재
+    # 라운드" 견적회신율/마감정보)이 지난 라운드 데이터로 덮어써진다 -
+    # 반드시 지금 진행 중인 라운드(values.rfq_name)일 때만 read model을
+    # 갱신하고, 지난 라운드 조회는 build_quotation_snapshot을 직접 호출해
+    # 그 결과만 반환하는 별도 API 경로(차수 팝업)로 처리한다.
+    current_rfq = str(values.get("rfq_name") or "").strip()
+    if current_rfq and resolved_rfq != current_rfq:
+        return case, False
+
     previous = case.get("quotation_snapshot") or {}
     previous = previous if isinstance(previous, dict) else {}
     current = build_quotation_snapshot(case, resolved_rfq)

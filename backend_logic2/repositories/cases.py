@@ -335,7 +335,13 @@ def get_case_by_po(po_name: str) -> dict[str, Any] | None:
 
 
 def get_case_by_rfq(rfq_name: str) -> dict[str, Any] | None:
-    """Resolve the active procurement case that created one ERPNext RFQ."""
+    """Resolve the procurement case that created one ERPNext RFQ.
+
+    ⚠️ 재비딩 시 지난 RFQ를 더 이상 취소·폐기하지 않고 그대로 두기
+    때문에(rfq_rounds 이력 - "차수" 조회 기능), 지금 진행 중인
+    라운드(values.rfq_name)뿐 아니라 지난 라운드들의 RFQ 이름도 함께
+    찾아야 한다. 그렇지 않으면 지난 라운드의 RFQ 포털로 뒤늦게 들어온
+    Supplier Quotation 웹훅이 케이스를 못 찾고 조용히 버려진다."""
 
     with get_connection() as connection:
         row = connection.execute(
@@ -343,6 +349,13 @@ def get_case_by_rfq(rfq_name: str) -> dict[str, Any] | None:
             SELECT *
             FROM procurement.procurement_case
             WHERE workflow_snapshot #>> '{values,rfq_name}' = %(rfq_name)s
+               OR EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                        COALESCE(workflow_snapshot #> '{values,rfq_rounds}', '[]'::jsonb)
+                    ) AS round_entry
+                    WHERE round_entry->>'rfq_name' = %(rfq_name)s
+               )
             ORDER BY updated_at DESC
             LIMIT 1
             """,
