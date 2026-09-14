@@ -46,7 +46,11 @@ class WebhookSpec:
 
     @property
     def name(self) -> str:
-        return f"BiddingFlow - {self.doctype} - {self.event}"[:140]
+        # 같은 DocType/event 조합이라도 서로 다른 목적의 웹훅이 존재할 수
+        # 있다. 예: File.after_insert는 MR 첨부와 견적 메일 첨부를 각각
+        # 다른 엔드포인트로 전달한다. endpoint까지 이름에 포함해 충돌을
+        # 방지한다.
+        return f"BiddingFlow - {self.doctype} - {self.event} - {self.endpoint}"[:140]
 
 
 def _specs() -> list[WebhookSpec]:
@@ -71,6 +75,27 @@ def _specs() -> list[WebhookSpec]:
         "on_update",
         "on_trash",
         condition='doc.attached_to_doctype == "Material Request"',
+    )
+    # ERPNext가 수신 메일을 Communication으로 저장한 직후 한 번 처리하고,
+    # 첨부 File이 뒤늦게 저장되는 경우 File 웹훅으로 다시 처리한다.
+    # 백엔드 이벤트 저장소가 Communication + 첨부 식별자로 중복을 막는다.
+    add(
+        "Communication",
+        "quotation-email",
+        "after_insert",
+        "on_update",
+        condition=(
+            'doc.sent_or_received == "Received" and '
+            'doc.communication_medium == "Email" and '
+            'doc.reference_doctype == "Request for Quotation"'
+        ),
+    )
+    add(
+        "File",
+        "quotation-email-file",
+        "after_insert",
+        "on_update",
+        condition='doc.attached_to_doctype == "Communication"',
     )
     # after_insert는 최초 요청, on_update는 요청자가 누락 규격을 보완한 뒤
     # 다시 저장한 Item을 재검증한다. 백엔드가 disabled=0으로 바꾼 update는
@@ -111,6 +136,16 @@ def _payload_template(spec: WebhookSpec) -> str:
                 '    "file_url": {{ doc.file_url | tojson }}',
                 '    "attached_to_doctype": {{ doc.attached_to_doctype | tojson }}',
                 '    "attached_to_name": {{ doc.attached_to_name | tojson }}',
+            ]
+        )
+    if spec.doctype == "Communication":
+        fields.extend(
+            [
+                '    "sent_or_received": {{ doc.sent_or_received | tojson }}',
+                '    "communication_medium": {{ doc.communication_medium | tojson }}',
+                '    "sender": {{ doc.sender | tojson }}',
+                '    "reference_doctype": {{ doc.reference_doctype | tojson }}',
+                '    "reference_name": {{ doc.reference_name | tojson }}',
             ]
         )
     if spec.doctype == "Item":
@@ -200,16 +235,18 @@ def _write_backup(path: str, documents: list[dict[str, Any]]) -> None:
 
 
 def _managed_existing(rows: list[dict[str, Any]], spec: WebhookSpec) -> dict[str, Any] | None:
+    expected_suffix = f"/api/webhooks/erpnext/{spec.endpoint}"
     for row in rows:
-        if row.get("webhook_doctype") != spec.doctype or row.get("webhook_docevent") != spec.event:
+        if (
+            row.get("webhook_doctype") != spec.doctype
+            or row.get("webhook_docevent") != spec.event
+        ):
             continue
         name = str(row.get("name") or "")
-        request_url = str(row.get("request_url") or "")
-        if (
-            name.startswith("BiddingFlow - ")
-            or name == "Backend Webhook"
-            or "/api/webhooks/erpnext/" in request_url
-        ):
+        request_url = str(row.get("request_url") or "").rstrip("/")
+        # DocType/event만 비교하면 두 File 웹훅이 서로를 덮어쓴다. URL의
+        # 목적별 endpoint 또는 새 고유 이름까지 일치할 때만 갱신한다.
+        if request_url.endswith(expected_suffix) or name == spec.name:
             return row
     return None
 
@@ -220,7 +257,18 @@ def configure(
     apply: bool,
     disable: bool,
     backup_file: str = "",
+    endpoints: set[str] | None = None,
 ) -> tuple[int, int]:
+    specs = _specs()
+    if endpoints:
+        known_endpoints = {spec.endpoint for spec in specs}
+        unknown_endpoints = endpoints - known_endpoints
+        if unknown_endpoints:
+            raise RuntimeError(
+                f"알 수 없는 웹훅 endpoint입니다: {sorted(unknown_endpoints)}"
+            )
+        specs = [spec for spec in specs if spec.endpoint in endpoints]
+
     secret = os.environ.get("ERPNEXT_WEBHOOK_SECRET", "").strip()
     if not secret:
         raise RuntimeError("ERPNEXT_WEBHOOK_SECRET이 설정되지 않았습니다.")
@@ -246,7 +294,7 @@ def configure(
     if apply and backup_file:
         existing_names = {
             str(existing["name"])
-            for spec in _specs()
+            for spec in specs
             if (existing := _managed_existing(rows, spec)) is not None
         }
         existing_documents = [
@@ -257,7 +305,7 @@ def configure(
 
     created = 0
     updated = 0
-    for spec in _specs():
+    for spec in specs:
         existing = _managed_existing(rows, spec)
         if disable and existing is None:
             continue
@@ -307,12 +355,22 @@ def main() -> None:
         default="",
         help="--apply 전에 기존 관리 웹훅 문서를 저장할 JSON 파일",
     )
+    parser.add_argument(
+        "--endpoint",
+        action="append",
+        default=[],
+        help=(
+            "지정한 endpoint만 구성(여러 번 사용 가능). "
+            "예: --endpoint quotation-email --endpoint quotation-email-file"
+        ),
+    )
     args = parser.parse_args()
     configure(
         base_url=args.base_url,
         apply=args.apply,
         disable=args.disable,
         backup_file=args.backup_file,
+        endpoints=set(args.endpoint) or None,
     )
 
 
