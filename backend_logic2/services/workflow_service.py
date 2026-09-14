@@ -720,6 +720,25 @@ def project_case_from_checkpoint(case_id: str) -> dict[str, Any]:
         deadline_value = str(values["quotation_deadline"] or "").strip() or None
         updated = case_repository.update_quotation_deadline(case_id, deadline_value)
 
+    # ⚠️ quotation_snapshot(지금 라운드의 견적 회신율/응답 목록 read model)은
+    # workflow_snapshot.values와 별개의 DB 컬럼이라, 재비딩으로 rfq_name이
+    # 바뀌거나 빈 값으로 리셋돼도 자동으로 따라 지워지지 않는다. 그대로
+    # 두면 지난 라운드에 받았던 견적이 새 라운드의 견적 회신율/견적 목록에
+    # 계속 섞여 보이는 버그가 생긴다(재비딩해도 예전 견적이 회신율에
+    # 영향을 주고, 클릭하면 예전 견적이 그대로 뜸). 지금 라운드가 스냅샷에
+    # 저장된 라운드와 달라졌으면(=새 라운드로 넘어갔으면) 그 즉시 read
+    # model을 비워서, 새 RFQ에 실제로 응답이 들어오기 전까지는 "회신
+    # 없음"으로 정확히 보이게 한다. 지난 라운드 견적은 차수 팝업이
+    # ERPNext에서 그때그때 따로 다시 조회하므로 여기서 지워도 안전하다.
+    if "rfq_name" in values:
+        current_rfq_name = str(values.get("rfq_name") or "").strip()
+        stored_snapshot = updated.get("quotation_snapshot") or {}
+        stored_rfq_name = str(
+            stored_snapshot.get("rfq_name") or ""
+        ).strip() if isinstance(stored_snapshot, dict) else ""
+        if stored_rfq_name != current_rfq_name:
+            updated, _ = case_repository.update_quotation_snapshot(case_id, {})
+
     if graph_status == "po_sent" and values.get("po_name"):
         from backend_logic2.services.receipt_service import ensure_delivery_for_po
 
