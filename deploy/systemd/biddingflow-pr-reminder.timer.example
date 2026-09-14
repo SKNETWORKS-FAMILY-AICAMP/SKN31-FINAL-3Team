@@ -1,0 +1,11 @@
+[Unit]
+Description=Run BiddingFlow supplier PR reminders every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=biddingflow-pr-reminder.service
+
+[Install]
+WantedBy=timers.target

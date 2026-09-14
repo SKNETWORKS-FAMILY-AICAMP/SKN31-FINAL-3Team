@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta
+from html import escape
 import re
 from email.utils import getaddresses
 
@@ -233,6 +234,7 @@ REMINDER_STAGE_TEMPLATES = [
             "안녕하세요, {supplier_name}님.<br><br>"
             "{sent_date}에 보내드린 견적요청(RFQ) {rfq_name} 건에 대해 "
             "아직 회신을 받지 못하여 다시 한번 안내드립니다.<br>"
+            "{requested_delivery_dates_html}"
             "회신 마감일은 {deadline_date}입니다. 확인 부탁드립니다.<br><br>"
             "감사합니다."
         ),
@@ -243,6 +245,7 @@ REMINDER_STAGE_TEMPLATES = [
             "안녕하세요, {supplier_name}님.<br><br>"
             "견적요청(RFQ) {rfq_name}의 회신 마감일이 {deadline_date}로 "
             "얼마 남지 않았습니다. 기한 내 회신 부탁드립니다.<br><br>"
+            "{requested_delivery_dates_html}"
             "감사합니다."
         ),
     },
@@ -253,6 +256,7 @@ REMINDER_STAGE_TEMPLATES = [
             "견적요청(RFQ) {rfq_name}의 회신 마감일({deadline_date})이 지났으나 "
             "아직 회신을 받지 못했습니다. 빠른 회신 부탁드리며, 회신이 어려우신 "
             "경우 담당자에게 연락 부탁드립니다.<br><br>"
+            "{requested_delivery_dates_html}"
             "감사합니다."
         ),
     },
@@ -274,6 +278,47 @@ def _env_template_override():
     if subject and body:
         return {"subject": subject, "body": body}
     return None
+
+
+def get_requested_delivery_dates(rfq: dict) -> list[dict[str, str]]:
+    """Return unique MR-specific requested delivery dates carried by RFQ items."""
+    dates: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    header_date = str(rfq.get("schedule_date") or "").strip()
+
+    for item in rfq.get("items") or []:
+        mr_name = str(item.get("material_request") or "").strip()
+        schedule_date = str(item.get("schedule_date") or header_date).strip()
+        if not schedule_date:
+            continue
+        key = (mr_name, schedule_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        dates.append(
+            {
+                "mr_name": mr_name or "연결 MR 없음",
+                "schedule_date": schedule_date,
+            }
+        )
+
+    if not dates and header_date:
+        dates.append({"mr_name": "RFQ", "schedule_date": header_date})
+    return dates
+
+
+def _requested_delivery_dates_html(rfq: dict) -> str:
+    dates = get_requested_delivery_dates(rfq)
+    if not dates:
+        return "<b>납기 요청일자:</b> 확인 필요<br><br>"
+    rows = "".join(
+        f"<li>{escape(row['mr_name'])}: <b>{escape(row['schedule_date'])}</b></li>"
+        for row in dates
+    )
+    return (
+        "<div style='margin:12px 0'><b>납기 요청일자</b>"
+        f"<ul style='margin:6px 0 0 20px;padding:0'>{rows}</ul></div>"
+    )
 
 
 def build_reminder_email(
@@ -303,6 +348,7 @@ def build_reminder_email(
         "deadline_date": deadline_date.strftime("%Y-%m-%d"),
         "days_left": days_left,
         "reminder_count": reminder_count + 1,
+        "requested_delivery_dates_html": _requested_delivery_dates_html(rfq),
     }
 
     subject = template["subject"].format(**context)

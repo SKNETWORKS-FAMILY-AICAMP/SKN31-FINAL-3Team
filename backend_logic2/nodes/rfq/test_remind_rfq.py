@@ -26,6 +26,13 @@ def make_rfq(name="RFQ-0001", docstatus=1, suppliers=None):
     return {
         "name": name,
         "docstatus": docstatus,
+        "items": [
+            {
+                "item_code": "ITEM-001",
+                "material_request": "MAT-MR-2026-00001",
+                "schedule_date": "2026-09-10",
+            }
+        ],
         "suppliers": suppliers if suppliers is not None else [
             {"supplier": "대한안전산업", "email_id": "buyer@daehan.example.com"},
         ],
@@ -126,6 +133,31 @@ class BuildReminderEmailTest(unittest.TestCase):
         self.assertIn(rr.REMINDER_SUBJECT_PREFIX, subject)
         self.assertIn("RFQ-0001", subject)
         self.assertIn("2026-09-05", body)
+        self.assertIn("MAT-MR-2026-00001", body)
+        self.assertIn("2026-09-10", body)
+
+    def test_lists_each_material_request_delivery_date(self):
+        self.rfq["items"] = [
+            {
+                "material_request": "MAT-MR-2026-00001",
+                "schedule_date": "2026-09-10",
+            },
+            {
+                "material_request": "MAT-MR-2026-00002",
+                "schedule_date": "2026-09-15",
+            },
+        ]
+        _, body = rr.build_reminder_email(
+            self.rfq,
+            self.supplier,
+            now=datetime(2026, 9, 2, 9, 0, 0),
+            deadline_date=datetime(2026, 9, 5),
+            reminder_count=0,
+        )
+        self.assertIn("MAT-MR-2026-00001", body)
+        self.assertIn("2026-09-10", body)
+        self.assertIn("MAT-MR-2026-00002", body)
+        self.assertIn("2026-09-15", body)
 
     def test_stage2_when_deadline_passed(self):
         now = datetime(2026, 9, 6, 9, 0, 0)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -167,6 +168,132 @@ def record_processing_error(pr_id: str, *, stage: str, error: str) -> dict[str, 
     if not row:
         raise LookupError(pr_id)
     return dict(row)
+
+
+def expire_due_requests(now: datetime) -> int:
+    """Close unanswered PRs whose signed response link has expired."""
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE procurement.supplier_purchase_response
+            SET status = 'EXPIRED', updated_at = now()
+            WHERE status = 'SENT'
+              AND expires_at <= %(now)s
+            """,
+            {"now": now},
+        )
+    return int(cursor.rowcount or 0)
+
+
+def list_due_reminders(
+    now: datetime, *, start_after_hours: int = 24, interval_hours: int = 24
+) -> list[dict[str, Any]]:
+    """Return live, unanswered PRs whose next reminder is due."""
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM procurement.supplier_purchase_response
+            WHERE status = 'SENT'
+              AND sent_at IS NOT NULL
+              AND expires_at > %(now)s
+              AND sent_at + (%(start_after_hours)s * interval '1 hour') <= %(now)s
+              AND (
+                    last_reminded_at IS NULL
+                    OR last_reminded_at
+                       + (%(interval_hours)s * interval '1 hour') <= %(now)s
+                  )
+            ORDER BY sent_at, pr_id
+            """,
+            {
+                "now": now,
+                "start_after_hours": max(1, int(start_after_hours)),
+                "interval_hours": max(1, int(interval_hours)),
+            },
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def claim_reminder(
+    pr_id: str,
+    now: datetime,
+    *,
+    start_after_hours: int = 24,
+    interval_hours: int = 24,
+) -> dict[str, Any] | None:
+    """Atomically reserve one due PR so parallel schedulers cannot duplicate it."""
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            UPDATE procurement.supplier_purchase_response
+            SET last_reminded_at = %(now)s,
+                reminder_error = NULL,
+                updated_at = now()
+            WHERE pr_id = %(pr_id)s
+              AND status = 'SENT'
+              AND sent_at IS NOT NULL
+              AND expires_at > %(now)s
+              AND sent_at + (%(start_after_hours)s * interval '1 hour') <= %(now)s
+              AND (
+                    last_reminded_at IS NULL
+                    OR last_reminded_at
+                       + (%(interval_hours)s * interval '1 hour') <= %(now)s
+                  )
+            RETURNING *
+            """,
+            {
+                "pr_id": pr_id,
+                "now": now,
+                "start_after_hours": max(1, int(start_after_hours)),
+                "interval_hours": max(1, int(interval_hours)),
+            },
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_reminder_sent(pr_id: str, *, claimed_at: datetime) -> dict[str, Any]:
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            UPDATE procurement.supplier_purchase_response
+            SET reminder_count = reminder_count + 1,
+                reminder_error = NULL,
+                updated_at = now()
+            WHERE pr_id = %(pr_id)s
+              AND status = 'SENT'
+              AND last_reminded_at = %(claimed_at)s
+            RETURNING *
+            """,
+            {"pr_id": pr_id, "claimed_at": claimed_at},
+        ).fetchone()
+    if not row:
+        raise RuntimeError("PR 독촉 발송 결과를 기록하지 못했습니다.")
+    return dict(row)
+
+
+def mark_reminder_failed(
+    pr_id: str, *, claimed_at: datetime, error: str
+) -> dict[str, Any] | None:
+    """Release a failed claim so the next scheduler run can retry it."""
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            UPDATE procurement.supplier_purchase_response
+            SET last_reminded_at = NULL,
+                reminder_error = %(error)s,
+                updated_at = now()
+            WHERE pr_id = %(pr_id)s
+              AND status = 'SENT'
+              AND last_reminded_at = %(claimed_at)s
+            RETURNING *
+            """,
+            {
+                "pr_id": pr_id,
+                "claimed_at": claimed_at,
+                "error": str(error)[:2000],
+            },
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def list_requests(*, case_id: str | None = None) -> list[dict[str, Any]]:

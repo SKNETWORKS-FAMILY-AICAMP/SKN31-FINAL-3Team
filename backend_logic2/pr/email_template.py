@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from html import escape
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -53,6 +54,37 @@ def render_email(
       <p style="font-size:12px;color:#667085">버튼을 누른 뒤 확인 화면에서 최종 제출됩니다. 링크를 다른 사람에게 전달하지 마세요.</p>
     </div>
     """
+
+
+def render_reminder_email(
+    pr: dict[str, Any], *, now: datetime
+) -> tuple[str, str]:
+    """Render a reminder without reproducing the intentionally unhashed token."""
+    expires_at = pr.get("expires_at")
+    expires_text = (
+        expires_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        if isinstance(expires_at, datetime)
+        else str(expires_at or "-")
+    )
+    reminder_number = int(pr.get("reminder_count") or 0) + 1
+    supplier = escape(str(pr.get("supplier_id") or "공급사"))
+    pr_id = escape(str(pr.get("pr_id") or "-"))
+    mr_name = escape(str(pr.get("mr_name") or "-"))
+    subject = f"[재안내][PR:{pr.get('pr_id')}] 수주 가능 여부를 확인해 주세요"
+    body = f"""
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#172033">
+      <h2>수주 가능 여부 재안내</h2>
+      <p><b>{supplier}</b> 담당자님, 아직 아래 발주 건의 응답이 확인되지 않았습니다.</p>
+      <table style="border-collapse:collapse;width:100%;margin:20px 0">
+        <tr><th style="text-align:left;padding:8px;border:1px solid #ddd">PR 번호</th><td style="padding:8px;border:1px solid #ddd">{pr_id}</td></tr>
+        <tr><th style="text-align:left;padding:8px;border:1px solid #ddd">MR 번호</th><td style="padding:8px;border:1px solid #ddd">{mr_name}</td></tr>
+        <tr><th style="text-align:left;padding:8px;border:1px solid #ddd">응답 기한</th><td style="padding:8px;border:1px solid #ddd">{escape(expires_text)}</td></tr>
+      </table>
+      <p>최초 PR 안내 메일의 <b>수주 접수</b> 또는 <b>수주 거절</b> 버튼을 이용해 기한 내 회신해 주세요.</p>
+      <p style="font-size:12px;color:#667085">본 메일은 {reminder_number}회차 자동 재안내입니다.</p>
+    </div>
+    """
+    return subject, body
 
 
 def render_response_form(token: str, decision: str, supplier: str, pr_id: str) -> str:
