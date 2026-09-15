@@ -1,9 +1,9 @@
-"""외부 견적을 로컬 Hugging Face 모델로 공통 Quotation JSON에 추출한다.
+"""외부 견적을 공급자 어댑터로 공통 Quotation JSON에 추출한다.
 
 보안 원칙:
-    - 견적 원문과 이미지를 외부 API로 전송하지 않는다.
-    - Hugging Face 모델은 ``local_files_only=True``로만 로드한다.
-    - 런타임 모델 다운로드와 원격 코드는 허용하지 않는다.
+    - 기본 local 공급자는 견적 원문과 이미지를 외부 API로 전송하지 않는다.
+    - RunPod 공급자는 명시적으로 설정한 경우에만 HTTPS로 문서를 전송한다.
+    - API 키는 공급자 어댑터 내부의 인증 헤더에서만 사용한다.
 
 
 """
@@ -187,6 +187,9 @@ class PreparedSource:
     kind: SourceKind
     text: str
     vision_inputs: list[VisionInput] = field(default_factory=list)
+    # Original image/PDF bytes retained for remote VLM adapters.  Local
+    # parsers continue to use text/vision_inputs and never inspect this field.
+    document_inputs: list[VisionInput] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     specification_keys: list[str] = field(default_factory=list)
 
@@ -337,6 +340,7 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
     )
     body_parts: list[str] = []
     vision_inputs: list[VisionInput] = []
+    document_inputs: list[VisionInput] = []
     evidence = [f"이메일 파일 파싱: {filename}"]
 
     body = message.get_body(preferencelist=("plain", "html"))
@@ -359,9 +363,12 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
             pdf_text, pdf_images, pdf_evidence = _pdf_to_source(payload, attachment_name)
             body_parts.append(f"[attachment: {attachment_name}]\n{pdf_text}")
             vision_inputs.extend(pdf_images)
+            document_inputs.append(VisionInput(data=payload, filename=attachment_name))
             evidence.extend(pdf_evidence)
         elif suffix in IMAGE_SUFFIXES:
-            vision_inputs.append(VisionInput(data=payload, filename=attachment_name))
+            image_input = VisionInput(data=payload, filename=attachment_name)
+            vision_inputs.append(image_input)
+            document_inputs.append(image_input)
         elif part.get_content_maintype() == "text":
             body_parts.append(f"[attachment: {attachment_name}]\n{part.get_content()}")
 
@@ -369,6 +376,7 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
         kind=SourceKind.EMAIL,
         text=f"{headers}\n\n[Body]\n" + "\n\n".join(body_parts),
         vision_inputs=vision_inputs,
+        document_inputs=document_inputs,
         evidence=evidence,
     )
 
@@ -383,12 +391,20 @@ def prepare_source_bytes(data: bytes, filename: str) -> PreparedSource:
         return PreparedSource(kind=kind, text=_spreadsheet_to_text(data, filename), evidence=[f"표 파일 메모리 파싱: {filename}"])
     if kind == SourceKind.PDF:
         text, vision_inputs, evidence = _pdf_to_source(data, filename)
-        return PreparedSource(kind=kind, text=text, vision_inputs=vision_inputs, evidence=evidence)
+        return PreparedSource(
+            kind=kind,
+            text=text,
+            vision_inputs=vision_inputs,
+            document_inputs=[VisionInput(data=data, filename=filename)],
+            evidence=evidence,
+        )
     if kind == SourceKind.IMAGE:
+        image_input = VisionInput(data=data, filename=filename)
         return PreparedSource(
             kind=kind,
             text="[견적서 이미지]",
-            vision_inputs=[VisionInput(data=data, filename=filename)],
+            vision_inputs=[image_input],
+            document_inputs=[image_input],
             evidence=[f"메모리 비전 입력 준비: {filename}"],
         )
     if kind == SourceKind.EMAIL:
@@ -1044,6 +1060,16 @@ def get_local_parser() -> LocalHuggingFaceQuotationParser:
     return _LOCAL_PARSER
 
 
+def get_configured_parser() -> QuotationParser:
+    """Resolve local/RunPod without leaking provider details into workflows."""
+
+    from backend_logic2.integrations.quotation_extraction.factory import (
+        get_configured_quotation_parser,
+    )
+
+    return get_configured_quotation_parser(get_local_parser)
+
+
 def _extract_prepared_quotation(
     prepared: PreparedSource,
     rfq_name: str,
@@ -1091,7 +1117,7 @@ def _extract_prepared_quotation(
         collect_specification_keys(rfq_requirements)
         prepared.specification_keys = sorted(specification_keys)
 
-    parser = model_parser or get_local_parser()
+    parser = model_parser or get_configured_parser()
     parsed_value = parser(prepared, rfq_name, supplier_name, reflection_errors or [])
     parsed = parsed_value if isinstance(parsed_value, _ParsedQuotation) else _ParsedQuotation.model_validate(parsed_value)
     payload = parsed.model_dump()
@@ -1123,13 +1149,15 @@ def _extract_prepared_quotation(
             )
         else:
             model_label = parser.text_model_name
+    elif callable(getattr(parser, "extraction_evidence", None)):
+        model_label = None
     else:
         model_label = "주입 파서"
-    payload["extraction_evidence"] = [
-        *prepared.evidence,
-        f"로컬 HF 모델: {model_label}",
-        "외부 API 전송 없음",
-    ]
+    if model_label:
+        parser_evidence = [f"로컬 HF 모델: {model_label}", "외부 API 전송 없음"]
+    else:
+        parser_evidence = list(parser.extraction_evidence())
+    payload["extraction_evidence"] = [*prepared.evidence, *parser_evidence]
     if not quotation_id and not parsed_quotation_id:
         payload["extraction_evidence"].append(
             f"문서에서 견적번호를 확인하지 못해 대체 번호 사용: {resolved_fallback_id}"
