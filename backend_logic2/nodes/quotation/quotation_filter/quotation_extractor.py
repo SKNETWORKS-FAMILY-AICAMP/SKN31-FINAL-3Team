@@ -78,8 +78,8 @@ DEFAULT_VISION_ADAPTER = "lyc9872/qwen_3.5_9b_peft"
 PROJECT_ENV_FILE = Path(__file__).resolve().parents[4] / ".env"
 
 FINETUNED_SYSTEM_PROMPT = (
-    "견적서 이미지에서 값을 읽어 지정된 JSON만 출력한다. "
-    "이미지에 없는 값은 null로 출력한다."
+    "견적서 문서에서 값을 읽어 지정된 JSON만 출력한다. "
+    "문서에 없는 값은 null로 출력한다."
 )
 FINETUNED_USER_PROMPT = """이 견적서의 정보를 아래 규칙과 JSON 스키마에 맞게 추출하세요.
 
@@ -88,7 +88,7 @@ FINETUNED_USER_PROMPT = """이 견적서의 정보를 아래 규칙과 JSON 스�
 1. supplier_name은 견적서를 발행하거나 물품을 공급하는 회사명입니다. 문서에 '공급사명' 또는 '공급자명' 필드가 있으면 그 값을 우선하고, 없으면 발행사명으로 판단되는 상호를 사용합니다. 고객사·수신처명은 supplier_name으로 사용하지 않습니다.
 2. quotation_id와 item_code의 영문, 숫자, 하이픈을 한 글자씩 구분합니다. 불명확한 값을 임의로 완성하지 않습니다.
 3. 날짜는 의미가 명확한 경우 YYYY-MM-DD로 변환합니다. 일부만 보이거나 날짜인지 확실하지 않으면 null입니다.
-4. 금액과 수량은 통화 기호와 천 단위 쉼표를 제거한 JSON 숫자로 출력합니다. 이미지의 금액이 계산 결과와 다르더라도 이미지에 적힌 값을 그대로 사용합니다.
+4. 금액과 수량은 통화 기호와 천 단위 쉼표를 제거한 JSON 숫자로 출력합니다. 문서의 금액이 계산 결과와 다르더라도 문서에 적힌 값을 그대로 사용합니다.
 5. currency는 문서에 통화명이나 통화 기호가 명시된 경우에만 ISO 통화 코드(KRW, USD, JPY 등)로 출력하고, 표시가 없으면 null입니다.
 6. subtotal은 문서 전체의 세전 공급가액 합계이고, item.amount는 해당 품목 행의 공급가액입니다. 두 값을 서로 대신 사용하지 않습니다.
 7. item_name에는 제품명만, description에는 규격·사양·설명 내용을 기록합니다. specifications에는 문서에 표시된 규격 항목을 키-값으로 기록합니다.
@@ -706,6 +706,15 @@ def _normalize_finetuned_quotation(payload: dict[str, Any]) -> dict[str, Any]:
             "specifications": specifications if isinstance(specifications, dict) else {},
             "raw_description": raw_item.get("raw_description"),
         })
+    subtotal = _normalize_decimal(payload.get("subtotal"))
+    tax_amount = _normalize_decimal(payload.get("tax_amount"))
+    total_amount = _normalize_decimal(payload.get("total_amount"))
+    if tax_amount is None and subtotal is not None and total_amount is not None:
+        subtotal_decimal = Decimal(str(subtotal))
+        total_decimal = Decimal(str(total_amount))
+        if total_decimal >= subtotal_decimal:
+            tax_amount = total_decimal - subtotal_decimal
+
     return {
         "quotation_id": payload.get("quotation_id"),
         # The application supplies and overwrites the trusted supplier name.
@@ -714,9 +723,9 @@ def _normalize_finetuned_quotation(payload: dict[str, Any]) -> dict[str, Any]:
         "quotation_date": _normalize_date(payload.get("quotation_date")),
         "valid_until": _normalize_date(payload.get("valid_until")),
         "currency": payload.get("currency") or "KRW",
-        "subtotal": _normalize_decimal(payload.get("subtotal")),
-        "tax_amount": _normalize_decimal(payload.get("tax_amount")),
-        "total_amount": _normalize_decimal(payload.get("total_amount")),
+        "subtotal": subtotal,
+        "tax_amount": tax_amount,
+        "total_amount": total_amount,
         "items": items,
         "notes": payload.get("notes"),
     }

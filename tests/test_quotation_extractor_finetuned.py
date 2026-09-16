@@ -180,6 +180,31 @@ def test_finetuned_output_normalizes_adapter_schema_without_recalculation() -> N
     assert parsed.items[0].expected_delivery_date.isoformat() == "2026-09-20"
 
 
+def test_finetuned_output_infers_zero_tax_when_total_equals_subtotal() -> None:
+    normalized = _normalize_finetuned_quotation(
+        {
+            "quotation_id": None,
+            "currency": None,
+            "subtotal": 3_900_000,
+            "tax_amount": None,
+            "total_amount": 3_900_000,
+            "items": [
+                {
+                    "item_name": "ITEM-SUB-116",
+                    "quantity": 1000,
+                    "unit_price": 3900,
+                    "amount": 3_900_000,
+                }
+            ],
+        }
+    )
+
+    parsed = _ParsedQuotation.model_validate(normalized)
+
+    assert parsed.tax_amount == Decimal("0")
+    assert parsed.subtotal == parsed.total_amount == Decimal("3900000")
+
+
 def test_expected_delivery_date_reaches_public_quotation_model(tmp_path) -> None:
     image_path = tmp_path / "quote.png"
     image_path.write_bytes(b"test image bytes")
