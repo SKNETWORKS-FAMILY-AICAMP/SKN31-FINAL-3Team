@@ -4,7 +4,7 @@ import logging
 import psycopg
 from fastapi import APIRouter, HTTPException
 from auth_service.dependencies import CurrentUser
-from backend_logic2.integrations.assignment_config import is_super_admin
+from backend_logic2.policies.access import read_policy_access, PolicyAccessUnavailable
 from backend_logic2.policies import repository
 from backend_logic2.policies.schema import PublishPolicy
 from procurement_db.config import ProcurementDatabaseConfigurationError
@@ -17,15 +17,23 @@ def _actor(user):
     return str(user.get("erp_user_id") or user.get("email") or "")
 
 
+def _access(user):
+    try:
+        return read_policy_access(_actor(user))
+    except PolicyAccessUnavailable as exc:
+        raise HTTPException(503, "ERPNext 권한을 확인할 수 없습니다. 권한 조회 연결을 확인해주세요.") from exc
+
+
 def _require_admin(user):
-    if not is_super_admin(_actor(user)):
-        raise HTTPException(403, "회사 정책은 관리자만 변경할 수 있습니다.")
+    # Re-read on EVERY read/publish, so an open tab cannot retain a revoked role.
+    if not _access(user)["can_manage"]:
+        raise HTTPException(403, "ERPNext 관리자 또는 구매 정책 관리자 권한이 필요합니다.")
     return _actor(user)
 
 
 @router.get("/capabilities")
 def capabilities(user: CurrentUser):
-    return {"can_manage": is_super_admin(_actor(user))}
+    return _access(user)
 
 
 @router.get("")

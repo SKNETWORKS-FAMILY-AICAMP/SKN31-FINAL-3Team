@@ -5,6 +5,17 @@
 관리자 로그인 → 사이드바 **회사 구매 정책** → 기준/지침 수정 → 변경 사유 입력 →
 **변경 내용 검토** → **정책 게시**.
 
+접근 권한은 **현재 로그인 계정의 ERPNext User 문서**를 서버가 직접 조회해 확인합니다.
+활성 `Administrator` 계정, `System Manager` 또는 `Purchase Master Manager` 역할이 있는 활성 계정만
+정책을 조회/게시할 수 있습니다. 일반 `Purchase Manager`/`Purchase User`는 허용하지 않습니다.
+역할을 자동 생성하거나 사용자에게 부여하지 않습니다. 실제 ERP에 역할이 없으면 해당 이름으로 접근할 계정도 없습니다.
+2026-09-16 서버 내부 읽기 전용 확인에서 `Purchase Master Manager` 역할의 존재(HTTP 200)와
+Administrator의 역할 조회 가능 여부를 확인했습니다. 이 확인은 역할을 부여/변경하지 않았습니다.
+화면에서 내 ERP 역할 목록을 확인할 수 있고, 창에 다시 포커스하면 메뉴 권한을 갱신합니다.
+게시할 때도 ERP 역할을 재조회하므로 로그인 이후 권한이 회수돼도 저장할 수 없습니다.
+ERP 권한 조회가 실패하면 503으로 차단하며, 브라우저 localStorage/이전 토큰의 역할 정보로 우회하지 않습니다.
+이 설정의 접근 제어는 ERP의 역할 기반입니다. ERPNext의 모든 문서별 권한/User Permission 규칙을 복제하는 기능은 아닙니다.
+
 - JSONB로 저장된 게시본만 실행에 사용합니다. 입력 중에는 실제 업무 기준이 바뀌지 않습니다.
 - 게시 후 서비스 재시작 없이 새 MR 작업에 적용합니다. 이미 시작한 MR은 기존 버전을 유지합니다.
 - 탭을 이동해도 같은 로그인 세션 내의 미게시 초안은 유지합니다. 새로고침하면 사라지며, 수정 중 새로고침 시 브라우저 경고를 요청합니다.
@@ -46,8 +57,7 @@
 | `MIN_COMPETING_SUPPLIERS` | `rules.min_competing_suppliers` |
 
 제안한 7개 항목은 모두 실제 판단 분기에 연결했습니다. 관리자 화면에는 한국어 설명과 기존 변수명을 함께 표시합니다.
-`Purchase Master Manager`는 현재 코드에 등록된 ERP 권한명으로 확인되지 않았으므로,
-별도 역할의 의미와 부여 방식을 확정하기 전에는 기존 `SUPER_ADMINS`만 정책에 접근할 수 있습니다.
+`Purchase Master Manager`는 구매 정책을 편집할 수 있는 역할명으로 인식합니다. ERPNext에서 실제 부여된 역할만 사용합니다.
 
 긴급 분기 → 금액 → 구매패턴이라는 기존 실행 순서는 변경하지 않았습니다.
 따라서 긴급이면 고액 기준보다 긴급 분기가 먼저 적용됩니다. 이는 예외 없는 고액 승인 한도 설정이 아닙니다.
@@ -68,7 +78,8 @@
 - `backend_logic2/policies/schema.py`: 허용 키·타입·범위·기존 기본값. 알 수 없는 필드, 문자열 숫자, NaN 등 거부.
 - `policies/repository.py`: 게시 시 head 행 잠금 + expected_version 검사. 이력 INSERT와 head 갱신은 단일 트랜잭션.
 - `policies/runtime.py`: `ContextVar`로 실행별 정책 격리. 병렬 품목 처리에는 값을 명시적으로 전달.
-- `api/policy_routes.py`: 기존 인증 세션의 `erp_user_id`/email로 `is_super_admin`을 확인. 프론트 표시 여부만으로 권한을 허용하지 않음.
+- `policies/access.py`: 기존 인증 세션의 `erp_user_id`/email로 ERPNext User 역할을 조회. 정책 API마다 재검증하며 타임아웃/장애 시 차단.
+- `api/policy_routes.py`: 인증된 사용자 역할에 따른 접근 제한. 프론트 표시 여부만으로 권한을 허용하지 않음.
 - `workflow/process_graph.py`: case_id로 정책을 조회하고 각 노드에 동일 버전을 주입. 체크포인트에도 `policy_version` 기록.
 - `services/item_service.py`: 품목 웹훅 처리 시작 시 현재 버전을 한 번 읽어 전체 검증에 사용. 알림 검증 payload에 버전 포함.
 
@@ -82,7 +93,7 @@ DB 컨텍스트를 바인딩하지 않는 순수 함수/개발용 CLI 직접 호
 
 ## API
 
-- `GET /api/company-policy/capabilities`: 로그인 사용자의 `can_manage`.
+- `GET /api/company-policy/capabilities`: 로그인 사용자의 `can_manage`, `roles`, `source`, `enabled`.
 - `GET /api/company-policy`: 관리자 전용 현재 게시본 + 최근 100개 이력. DB에는 전체 이력이 남음.
 - `POST /api/company-policy/publish`: 관리자 전용. body = `expected_version`, `policy`, `reason`.
 - 응답: 미로그인 401, 관리자 아님 403, 동시 수정 충돌 409, 잘못된 설정 422, 저장소 장애 503.
@@ -106,6 +117,9 @@ ERP 문서, 발송 설정, 비밀키에는 변경이 없습니다.
 3. 백엔드 재시작(새 기능 최초 설치 때만).
 4. 프론트 `npm ci` → `npm run build` → 배포.
 5. 관리자 로그인 후 회사 구매 정책 메뉴 확인. 일반 계정에는 메뉴가 없어야 함.
+
+백엔드의 ERP API 계정에 User 및 역할 하위 테이블을 읽을 권한이 필요합니다.
+조회 권한이 없으면 설정을 허용하지 않고 오류를 반환합니다. 이 코드가 ERP 계정 권한을 자동 확대하지는 않습니다.
 
 기존 서버 배포 스크립트는 재시작 전에 마이그레이션을 실행합니다. 이 기능 설치 이후 정책 수정에는 재시작이 필요하지 않습니다.
 코드를 이전 버전으로 되돌려도 이력 테이블을 삭제할 필요는 없습니다.

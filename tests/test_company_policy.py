@@ -134,7 +134,8 @@ def test_quotation_priority_changes_order_without_corrupting_amount():
 def client():
     app = FastAPI()
     app.include_router(router)
-    with TestClient(app) as client:
+    with TestClient(app) as client, patch('backend_logic2.api.policy_routes.read_policy_access',
+            side_effect=lambda actor: {'can_manage': actor == 'Administrator'}):
         yield client, app
 
 
