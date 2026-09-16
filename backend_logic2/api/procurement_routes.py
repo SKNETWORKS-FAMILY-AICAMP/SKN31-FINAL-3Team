@@ -172,6 +172,8 @@ def get_cases(
         ) from exc
 
     from backend_logic2.services.scorecard_service import automatic_scores
+    from backend_logic2.services.supplier_recommendations import attach_supplier_recommendations
+    attach_supplier_recommendations(rows)
     for row in rows:
         if row.get("delivery"):
             row["delivery"]["automatic_scorecard"] = automatic_scores(row, row["delivery"])
@@ -195,6 +197,8 @@ def get_case(case_id: str, current_user: CurrentUser):
 
     row["tasks"] = task_repository.list_tasks(case_id=case_id)
     row["delivery"] = delivery_repository.get_delivery_by_case(case_id)
+    from backend_logic2.services.supplier_recommendations import attach_supplier_recommendations
+    attach_supplier_recommendations([row])
     if row["delivery"]:
         from backend_logic2.services.scorecard_service import automatic_scores
         row["delivery"]["automatic_scorecard"] = automatic_scores(row, row["delivery"])
