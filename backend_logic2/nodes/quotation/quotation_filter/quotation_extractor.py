@@ -1070,6 +1070,26 @@ def get_configured_parser() -> QuotationParser:
     return get_configured_quotation_parser(get_local_parser)
 
 
+def prepare_rfq_specifications(prepared: PreparedSource, requirements: dict[str, Any] | None) -> None:
+    """Share prompt preparation between synchronous and durable extraction."""
+    keys: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            specifications = value.get("specifications")
+            if isinstance(specifications, dict):
+                keys.update(str(key) for key in specifications if str(key).strip())
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    if requirements:
+        collect(requirements)
+        prepared.specification_keys = sorted(keys)
+
+
 def _extract_prepared_quotation(
     prepared: PreparedSource,
     rfq_name: str,
@@ -1097,25 +1117,7 @@ def _extract_prepared_quotation(
 
     if prepared.kind == SourceKind.PORTAL:
         raise ValueError("포털 Supplier Quotation은 외부 견적 추출 대상이 아닙니다.")
-    if rfq_requirements:
-        # RFQ 값이 견적 추출 결과로 복사되지 않도록 규격의 키 이름만 전달한다.
-        specification_keys: set[str] = set()
-
-        def collect_specification_keys(value: Any) -> None:
-            if isinstance(value, dict):
-                specifications = value.get("specifications")
-                if isinstance(specifications, dict):
-                    specification_keys.update(
-                        str(key) for key in specifications if str(key).strip()
-                    )
-                for child in value.values():
-                    collect_specification_keys(child)
-            elif isinstance(value, list):
-                for child in value:
-                    collect_specification_keys(child)
-
-        collect_specification_keys(rfq_requirements)
-        prepared.specification_keys = sorted(specification_keys)
+    prepare_rfq_specifications(prepared, rfq_requirements)
 
     parser = model_parser or get_configured_parser()
     parsed_value = parser(prepared, rfq_name, supplier_name, reflection_errors or [])

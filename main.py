@@ -19,6 +19,7 @@ from auth_service.dependencies import CurrentUser, require_authenticated_user
 from auth_service.router import router as auth_router
 from backend_logic2.assistant.api import router as assistant_router
 from backend_logic2.api.mr_substitute_routes import router as mr_substitute_router
+from backend_logic2.api.runpod_routes import router as runpod_webhook_router
 from backend_logic2.api.procurement_routes import (
     router as procurement_router,
     webhook_router as erpnext_webhook_router,
@@ -235,8 +236,29 @@ async def _poll_disabled_items(*, continuous: bool) -> None:
         await asyncio.sleep(interval)
 
 
+async def _recover_runpod_jobs() -> None:
+    """Recover durable pending jobs every minute, including after API restart.
+
+    Runs even after switching providers so already submitted work can finish.
+    Idle passes only query PostgreSQL; no RunPod request is made without a due job.
+    """
+    from backend_logic2.services.runpod_quotation_jobs import recover_pending
+    while True:
+        try:
+            await asyncio.to_thread(recover_pending)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("RunPod quotation recovery failed")
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from backend_logic2.services.runpod_quotation_jobs import webhook_mode, callback_url
+    if webhook_mode():
+        callback_url()
+    runpod_task = asyncio.create_task(_recover_runpod_jobs(), name="runpod-quotation-recovery")
     ingest_mode = _mr_ingest_mode()
     polling_task: asyncio.Task[None] | None = None
     startup_reconciliation_task: asyncio.Task[None] | None = None
@@ -277,6 +299,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        runpod_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await runpod_task
         if polling_task is not None:
             polling_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -356,6 +381,7 @@ app.include_router(
     dependencies=[Depends(require_authenticated_user)],
 )
 app.include_router(erpnext_webhook_router)
+app.include_router(runpod_webhook_router)
 app.include_router(pr_public_router)
 app.include_router(
     pr_internal_router,

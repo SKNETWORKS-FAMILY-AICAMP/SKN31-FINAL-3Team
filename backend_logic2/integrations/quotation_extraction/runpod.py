@@ -248,12 +248,17 @@ class RunPodQuotationParser:
             )
         return payload
 
-    def _submit(self, worker_input: dict[str, Any]) -> dict[str, Any]:
+    def _submit(
+        self, worker_input: dict[str, Any], *, webhook: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"input": worker_input}
+        if webhook:
+            body["webhook"] = webhook
         try:
             response = self._session.post(
                 f"{self._endpoint_url}/run",
                 headers=self._headers,
-                json={"input": worker_input},
+                json=body,
                 timeout=(
                     self.config.connect_timeout_seconds,
                     self.config.request_timeout_seconds,
@@ -332,7 +337,7 @@ class RunPodQuotationParser:
             "RunPod 견적 작업이 제한 시간 안에 완료되지 않았습니다."
         )
 
-    def __call__(
+    def build_worker_input(
         self,
         prepared: Any,
         rfq_name: str,
@@ -358,6 +363,26 @@ class RunPodQuotationParser:
             "documents": documents,
             "max_new_tokens": self.config.max_new_tokens,
         }
+        return worker_input
+
+    def submit_job(self, worker_input: dict[str, Any], webhook: str) -> dict[str, Any]:
+        """Submit once; durable job orchestration owns completion and retries."""
+        return self._submit(worker_input, webhook=webhook)
+
+    def job_status(self, job_id: str) -> dict[str, Any]:
+        """Authenticated result lookup, also used to verify untrusted callbacks."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", job_id):
+            raise ValueError("invalid RunPod job ID")
+        return self._status(job_id)
+
+    def __call__(
+        self, prepared: Any, rfq_name: str, supplier_name: str | None,
+        reflection_errors: list[str],
+    ) -> dict[str, Any]:
+        # Retained for explicit synchronous CLI/tests and polling fallback.
+        worker_input = self.build_worker_input(
+            prepared, rfq_name, supplier_name, reflection_errors,
+        )
         extraction = self._wait(self._submit(worker_input))
         from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
             _normalize_finetuned_quotation,

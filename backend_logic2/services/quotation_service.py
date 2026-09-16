@@ -166,6 +166,7 @@ def register_quotation_email_event(
         )
         rfq_requirements = load_rfq_requirements(rfq_name).model_dump(mode="json")
         registrations: list[dict[str, Any]] = []
+        extraction_jobs: list[dict[str, Any]] = []
         failures: list[dict[str, str]] = []
         for attachment in attachments:
             file_id = str(attachment.get("name") or "").strip()
@@ -186,6 +187,15 @@ def register_quotation_email_event(
                     "-",
                     f"{communication_name}-{file_id}",
                 ).strip("-")
+                from backend_logic2.services import runpod_quotation_jobs
+                if model_parser is None and runpod_quotation_jobs.webhook_mode():
+                    extraction_jobs.append(runpod_quotation_jobs.enqueue(
+                        downloaded["content"], filename, rfq_name,
+                        supplier_name=supplier_name, supplier_id=supplier_id,
+                        fallback_quotation_id=fallback_id, rfq_requirements=rfq_requirements,
+                        message_id=communication_name, content_type=downloaded.get("content_type"),
+                    ))
+                    continue
                 with _EMAIL_EXTRACTION_LOCK:
                     quotation = extract_quotation_bytes(
                         downloaded["content"],
@@ -207,7 +217,7 @@ def register_quotation_email_event(
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
-        if not registrations:
+        if not registrations and not extraction_jobs:
             if failures:
                 raise RuntimeError(f"견적 첨부 추출 실패: {failures}")
             result = {
@@ -233,11 +243,12 @@ def register_quotation_email_event(
                 "changed": changed,
             }
         result = {
-            "status": "processed" if not failures else "partially_processed",
+            "status": ("queued" if extraction_jobs else "processed") if not failures else "partially_processed",
             "communication": communication_name,
             "rfq_name": rfq_name,
             "supplier": supplier_id,
             "registrations": registrations,
+            "extraction_jobs": extraction_jobs,
             "failures": failures,
             "projection": projection,
         }
