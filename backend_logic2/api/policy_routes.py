@@ -8,6 +8,7 @@ from backend_logic2.policies.access import read_policy_access, PolicyAccessUnava
 from backend_logic2.policies import repository
 from backend_logic2.policies.schema import PublishPolicy
 from procurement_db.config import ProcurementDatabaseConfigurationError
+from backend_logic2.policies import allowlist
 
 router = APIRouter(prefix="/api/company-policy", tags=["Company policy"])
 logger = logging.getLogger(__name__)
@@ -59,3 +60,27 @@ def publish_policy(body: PublishPolicy, user: CurrentUser):
     except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
         logger.exception("Policy publication failed")
         raise HTTPException(503, "정책 저장소에 연결할 수 없습니다. 저장 결과를 다시 확인하세요.") from exc
+
+
+@router.get('/email-allowlist')
+def read_email_allowlist(user: CurrentUser):
+    _require_admin(user)
+    try:
+        return allowlist.get_allowlist()
+    except allowlist.AllowlistUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post('/email-allowlist')
+def update_email_allowlist(body: allowlist.SaveAllowlist, user: CurrentUser):
+    actor = _require_admin(user)
+    try:
+        return allowlist.save_allowlist(body, actor)
+    except allowlist.AllowlistConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except allowlist.AllowlistUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        raise HTTPException(503, '화이트리스트 저장 잠금을 확보할 수 없습니다.') from exc

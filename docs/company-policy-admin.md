@@ -63,9 +63,35 @@ ERP 권한 조회가 실패하면 503으로 차단하며, 브라우저 localStor
 따라서 긴급이면 고액 기준보다 긴급 분기가 먼저 적용됩니다. 이는 예외 없는 고액 승인 한도 설정이 아닙니다.
 기존 품목군 `required_specs`는 캐시/DB를 재사용하므로 지침을 변경해도 이미 저장된 규격을 자동 생성·교체하지 않습니다.
 
-메일 TEST_MODE/화이트리스트, 계정 권한, 사람 승인 게이트, 출력 JSON 스키마, 모델/외부 검색 구성,
+메일 TEST_MODE, 계정 권한, 사람 승인 게이트, 출력 JSON 스키마, 모델/외부 검색 구성,
 업체 평가 점수 가중치, RFQ 개별 견적 마감일은 이번 관리자 설정에 포함하지 않습니다.
 기능별 고정 안전 규칙과 API 호출 방식은 유지했으며, 전체 프롬프트를 관리자에게 자유 편집시키지 않습니다.
+
+## 메일 화이트리스트 편집
+
+같은 관리자 화면에서 **메일 수신 화이트리스트**를 편집할 수 있습니다.
+한 줄에 정확한 주소 한 개를 입력하고 변경 사유 → 추가/삭제 내역 검토 → 저장으로 반영합니다.
+
+- `custom_only` 모드와 활성 파일에서만 저장 허용. TEST_MODE나 파일 경로는 UI에서 바꿀 수 없습니다.
+- 최대 500개, 소문자/중복 정리, 와일드카드·표시명·헤더 주입 거부. 빈 목록은 전체 발송 차단.
+- 기존 동적 JSON 파일을 원자적으로 교체하므로 다음 발송 판단부터 반영. 메일을 직접 보내는 기능은 아님.
+- 정책 버전과 달리 **전역 안전 제한**이므로 진행 중인 MR에도 다음 발송부터 적용.
+- 파일 내용 SHA-256으로 동시 수정 충돌을 감지하고 PostgreSQL advisory lock으로 API 간 저장 직렬화.
+- 교체 전에 같은 디렉터리의 `allowlist-history/`에 이전 원본 JSON을 저장. 백업 실패 시 저장 중단.
+- 이력에는 원래 목록을 유지하고, 현재 파일에는 `updated_by`, `updated_at`, `change_reason` 기록.
+- 외부에서 파일을 수동 수정할 때는 관리자 화면 편집과 동시에 하지 않습니다.
+
+API: `GET/POST /api/company-policy/email-allowlist`. POST는 `expected_revision`, `recipients`, `reason`을 받으며,
+다른 정책 API와 동일하게 현재 ERPNext 역할을 재확인합니다.
+
+운영 설정: `EMAIL_RECIPIENT_ALLOWLIST_PATH=/var/lib/biddingflow/email-policy/allowlist.json`.
+이 디렉터리만 서비스 사용자 `ubuntu` 소유 0700, 파일 0600으로 지정합니다.
+`/etc/biddingflow` 전체 쓰기 권한을 부여하거나 서비스를 root로 실행하지 않습니다.
+기존 `/etc/biddingflow/email-recipient-allowlist.json`은 전환 당시 원본으로 보관합니다.
+전환 뒤에는 새 경로가 실제 발송 기준입니다. 이전 경로를 수정해도 적용되지 않습니다.
+파일/경로 설정 자체를 처음 바꿀 때는 서비스 재시작이 필요하지만, 이후 UI에서 주소를 수정할 때는 필요 없습니다.
+
+구현: `policies/allowlist.py`, `views/EmailAllowlistEditor.tsx`.
 
 ## 백엔드 구조
 
