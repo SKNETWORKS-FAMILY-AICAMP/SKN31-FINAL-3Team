@@ -926,14 +926,10 @@ def resume_task(
         )
 
     if task["task_type"] == "supplier_scorecard":
-        from backend_logic2.repositories.deliveries import complete_scorecard
+        from backend_logic2.repositories.deliveries import complete_scorecard, get_delivery_by_case
+        from backend_logic2.services.scorecard_service import completed_scores
 
-        required = {"leadTime", "quality", "price", "service", "communication"}
-        if set(answer) != required or any(
-            not isinstance(answer[key], (int, float)) or not 1 <= answer[key] <= 5
-            for key in required
-        ):
-            raise ValueError("Scorecard 5개 항목을 각각 1~5점으로 입력해주세요.")
+        answer = completed_scores(case, get_delivery_by_case(str(case["case_id"])) or {}, answer)
         claimed = task_repository.claim_task(
             task_id,
             answer=answer,

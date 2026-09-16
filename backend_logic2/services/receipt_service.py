@@ -189,7 +189,8 @@ def register_purchase_receipt_event(
                         description=f"{po_name} 전체 입고가 확인되었습니다.",
                         input_schema={
                             "type": "scorecard",
-                            "fields": ["leadTime", "quality", "price", "service", "communication"],
+                            "fields": ["service", "communication", "quality"],
+                            "automatic_fields": ["leadTime", "price"],
                             "minimum": 1,
                             "maximum": 5,
                         },

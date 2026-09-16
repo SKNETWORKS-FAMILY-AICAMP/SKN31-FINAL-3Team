@@ -171,6 +171,10 @@ def get_cases(
             detail="구매 작업 저장소에 연결할 수 없습니다.",
         ) from exc
 
+    from backend_logic2.services.scorecard_service import automatic_scores
+    for row in rows:
+        if row.get("delivery"):
+            row["delivery"]["automatic_scorecard"] = automatic_scores(row, row["delivery"])
     return {
         "items": rows,
         "count": len(rows),
@@ -191,6 +195,9 @@ def get_case(case_id: str, current_user: CurrentUser):
 
     row["tasks"] = task_repository.list_tasks(case_id=case_id)
     row["delivery"] = delivery_repository.get_delivery_by_case(case_id)
+    if row["delivery"]:
+        from backend_logic2.services.scorecard_service import automatic_scores
+        row["delivery"]["automatic_scorecard"] = automatic_scores(row, row["delivery"])
 
     return row
 

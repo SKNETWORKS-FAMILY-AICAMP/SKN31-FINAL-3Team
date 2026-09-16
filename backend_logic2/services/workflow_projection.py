@@ -248,7 +248,8 @@ def task_input_schema(payload: dict[str, Any]) -> dict[str, Any]:
     if task_type == "supplier_scorecard":
         return {
             "type": "scorecard",
-            "fields": ["leadTime", "quality", "price", "service", "communication"],
+            "fields": ["service", "communication", "quality"],
+            "automatic_fields": ["leadTime", "price"],
             "minimum": 1,
             "maximum": 5,
         }
