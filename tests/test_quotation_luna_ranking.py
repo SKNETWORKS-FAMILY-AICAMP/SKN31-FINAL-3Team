@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
@@ -142,3 +143,57 @@ def test_luna_can_resolve_rule_only_spec_mismatch_without_bypassing_quantity_gua
 
     assert [row.quotation_id for row in result.recommended] == ["SQ-1"]
     assert result.excluded == []
+
+
+def test_evaluation_source_uses_configured_model_name() -> None:
+    rfq = RFQRequirements(
+        rfq_name="RFQ-1",
+        items=[RFQItemRequirement(
+            item_code="ITEM-1",
+            item_name="산업용 밸브",
+            quantity=Decimal("1"),
+        )],
+    )
+    excluded_assessment = _assessment("SQ-2", 40).model_copy(update={
+        "compliant": False,
+        "reason": "필수 규격 불일치",
+    })
+    result = rank_quotations_with_spec_scores(
+        [
+            _review("SQ-1", "SUP-1", "100"),
+            _review("SQ-2", "SUP-2", "110"),
+        ],
+        rfq,
+        {
+            "SQ-1": _assessment("SQ-1", 96),
+            "SQ-2": excluded_assessment,
+        },
+        evaluation_source="configured-spec-model",
+    )
+
+    assert result.recommended[0].evaluation_source == "configured-spec-model"
+    assert result.excluded[0]["evaluation_source"] == "configured-spec-model"
+
+
+def test_delivery_score_is_capped_at_100(monkeypatch) -> None:
+    rfq = RFQRequirements(
+        rfq_name="RFQ-1",
+        items=[RFQItemRequirement(
+            item_code="ITEM-1",
+            item_name="산업용 밸브",
+            quantity=Decimal("1"),
+        )],
+    )
+    monkeypatch.setattr(
+        "backend_logic2.nodes.quotation.quotation_filter.quotation_ranker._delivery_metrics",
+        lambda _review, _rfq: (date(2026, 9, 1), -10),
+    )
+
+    result = rank_quotations_with_spec_scores(
+        [_review("SQ-1", "SUP-1", "100")],
+        rfq,
+        {"SQ-1": _assessment("SQ-1", 100)},
+    )
+
+    assert result.recommended[0].numeric_score == 100.0
+    assert result.recommended[0].overall_score == 100.0

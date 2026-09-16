@@ -1,4 +1,7 @@
+import pytest
+
 from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
+    SupplierQuotationRegistrationError,
     build_supplier_quotation_payload,
 )
 
@@ -68,3 +71,43 @@ def test_empty_external_notes_do_not_create_terms_value() -> None:
     )
 
     assert "terms" not in payload
+
+
+def test_single_external_item_maps_to_the_only_rfq_item() -> None:
+    quotation = _quotation(None)
+    quotation["items"][0].update({
+        "item_code": "VENDOR-MAT-001",
+        "item_name": "공급업체 자체 품목명",
+        "description": "공급업체가 제시한 상세 규격",
+    })
+
+    payload = build_supplier_quotation_payload(
+        quotation,
+        get_one=_get_one,
+        get_many=lambda *_args, **_kwargs: [],
+    )
+
+    assert payload["items"][0]["item_code"] == "ITEM-1"
+    assert payload["items"][0]["request_for_quotation_item"] == "RFQI-1"
+    assert payload["items"][0]["description"] == "공급업체가 제시한 상세 규격"
+
+
+def test_multiple_external_items_do_not_use_single_item_fallback() -> None:
+    quotation = _quotation(None)
+    quotation["items"] = [
+        {
+            "item_code": f"VENDOR-{index}",
+            "item_name": f"공급업체 품목 {index}",
+            "quantity": 1,
+            "unit_price": 500,
+            "amount": 500,
+        }
+        for index in (1, 2)
+    ]
+
+    with pytest.raises(SupplierQuotationRegistrationError):
+        build_supplier_quotation_payload(
+            quotation,
+            get_one=_get_one,
+            get_many=lambda *_args, **_kwargs: [],
+        )

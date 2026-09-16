@@ -115,7 +115,12 @@ def _resolve_supplier(rfq: dict[str, Any], quotation: Quotation) -> str:
     )
 
 
-def _match_rfq_item(quotation_item: Any, rfq_items: list[dict[str, Any]]) -> dict[str, Any]:
+def _match_rfq_item(
+    quotation_item: Any,
+    rfq_items: list[dict[str, Any]],
+    *,
+    allow_single_item_fallback: bool = False,
+) -> dict[str, Any]:
     if quotation_item.item_code:
         exact = [row for row in rfq_items if row.get("item_code") == quotation_item.item_code]
         if len(exact) == 1:
@@ -141,6 +146,12 @@ def _match_rfq_item(quotation_item: Any, rfq_items: list[dict[str, Any]]) -> dic
     ]
     if len(code_matches) == 1:
         return code_matches[0]
+    # 외부 공급업체는 구매사 ERP의 내부 item_code를 알 수 없다. RFQ와
+    # 견적서가 모두 단일 품목인 경우에는 대응 관계가 유일하므로 공급업체의
+    # 자체 품목 코드/표기가 달라도 RFQ 품목에 연결한다. 규격 적합성은 등록
+    # 이후 reviewer/spec evaluator가 별도로 판정한다.
+    if allow_single_item_fallback and len(rfq_items) == 1:
+        return rfq_items[0]
     raise SupplierQuotationRegistrationError(
         f"견적 품목 '{quotation_item.item_code or quotation_item.item_name}'을 "
         "RFQ의 단일 품목과 연결할 수 없습니다."
@@ -242,8 +253,13 @@ def build_supplier_quotation_payload(
     rfq_items = rfq.get("items") or []
 
     item_payloads: list[dict[str, Any]] = []
+    allow_single_item_fallback = len(rfq_items) == 1 and len(quotation.items) == 1
     for quotation_item in quotation.items:
-        rfq_item = _match_rfq_item(quotation_item, rfq_items)
+        rfq_item = _match_rfq_item(
+            quotation_item,
+            rfq_items,
+            allow_single_item_fallback=allow_single_item_fallback,
+        )
         lead_time_days = quotation_item.lead_time_days
         if (
             lead_time_days is None

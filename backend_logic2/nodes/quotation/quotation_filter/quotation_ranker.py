@@ -126,6 +126,7 @@ def rank_quotations_with_spec_scores(
     supplier_scorecards: dict[str, dict[str, Any]] | None = None,
     numeric_weight: float = 0.6,
     specification_weight: float = 0.4,
+    evaluation_source: str = "gpt-5.6-luna",
 ) -> RankingResult:
     """Rank deterministic price/delivery metrics and Luna spec scores together."""
 
@@ -162,7 +163,7 @@ def rank_quotations_with_spec_scores(
                 "specification_score": assessment.score if assessment else None,
                 "specification_confidence": assessment.confidence if assessment else None,
                 "specification_reason": assessment.reason if assessment else None,
-                "evaluation_source": "gpt-5.6-luna" if assessment else None,
+                "evaluation_source": evaluation_source if assessment else None,
             })
             continue
         rankable.append((review, assessment))
@@ -213,7 +214,11 @@ def rank_quotations_with_spec_scores(
         amount = row["comparison_amount"]
         price_score = float(lowest_amount / amount * Decimal("100")) if amount else 100.0
         late_days = row["late_days"]
-        delivery_score = 50.0 if late_days is None else max(0.0, 100.0 - late_days * 5.0)
+        delivery_score = (
+            50.0
+            if late_days is None
+            else min(100.0, max(0.0, 100.0 - late_days * 5.0))
+        )
         numeric_score = round(price_score * 0.75 + delivery_score * 0.25, 2)
         specification_score = float(row["assessment"].score)
         overall_score = round(
@@ -278,7 +283,7 @@ def rank_quotations_with_spec_scores(
             specification_confidence=assessment.confidence,
             specification_reason=assessment.reason,
             specification_items=[item.model_dump(mode="json") for item in assessment.items],
-            evaluation_source="gpt-5.6-luna",
+            evaluation_source=evaluation_source,
         ))
 
     return RankingResult(
@@ -588,6 +593,7 @@ def evaluate_quotations(
                 supplier_scorecards=scorecards,
                 numeric_weight=numeric_weight,
                 specification_weight=specification_weight,
+                evaluation_source=evaluator.model_name,
             )
             evaluation_status = "completed"
     except ValueError as exc:
