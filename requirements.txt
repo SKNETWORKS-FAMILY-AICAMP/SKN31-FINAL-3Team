@@ -7,6 +7,11 @@ pydantic
 jinja2
 python-dotenv
 python-docx
+pypdf
+PyMuPDF
+Pillow
+pandas
+openpyxl
 openai
 psycopg[binary,pool]
 sentence-transformers

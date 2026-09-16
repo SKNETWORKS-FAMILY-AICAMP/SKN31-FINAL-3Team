@@ -22,7 +22,7 @@ def get_configured_quotation_parser(
     layer independent and also makes provider selection easy to test.
     """
 
-    provider = os.getenv("QUOTATION_EXTRACTOR_PROVIDER", "local").strip().lower()
+    provider = os.getenv("QUOTATION_EXTRACTOR_PROVIDER", "runpod").strip().lower()
     if provider in {"", "local", "huggingface", "hf"}:
         return local_factory()
     if provider == "runpod":

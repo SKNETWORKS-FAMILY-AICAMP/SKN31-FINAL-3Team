@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -16,6 +17,7 @@ try:
         RankedQuotation,
         RankingResult,
         RFQRequirements,
+        IssueSeverity,
         ReviewStatus,
         dump_json,
         load_json,
@@ -28,6 +30,7 @@ except ImportError:
         RankedQuotation,
         RankingResult,
         RFQRequirements,
+        IssueSeverity,
         ReviewStatus,
         dump_json,
         load_json,
@@ -43,9 +46,29 @@ except ImportError:
     )
 
 from backend_logic2.repositories.deliveries import get_supplier_latest_scorecards
+try:
+    from .quotation_spec_evaluator import (
+        LunaQuotationSpecEvaluator,
+        QuotationSpecAssessment,
+    )
+except ImportError:
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_spec_evaluator import (
+        LunaQuotationSpecEvaluator,
+        QuotationSpecAssessment,
+    )
 
 
 LOGGER = logging.getLogger(__name__)
+
+AI_SPEC_ISSUE_CODES = frozenset({"MISSING_SPECIFICATION", "SPECIFICATION_MISMATCH"})
+
+
+def _weight_setting(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(0.0, value)
 
 
 def _delivery_metrics(
@@ -75,6 +98,195 @@ def _delivery_metrics(
     latest_delivery = max(dates) if dates else None
     late_days = max(0, max(item_late_days)) if item_late_days else None
     return latest_delivery, late_days
+
+
+def _is_structurally_rankable(review: QuotationReview) -> tuple[bool, list[str]]:
+    """Keep deterministic validation as a guard, but delegate spec semantics."""
+
+    blocking = [
+        issue
+        for issue in review.issues
+        if issue.severity == IssueSeverity.ERROR and issue.code not in AI_SPEC_ISSUE_CODES
+    ]
+    quantity_ok = bool(review.item_compliance) and all(
+        item.quantity_compliant for item in review.item_compliance
+    )
+    evidence = [issue.evidence for issue in blocking]
+    if not quantity_ok:
+        evidence.append("RFQ 요청 수량을 충족하지 않습니다.")
+    return review.quotation is not None and not blocking and quantity_ok, evidence
+
+
+def rank_quotations_with_spec_scores(
+    review_data: list[QuotationReview | dict[str, Any]],
+    rfq_data: RFQRequirements | dict[str, Any],
+    spec_assessments: dict[str, QuotationSpecAssessment],
+    *,
+    top_k: int = 3,
+    supplier_scorecards: dict[str, dict[str, Any]] | None = None,
+    numeric_weight: float = 0.6,
+    specification_weight: float = 0.4,
+) -> RankingResult:
+    """Rank deterministic price/delivery metrics and Luna spec scores together."""
+
+    if top_k < 1:
+        raise ValueError("top_k는 1 이상이어야 합니다.")
+    if numeric_weight < 0 or specification_weight < 0 or numeric_weight + specification_weight <= 0:
+        raise ValueError("수치·규격 가중치 중 하나 이상은 양수여야 합니다.")
+    weight_total = numeric_weight + specification_weight
+    numeric_weight /= weight_total
+    specification_weight /= weight_total
+
+    rfq = rfq_data if isinstance(rfq_data, RFQRequirements) else RFQRequirements.model_validate(rfq_data)
+    reviews = [
+        row if isinstance(row, QuotationReview) else QuotationReview.model_validate(row)
+        for row in review_data
+    ]
+    supplier_scorecards = supplier_scorecards or {}
+    rankable: list[tuple[QuotationReview, QuotationSpecAssessment]] = []
+    excluded: list[dict[str, Any]] = []
+    for review in reviews:
+        structurally_rankable, structural_evidence = _is_structurally_rankable(review)
+        assessment = spec_assessments.get(review.quotation_id)
+        evidence = structural_evidence
+        if assessment is None:
+            evidence = [*evidence, "Luna 규격 평가 결과가 없습니다."]
+        elif not assessment.compliant:
+            evidence = [*evidence, assessment.reason]
+        if not structurally_rankable or assessment is None or not assessment.compliant:
+            excluded.append({
+                "quotation_id": review.quotation_id,
+                "supplier_name": review.supplier_name,
+                "status": "specification_excluded" if assessment and not assessment.compliant else review.status.value,
+                "evidence": evidence or review.rejection_evidence,
+                "specification_score": assessment.score if assessment else None,
+                "specification_confidence": assessment.confidence if assessment else None,
+                "specification_reason": assessment.reason if assessment else None,
+                "evaluation_source": "gpt-5.6-luna" if assessment else None,
+            })
+            continue
+        rankable.append((review, assessment))
+
+    currencies = {
+        review.quotation.currency
+        for review, _ in rankable
+        if review.quotation is not None
+    }
+    use_base_amount = len(currencies) > 1
+    if use_base_amount and any(
+        review.quotation is None or review.quotation.base_total_amount is None
+        for review, _ in rankable
+    ):
+        raise ValueError(
+            "서로 다른 통화의 견적을 비교하려면 모든 Supplier Quotation에 "
+            "ERPNext base_grand_total 환산금액이 필요합니다."
+        )
+
+    prepared: list[dict[str, Any]] = []
+    for review, assessment in rankable:
+        quotation = review.quotation
+        if quotation is None:  # guarded above; helps type checkers
+            continue
+        delivery, late_days = _delivery_metrics(review, rfq)
+        amount = quotation.base_total_amount if use_base_amount else quotation.total_amount
+        if amount is None:
+            raise ValueError(f"견적 비교금액이 없습니다: {review.quotation_id}")
+        prepared.append({
+            "review": review,
+            "assessment": assessment,
+            "quotation": quotation,
+            "delivery": delivery,
+            "late_days": late_days,
+            "comparison_amount": amount,
+        })
+
+    if not prepared:
+        return RankingResult(
+            rfq_name=rfq.rfq_name,
+            requested_top_k=top_k,
+            recommended=[],
+            excluded=excluded,
+        )
+
+    lowest_amount = min(row["comparison_amount"] for row in prepared)
+    for row in prepared:
+        amount = row["comparison_amount"]
+        price_score = float(lowest_amount / amount * Decimal("100")) if amount else 100.0
+        late_days = row["late_days"]
+        delivery_score = 50.0 if late_days is None else max(0.0, 100.0 - late_days * 5.0)
+        numeric_score = round(price_score * 0.75 + delivery_score * 0.25, 2)
+        specification_score = float(row["assessment"].score)
+        overall_score = round(
+            numeric_score * numeric_weight + specification_score * specification_weight,
+            2,
+        )
+        scorecard = supplier_scorecards.get(str(row["quotation"].supplier_id or ""))
+        scorecard_score = (
+            float(scorecard["weighted_score"])
+            if isinstance(scorecard, dict) and scorecard.get("weighted_score") is not None
+            else -1.0
+        )
+        row.update({
+            "numeric_score": numeric_score,
+            "specification_score": specification_score,
+            "overall_score": overall_score,
+            "scorecard_score": scorecard_score,
+        })
+
+    prepared.sort(key=lambda row: (
+        -row["overall_score"],
+        row["comparison_amount"],
+        row["late_days"] if row["late_days"] is not None else 10**9,
+        row["delivery"].toordinal() if row["delivery"] else 10**9,
+        -row["scorecard_score"],
+        row["review"].quotation_id,
+    ))
+
+    recommended: list[RankedQuotation] = []
+    previous_score: float | None = None
+    current_rank = 0
+    for position, row in enumerate(prepared, 1):
+        if row["overall_score"] != previous_score:
+            current_rank = position
+            previous_score = row["overall_score"]
+        if current_rank > top_k:
+            break
+        review = row["review"]
+        quotation = row["quotation"]
+        assessment = row["assessment"]
+        tied = sum(1 for other in prepared if other["overall_score"] == row["overall_score"]) > 1
+        delivery_label = row["delivery"].isoformat() if row["delivery"] else "미기재"
+        recommended.append(RankedQuotation(
+            rank=current_rank,
+            quotation_id=quotation.quotation_id,
+            supplier_id=quotation.supplier_id,
+            supplier_name=quotation.supplier_name,
+            total_amount=quotation.total_amount,
+            comparison_amount=row["comparison_amount"],
+            currency=quotation.currency,
+            expected_delivery_date=row["delivery"],
+            late_days=row["late_days"],
+            tied=tied,
+            reason=(
+                f"종합 {row['overall_score']:.2f}점: 가격·납기 {row['numeric_score']:.2f}점, "
+                f"규격 {row['specification_score']:.2f}점. {assessment.reason} "
+                f"총액 {quotation.total_amount} {quotation.currency}, 납기 {delivery_label}."
+            ),
+            numeric_score=row["numeric_score"],
+            specification_score=row["specification_score"],
+            overall_score=row["overall_score"],
+            specification_confidence=assessment.confidence,
+            specification_reason=assessment.reason,
+            specification_items=[item.model_dump(mode="json") for item in assessment.items],
+            evaluation_source="gpt-5.6-luna",
+        ))
+
+    return RankingResult(
+        rfq_name=rfq.rfq_name,
+        requested_top_k=top_k,
+        recommended=recommended,
+        excluded=excluded,
+    )
 
 
 def rank_quotations(
@@ -323,8 +535,13 @@ def _enrich_ranking_with_prices(
     return enriched
 
 
-def evaluate_quotations(rfq_name: str, *, top_k: int = 3) -> dict[str, Any]:
-    """ERP 견적을 reviewer로 검증하고 외부 AI 없이 결정론적으로 순위를 매긴다."""
+def evaluate_quotations(
+    rfq_name: str,
+    *,
+    top_k: int = 3,
+    spec_evaluator: LunaQuotationSpecEvaluator | None = None,
+) -> dict[str, Any]:
+    """Validate ERP quotations and combine numeric metrics with Luna spec fit."""
     try:
         rfq = load_rfq_requirements(rfq_name)
     except Exception as exc:
@@ -346,13 +563,33 @@ def evaluate_quotations(rfq_name: str, *, top_k: int = 3) -> dict[str, Any]:
         for row in quotations
         if row.get("supplier_scorecard") is not None
     }
+    evaluator = spec_evaluator or LunaQuotationSpecEvaluator()
+    spec_assessments = evaluator.evaluate(rfq, reviews)
+    numeric_weight = _weight_setting("QUOTATION_NUMERIC_SCORE_WEIGHT", 0.6)
+    specification_weight = _weight_setting("QUOTATION_SPEC_SCORE_WEIGHT", 0.4)
     try:
-        result = rank_quotations(
-            reviews,
-            rfq,
-            top_k=top_k,
-            supplier_scorecards=scorecards,
-        )
+        if spec_assessments is None:
+            LOGGER.warning(
+                "Luna 규격 평가를 사용할 수 없어 기존 규칙 기반 순위를 반환합니다."
+            )
+            result = rank_quotations(
+                reviews,
+                rfq,
+                top_k=top_k,
+                supplier_scorecards=scorecards,
+            )
+            evaluation_status = "unavailable"
+        else:
+            result = rank_quotations_with_spec_scores(
+                reviews,
+                rfq,
+                spec_assessments,
+                top_k=top_k,
+                supplier_scorecards=scorecards,
+                numeric_weight=numeric_weight,
+                specification_weight=specification_weight,
+            )
+            evaluation_status = "completed"
     except ValueError as exc:
         return {
             "requirements": rfq.model_dump(mode="json"),
@@ -364,6 +601,11 @@ def evaluate_quotations(rfq_name: str, *, top_k: int = 3) -> dict[str, Any]:
     ranking: list[dict[str, Any]] = []
     for ranked in result.recommended:
         review = reviews_by_id[ranked.quotation_id]
+        spec_assessment = (
+            spec_assessments.get(ranked.quotation_id)
+            if spec_assessments is not None
+            else None
+        )
         ranking.append({
             "name": ranked.quotation_id,
             "quotation_id": ranked.quotation_id,
@@ -371,7 +613,11 @@ def evaluate_quotations(rfq_name: str, *, top_k: int = 3) -> dict[str, Any]:
             "supplier_name": ranked.supplier_name,
             "rank": ranked.rank,
             "fulfills_qty": all(item.quantity_compliant for item in review.item_compliance),
-            "spec_match": review.specification_compliant,
+            "spec_match": (
+                spec_assessment.compliant
+                if spec_assessment is not None
+                else review.specification_compliant
+            ),
             "reason": ranked.reason,
             "issues": [issue.message for issue in review.issues],
             "currency": ranked.currency,
@@ -385,12 +631,25 @@ def evaluate_quotations(rfq_name: str, *, top_k: int = 3) -> dict[str, Any]:
             ),
             "late_days": ranked.late_days,
             "tied": ranked.tied,
+            "numeric_score": ranked.numeric_score,
+            "specification_score": ranked.specification_score,
+            "overall_score": ranked.overall_score,
+            "specification_confidence": ranked.specification_confidence,
+            "specification_reason": ranked.specification_reason,
+            "specification_items": ranked.specification_items,
+            "evaluation_source": ranked.evaluation_source,
         })
     return {
         "requirements": rfq.model_dump(mode="json"),
         "quotations": quotations,
         "ranking": _enrich_ranking_with_prices(ranking, quotations),
         "excluded": result.excluded,
+        "specification_evaluation": {
+            "status": evaluation_status,
+            "model": evaluator.model_name,
+            "numeric_weight": numeric_weight,
+            "specification_weight": specification_weight,
+        },
     }
 
 

@@ -27,7 +27,7 @@ LOGGER = logging.getLogger(__name__)
 
 def webhook_mode():
     return (
-        os.getenv('QUOTATION_EXTRACTOR_PROVIDER', 'local').strip().lower() == 'runpod'
+        os.getenv('QUOTATION_EXTRACTOR_PROVIDER', 'runpod').strip().lower() == 'runpod'
         and os.getenv('RUNPOD_QUOTATION_DELIVERY_MODE', 'polling').strip().lower() == 'webhook'
     )
 

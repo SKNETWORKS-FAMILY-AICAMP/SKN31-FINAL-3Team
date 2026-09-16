@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import sys
@@ -38,6 +39,17 @@ QuotationFingerprint = tuple[str, str, tuple[FingerprintItem, ...], Decimal]
 
 class SupplierQuotationRegistrationError(RuntimeError):
     """ERP 등록 전에 발견된 RFQ 매핑·중복 충돌 오류."""
+
+
+def _notes_to_terms(notes: str | None) -> str | None:
+    """Render extracted plain-text notes safely in ERPNext's rich-text field."""
+
+    normalized = str(notes or "").strip()
+    if not normalized:
+        return None
+    return html.escape(normalized, quote=True).replace("\r\n", "\n").replace(
+        "\r", "\n"
+    ).replace("\n", "<br>")
 
 
 def submit_finalized_quotations(rfq_name: str, ranking: list[dict[str, Any]]) -> list[str]:
@@ -292,6 +304,9 @@ def build_supplier_quotation_payload(
         "plc_conversion_rate": 1,
         "ignore_pricing_rule": 1,
         "cost_center": company_doc.get("cost_center"),
+        # RFQ 포털의 Notes 입력란도 Supplier Quotation.terms에 저장된다.
+        # 외부 견적에서 추출한 notes를 같은 필드에 기록해 두 경로를 통일한다.
+        "terms": _notes_to_terms(quotation.notes),
         "items": item_payloads,
         "taxes": taxes,
     }

@@ -19,7 +19,8 @@ RUNPOD_QUOTATION_WEBHOOK_URL=https://biddingflow.13.209.103.102.nip.io/api/webho
 
 ## 요청과 완료 처리
 
-1. 원본 이미지/PDF와 프롬프트로 요청을 구성한다.
+1. DOCX/Excel/CSV/TXT/EML은 Python으로 본문·표를 추출하고, 이미지/PDF는
+   원본 문서 입력을 유지해 프롬프트와 함께 text/vision/hybrid 요청을 구성한다.
 2. `procurement.quotation_extraction_job`에 SUBMITTING 작업과 신뢰할 수 있는
    RFQ/공급사/출처 문맥을 기록한다. API 키와 이미지 Base64는 저장하지 않는다.
 3. `POST /v2/{endpoint}/run`에 `input`과 같은 위계의 `webhook` URL을 전달한다.

@@ -144,15 +144,49 @@ def test_failed_job_error_does_not_expose_api_key() -> None:
     assert "secret-test-key" not in str(captured.value)
 
 
-def test_runpod_rejects_non_image_document_before_network_call() -> None:
-    session = _Session({"id": "should-not-run"})
+def test_runpod_sends_python_extracted_text_without_document_bytes() -> None:
+    session = _Session({
+        "status": "COMPLETED",
+        "output": {"status": "success", "extraction": _extraction()},
+    })
     parser = RunPodQuotationParser(_config(), session=session)
-    prepared = PreparedSource(kind=SourceKind.DOCX, text="quotation text")
+    prepared = PreparedSource(
+        kind=SourceKind.DOCX,
+        text="품목명 | 수량 | 단가\n안전모 | 1 | 1,000",
+    )
 
-    with pytest.raises(RunPodQuotationParserError, match="이미지 또는 PDF"):
-        parser(prepared, "RFQ-1", "Supplier", [])
+    result = parser(prepared, "RFQ-1", "Supplier", [])
 
-    assert session.post_call is None
+    worker_input = session.post_call[1]["json"]["input"]
+    assert result["quotation_id"] == "EST-001"
+    assert worker_input["documents"] == []
+    assert worker_input["input_mode"] == "text"
+    assert "안전모 | 1 | 1,000" in worker_input["document_text"]
+
+
+def test_runpod_builds_hybrid_input_for_text_pdf() -> None:
+    document = VisionInput(data=b"%PDF-test", filename="quotation.pdf")
+    prepared = PreparedSource(
+        kind=SourceKind.PDF,
+        text="[page 1]\n품목명 수량 단가",
+        document_inputs=[document],
+    )
+
+    worker_input = RunPodQuotationParser(_config()).build_worker_input(
+        prepared, "RFQ-1", "Supplier", [],
+    )
+
+    assert worker_input["input_mode"] == "hybrid"
+    assert worker_input["document_text"].startswith("[page 1]")
+    assert base64.b64decode(worker_input["documents"][0]["base64"]) == b"%PDF-test"
+
+
+def test_runpod_rejects_oversized_extracted_text() -> None:
+    parser = RunPodQuotationParser(_config(max_text_chars=5))
+    prepared = PreparedSource(kind=SourceKind.TEXT, text="123456")
+
+    with pytest.raises(RunPodQuotationParserError, match="텍스트"):
+        parser.build_worker_input(prepared, "RFQ-1", "Supplier", [])
 
 
 def test_factory_selects_provider(monkeypatch) -> None:
