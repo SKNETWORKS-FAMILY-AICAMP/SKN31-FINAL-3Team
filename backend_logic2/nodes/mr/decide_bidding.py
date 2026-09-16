@@ -9,13 +9,7 @@ from datetime import datetime, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from backend_logic2.integrations.erp_client import erp_get, erp_get_one
 
-# 비딩 정책 설정값
-AMOUNT_THRESHOLD = 20_000_000
-MIN_ORDERS_FOR_PATTERN = 3
-IRREGULAR_CV_THRESHOLD = 0.5
-CYCLE_OVERDUE_MULTIPLIER = 1.5
-INACTIVE_MONTHS = 12
-URGENT_LEAD_TIME_DAYS = 7
+# Defaults and bounds live in policies/schema.py; runtime uses the case snapshot.
 
 
 def _parse_date(value):
@@ -65,9 +59,11 @@ def _get_past_purchases(item_code):
     return purchases
 
 
-def _analyze_purchase_pattern(purchases):
+def _analyze_purchase_pattern(purchases, rules=None):
+    from backend_logic2.policies.runtime import current_policy
+    rules = rules or current_policy().rules
     empty_res = {"enough_history": False, "irregular": None, "cv": None, "average_interval_days": None}
-    if len(purchases) < MIN_ORDERS_FOR_PATTERN:
+    if len(purchases) < rules.pattern_min_orders:
         return empty_res
 
     dates = [_parse_date(p["date"]) for p in purchases]
@@ -82,7 +78,7 @@ def _analyze_purchase_pattern(purchases):
     cv = statistics.stdev(intervals) / avg_interval if len(intervals) > 1 else 0
     return {
         "enough_history": True,
-        "irregular": cv >= IRREGULAR_CV_THRESHOLD,
+        "irregular": cv >= rules.irregular_cv,
         "cv": cv,
         "average_interval_days": avg_interval,
     }
@@ -128,7 +124,16 @@ def _direct_purchase_fields(purchases, *, supplier=None):
     }
 
 
-def _decide_one_item(line):
+def _decide_one_item(line, rules=None):
+    from backend_logic2.policies.runtime import current_policy
+    rules = rules or current_policy().rules
+    # Local aliases keep the existing decision precedence and explanations.
+    URGENT_LEAD_TIME_DAYS = rules.urgent_lead_days
+    AMOUNT_THRESHOLD = rules.bidding_amount
+    MIN_ORDERS_FOR_PATTERN = rules.pattern_min_orders
+    IRREGULAR_CV_THRESHOLD = rules.irregular_cv
+    CYCLE_OVERDUE_MULTIPLIER = rules.cycle_overdue_multiplier
+    INACTIVE_MONTHS = rules.inactive_months
     item_code, qty = line["item_code"], line["qty"]
     print(f"  [{item_code}] 판정 시작 (요청수량: {qty})")
 
@@ -184,7 +189,7 @@ def _decide_one_item(line):
         return item_code, {"needs_bidding": True, "reasons": [reason]}
 
     # 4. 구매패턴 분석
-    pattern = _analyze_purchase_pattern(purchases)
+    pattern = _analyze_purchase_pattern(purchases, rules)
     days_since_last = _days_since_last_purchase(purchases)
 
     if pattern["enough_history"]:
@@ -229,6 +234,8 @@ def _decide_one_item(line):
 
 
 def decide_bidding(mr_name):
+    from backend_logic2.policies.runtime import current_policy
+    rules = current_policy().rules
     mr = erp_get_one("Material Request", mr_name)
     if not mr:
         return {}
@@ -238,7 +245,7 @@ def decide_bidding(mr_name):
 
     results = {}
     with ThreadPoolExecutor(max_workers=min(len(items), 8) or 1) as executor:
-        futures = [executor.submit(_decide_one_item, line) for line in items]
+        futures = [executor.submit(_decide_one_item, line, rules) for line in items]
         for future in as_completed(futures):
             item_code, info = future.result()
             results[item_code] = info

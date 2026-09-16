@@ -184,7 +184,7 @@ def _ai_define_required_specs(item_group: str) -> dict:
         "당신은 기업 구매팀의 품목등록 검수 담당자입니다. "
         "다음 품목분류(item_group)에 대해, 구매요청서에 '이것만은 반드시' "
         "적혀 있어야 하는 최소 필수 규격 항목을 정하세요.\n\n"
-        "품목분류: {item_group}\n\n"
+        "품목분류: {item_group}\n\n{company_guidance}\n"
         "규칙:\n"
         "- 정말 이게 없으면 발주 자체가 불가능한 항목만 최소로 고르세요 "
         "(과하게 많이 요구하지 마세요, 통상 2~5개 사이).\n"
@@ -193,7 +193,11 @@ def _ai_define_required_specs(item_group: str) -> dict:
         '반드시 이 JSON 형식으로만 답하세요: '
         '{{"required_specs": ["항목1", "항목2"], "reason": "짧은 이유"}}'
     )
-    result = (prompt | llm).invoke({"item_group": item_group}).content
+    from backend_logic2.policies.runtime import guidance_text
+    result = (prompt | llm).invoke({
+        "item_group": item_group,
+        "company_guidance": guidance_text("item_specification"),
+    }).content
     parsed = _parse_ai_json(result)
     return {
         "required_specs": [str(s).strip() for s in parsed.get("required_specs", []) if str(s).strip()],
@@ -244,7 +248,7 @@ def _ai_check_completeness(item_group: str, description: str, required_specs: li
     prompt = PromptTemplate.from_template(
         "다음은 품목분류 '{item_group}'에 대한 구매요청 설명입니다.\n\n"
         "[설명]\n{description}\n\n"
-        "[확인해야 할 필수규격 목록]\n{required_specs}\n\n"
+        "[확인해야 할 필수규격 목록]\n{required_specs}\n\n{company_guidance}\n"
         "각 필수규격 항목이 이 설명에 실제 값까지 구체적으로 채워져서 "
         "기재됐는지 판단하세요. 항목 이름(라벨)만 있고 값이 비어있거나, "
         "아예 언급이 없으면 '미기재'입니다. 라벨이 명시적으로 없어도 "
@@ -252,9 +256,11 @@ def _ai_check_completeness(item_group: str, description: str, required_specs: li
         '반드시 이 JSON 형식으로만 답하세요: '
         '{{"results": [{{"spec": "항목명", "present": true, "reason": "짧은 이유"}}]}}'
     )
+    from backend_logic2.policies.runtime import guidance_text
     result = (prompt | llm).invoke({
         "item_group": item_group,
         "description": description,
+        "company_guidance": guidance_text("item_specification"),
         "required_specs": ", ".join(required_specs),
     }).content
     parsed = _parse_ai_json(result)

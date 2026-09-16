@@ -9,7 +9,10 @@ class ItemWebhookServiceTests(unittest.TestCase):
     @patch("backend_logic2.services.item_service.validate_new_item")
     @patch("backend_logic2.services.item_service.erp_get_one")
     @patch("backend_logic2.services.item_service.event_repository")
-    def test_disabled_item_is_validated_once(self, events, get_one, validate, notify):
+    @patch("backend_logic2.policies.repository.get_active")
+    def test_disabled_item_is_validated_once(self, get_policy, events, get_one, validate, notify):
+        from backend_logic2.policies.schema import CompanyPolicy
+        get_policy.return_value = {"version": 2, "policy": CompanyPolicy().model_dump()}
         events.begin_event.return_value = ({"event_id": "evt-1"}, True)
         get_one.return_value = {"item_code": "ITEM-001", "disabled": 1}
         validate.return_value = {"item_code": "ITEM-001", "approved": True, "missing": []}
@@ -20,6 +23,7 @@ class ItemWebhookServiceTests(unittest.TestCase):
 
         self.assertTrue(created)
         self.assertTrue(result["approved"])
+        self.assertEqual(result["policy_version"], 2)
         validate.assert_called_once_with("ITEM-001")
         events.complete_event.assert_called_once_with("evt-1")
         notify.assert_called_once()

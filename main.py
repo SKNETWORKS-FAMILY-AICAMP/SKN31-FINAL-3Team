@@ -20,6 +20,7 @@ from auth_service.router import router as auth_router
 from backend_logic2.assistant.api import router as assistant_router
 from backend_logic2.api.mr_substitute_routes import router as mr_substitute_router
 from backend_logic2.api.runpod_routes import router as runpod_webhook_router
+from backend_logic2.api.policy_routes import router as policy_router
 from backend_logic2.api.procurement_routes import (
     router as procurement_router,
     webhook_router as erpnext_webhook_router,
@@ -382,6 +383,7 @@ app.include_router(
 )
 app.include_router(erpnext_webhook_router)
 app.include_router(runpod_webhook_router)
+app.include_router(policy_router)
 app.include_router(pr_public_router)
 app.include_router(
     pr_internal_router,

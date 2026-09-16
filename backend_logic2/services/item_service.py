@@ -47,7 +47,15 @@ def register_item_event(
         if int(current.get("disabled") or 0) != 1:
             result = {"item_code": item_code, "approved": True, "skipped": "already_active"}
         else:
-            result = validate_new_item(item_code)
+            from backend_logic2.policies.repository import get_active
+            from backend_logic2.policies.runtime import policy_scope
+            from backend_logic2.policies.schema import CompanyPolicy
+            # Freeze one version for the entire validation event, including
+            # group definition and completeness checking. Keep it in audit data.
+            snapshot = get_active()
+            with policy_scope(CompanyPolicy.model_validate(snapshot["policy"])):
+                result = validate_new_item(item_code)
+            result["policy_version"] = snapshot["version"]
 
         # 자동 활성화가 다시 발생시킨 on_update 웹훅에서는 같은 성공 알림을
         # 중복 생성하지 않는다.

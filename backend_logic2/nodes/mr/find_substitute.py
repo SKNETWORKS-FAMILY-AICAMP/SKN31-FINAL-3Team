@@ -140,7 +140,7 @@ def _ai_rank_substitutes(item_name, item_description, qty_needed, candidates, ma
         "요청수량: {qty_needed}\n\n"
         "아래 후보 품목들 중에서, 실제로 요청품목을 대신 쓸 수 있는 것들만 "
         "골라서 적합도 순으로 순위를 매겨주세요 (최대 {max_results}개).\n\n"
-        "후보 목록:\n{candidates}\n\n"
+        "후보 목록:\n{candidates}\n\n{company_guidance}\n"
         "규칙:\n"
         "- 용도·사용대상이 명확히 다른 물건(예: 화이트보드용 vs 연필용 지우개)은 "
         "이름이 비슷해도 제외하세요.\n"
@@ -152,9 +152,11 @@ def _ai_rank_substitutes(item_name, item_description, qty_needed, candidates, ma
         '{{"ranking": [{{"item_code": "...", "rank": 1, "reason": "짧은 이유"}}]}}'
     )
 
+    from backend_logic2.policies.runtime import guidance_text
     result = (prompt | llm).invoke({
         "item_name": item_name,
         "item_description": _strip_html(item_description),
+        "company_guidance": guidance_text("substitute_selection"),
         "qty_needed": qty_needed,
         "candidates": json.dumps(candidates_json, ensure_ascii=False, indent=2),
         "max_results": max_results,
@@ -251,11 +253,13 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
     return results
 
 
-def _find_substitutes_for_line(line):
+def _find_substitutes_for_line(line, policy=None):
     """MR 품목 한 줄에 대해 대체품 탐색 (병렬실행용 단위작업)"""
     item_code = line["item_code"]
     qty_needed = line["qty"]
-    substitutes = find_substitute_items(item_code, qty_needed)
+    from backend_logic2.policies.runtime import current_policy, policy_scope
+    with policy_scope(policy or current_policy()):
+        substitutes = find_substitute_items(item_code, qty_needed)
     return item_code, {"qty_needed": qty_needed, "substitutes": substitutes}
 
 
@@ -270,7 +274,9 @@ def find_substitutes_for_mr(mr_name: str) -> dict:
 
     results = {}
     with ThreadPoolExecutor(max_workers=min(len(items), 8) or 1) as executor:
-        futures = [executor.submit(_find_substitutes_for_line, line) for line in items]
+        from backend_logic2.policies.runtime import current_policy
+        policy = current_policy()
+        futures = [executor.submit(_find_substitutes_for_line, line, policy) for line in items]
         for f in as_completed(futures):
             item_code, info = f.result()
             results[item_code] = info

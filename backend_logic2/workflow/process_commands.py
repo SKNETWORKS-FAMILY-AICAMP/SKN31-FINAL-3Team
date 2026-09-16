@@ -35,6 +35,7 @@ class PurchaseProcessState(TypedDict, total=False):
     entrypoint: str
     mr_name: str
     case_id: str
+    policy_version: int
     status: str
     substitute_results: dict[str, Any]
     selected_substitute: str

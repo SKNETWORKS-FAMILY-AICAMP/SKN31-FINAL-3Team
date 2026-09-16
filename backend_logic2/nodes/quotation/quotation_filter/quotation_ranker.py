@@ -92,6 +92,8 @@ def rank_quotations(
     """
     if top_k < 1:
         raise ValueError("top_k는 1 이상이어야 합니다.")
+    from backend_logic2.policies.runtime import current_policy
+    delivery_first = current_policy().rules.quotation_priority == "delivery_then_price"
     rfq = rfq_data if isinstance(rfq_data, RFQRequirements) else RFQRequirements.model_validate(rfq_data)
     reviews = [row if isinstance(row, QuotationReview) else QuotationReview.model_validate(row) for row in review_data]
 
@@ -124,7 +126,7 @@ def rank_quotations(
             "서로 다른 통화의 견적을 비교하려면 모든 Supplier Quotation에 "
             "ERPNext base_grand_total 환산금액이 필요합니다."
         )
-    candidates: list[tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]] = []
+    candidates: list[tuple[tuple[Decimal | int, ...], QuotationReview, date | None, int | None]] = []
     for review in rankable_reviews:
         quotation = review.quotation
         if quotation is None:
@@ -141,9 +143,11 @@ def rank_quotations(
         delivery_sort = delivery.toordinal() if delivery else 10**9
         late_sort = late_days if late_days is not None else 10**9
         key = (comparison_amount, late_sort, delivery_sort)
+        if delivery_first:
+            key = (late_sort, delivery_sort, comparison_amount)
         candidates.append((key, review, delivery, late_days))
 
-    grouped: dict[tuple[Decimal, int, int], list[tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]]] = {}
+    grouped: dict[tuple[Decimal | int, ...], list[tuple[tuple[Decimal | int, ...], QuotationReview, date | None, int | None]]] = {}
     for candidate in candidates:
         grouped.setdefault(candidate[0], []).append(candidate)
 
@@ -152,7 +156,7 @@ def rank_quotations(
     scorecard_tiebreaks: set[str] = set()
     for base_key in sorted(grouped):
         group = grouped[base_key]
-        scored: list[tuple[Decimal, tuple[tuple[Decimal, int, int], QuotationReview, date | None, int | None]]] = []
+        scored: list[tuple[Decimal, tuple[tuple[Decimal | int, ...], QuotationReview, date | None, int | None]]] = []
         for candidate in group:
             quotation = candidate[1].quotation
             if quotation is None:
@@ -203,7 +207,7 @@ def rank_quotations(
             else ""
         )
         comparison_reason = (
-            f", ERP 회사 기준 환산금액 {key[0]}"
+            f", ERP 회사 기준 환산금액 {quotation.base_total_amount}"
             if use_base_amount
             else ""
         )
@@ -213,12 +217,12 @@ def rank_quotations(
             supplier_id=quotation.supplier_id,
             supplier_name=quotation.supplier_name,
             total_amount=quotation.total_amount,
-            comparison_amount=key[0],
+            comparison_amount=quotation.base_total_amount if use_base_amount else quotation.total_amount,
             currency=quotation.currency,
             expected_delivery_date=delivery,
             late_days=late_days,
             tied=tied,
-            reason=f"규격·수량·산식 검토 통과, 총금액 {quotation.total_amount} {quotation.currency}{comparison_reason}{delivery_reason}{late_reason}{score_reason}",
+            reason=f"{'납기 우선' if delivery_first else '금액 우선'} · 규격·수량·산식 검토 통과, 총금액 {quotation.total_amount} {quotation.currency}{comparison_reason}{delivery_reason}{late_reason}{score_reason}",
         ))
 
     return RankingResult(

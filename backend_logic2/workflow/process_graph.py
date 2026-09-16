@@ -65,10 +65,26 @@ def _with_status_log(node_name: str, fn):
     def wrapper(state: Any) -> Any:
         from backend_logic2.nodes.supplier.tools.case_logging import log_status_change
 
-        cmd = fn(state)
+        from backend_logic2.policies.repository import for_case
+        from backend_logic2.policies.runtime import policy_scope
+        from backend_logic2.policies.schema import CompanyPolicy
+
+        # Pin by case, not process memory: resumed/restarted workflows retain
+        # the rules under which they began. Never bypass a failed policy read.
+        snapshot = None
+        if state.get("case_id"):
+            snapshot = for_case(state["case_id"])
+            with policy_scope(CompanyPolicy.model_validate(snapshot["policy"])):
+                cmd = fn(state)
+        else:
+            cmd = fn(state)
 
         update = getattr(cmd, "update", None) or {}
         case_id = update.get("case_id") or state.get("case_id")
+        if case_id and not state.get("case_id"):
+            snapshot = for_case(case_id)
+        if snapshot and isinstance(getattr(cmd, "update", None), dict):
+            cmd.update["policy_version"] = snapshot["version"]
         to_status = update.get("status")
         if case_id and to_status:
             # ⚠️ from_status를 여기서 state.get("status")로 미리 캡처해서 넘기면

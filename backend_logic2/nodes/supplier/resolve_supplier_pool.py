@@ -9,9 +9,7 @@ from backend_logic2.integrations.erp_client import erp_get, erp_get_one
 from backend_logic2.nodes.supplier.tools.case_logging import log_status_change
 from backend_logic2.repositories.deliveries import get_supplier_latest_scorecards
 
-MIN_COMPETING_SUPPLIERS = 3
-SUPPLIER_POOL_REFRESH_YEARS = 3
-SUPPLIER_POOL_REFRESH_DAYS = 365 * SUPPLIER_POOL_REFRESH_YEARS
+# Company thresholds are supplied from the pinned case policy.
 
 
 def _parse_erpnext_datetime(value):
@@ -47,7 +45,7 @@ def _get_supplier_info(supplier_name):
     }
 
 
-def _resolve_one_item(item_code, case_id=None):
+def _resolve_one_item(item_code, case_id=None, rules=None):
     """
     case_id(2026-08-31 MR 단위로 재설계): 예전엔 이 함수가 품목마다 직접
     케이스를 만들었는데, 실제 `--mr` 파이프라인을 까보니 MR 1건이 전체
@@ -55,6 +53,11 @@ def _resolve_one_item(item_code, case_id=None):
     케이스는 process_graph.py의 route_entrypoint_command가 MR당 1번만
     만들고, 여기는 그 case_id를 넘겨받아서 재사용만 함(자체 생성 안 함).
     """
+    from backend_logic2.policies.runtime import current_policy
+    rules = rules or current_policy().rules
+    MIN_COMPETING_SUPPLIERS = rules.min_competing_suppliers
+    SUPPLIER_POOL_REFRESH_YEARS = rules.supplier_refresh_years
+    SUPPLIER_POOL_REFRESH_DAYS = 365 * SUPPLIER_POOL_REFRESH_YEARS
     print(f"  [{item_code}] 공급사 풀 판정 시작")
     item = erp_get_one("Item", item_code) or {}
     supplier_rows = item.get("supplier_items") or []
@@ -137,7 +140,9 @@ def resolve_supplier_pool(bidding_items: list, case_id: str = None) -> dict:
     all_supplier_names = set()
 
     with ThreadPoolExecutor(max_workers=min(len(bidding_items), 8) or 1) as executor:
-        futures = [executor.submit(_resolve_one_item, item_code, case_id) for item_code in bidding_items]
+        from backend_logic2.policies.runtime import current_policy
+        rules = current_policy().rules
+        futures = [executor.submit(_resolve_one_item, item_code, case_id, rules) for item_code in bidding_items]
         for future in as_completed(futures):
             item_code, needs_search, reason, unique_suppliers, _ = future.result()
 
