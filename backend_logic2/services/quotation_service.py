@@ -310,7 +310,10 @@ def build_quotation_snapshot(case: dict[str, Any], rfq_name: str) -> dict[str, A
         if recipient_count
         else 0
     )
+    from backend_logic2.services.price_evaluation import build_price_evaluations
+    item_code = case.get("item_code") or (case.get("summary") or {}).get("item_code")
     return {
+        "price_evaluations": build_price_evaluations(quotations, item_code, rfq_name),
         "rfq_name": rfq_name,
         "recipient_suppliers": sorted(recipients),
         "responded_suppliers": sorted(counted_responders),

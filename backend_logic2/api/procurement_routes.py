@@ -422,6 +422,16 @@ def get_item_group_required_specs_for_frontend(
     }
 
 
+class SupplierEvaluationRequest(BaseModel):
+    names: list[str] = Field(default_factory=list, max_length=100)
+
+
+@router.post("/suppliers/evaluations")
+def get_supplier_evaluations(request: SupplierEvaluationRequest, current_user: CurrentUser):
+    from backend_logic2.services.supplier_recommendations import get_supplier_recommendations
+    return {"items": get_supplier_recommendations(request.names)}
+
+
 @router.get("/suppliers/search")
 def search_suppliers_for_frontend(
     current_user: CurrentUser,
@@ -498,9 +508,12 @@ def search_suppliers_for_frontend(
             detail=f"ERPNext Supplier 검색 실패: {exc}",
         ) from exc
 
+    from backend_logic2.services.supplier_recommendations import get_supplier_recommendations
+    recommendations = get_supplier_recommendations([row["name"] for row in rows])
     return {
         "items": [
             {
+                "recommendation": recommendations.get(row.get("name")),
                 "name": row.get("name"),
                 "supplier_name": row.get("supplier_name") or row.get("name"),
                 "email": row.get("email_id"),

@@ -32,6 +32,20 @@ def aggregate_evaluations(rows):
     return result
 
 
+def get_supplier_recommendations(names):
+    names = sorted({str(name).strip() for name in names if str(name).strip()})
+    if not names:
+        return {}
+    with get_connection() as connection:
+        rows = connection.execute(
+            """SELECT supplier, scorecard FROM procurement.purchase_order_delivery
+               WHERE supplier = ANY(%(names)s::varchar[])
+                 AND scorecard_status = 'COMPLETED' AND delivery_status = 'FULL'
+                 AND scorecard IS NOT NULL""", {"names": names}
+        ).fetchall()
+    return aggregate_evaluations(rows)
+
+
 def attach_supplier_recommendations(cases):
     names = set()
     case_names = []
@@ -44,15 +58,6 @@ def attach_supplier_recommendations(cases):
                      for row in rows if isinstance(row, dict)} - {""}
         case_names.append(suppliers)
         names.update(suppliers)
-    evaluations = []
-    if names:
-        with get_connection() as connection:
-            evaluations = connection.execute(
-                """SELECT supplier, scorecard FROM procurement.purchase_order_delivery
-                   WHERE supplier = ANY(%(names)s::varchar[])
-                     AND scorecard_status = 'COMPLETED' AND delivery_status = 'FULL'
-                     AND scorecard IS NOT NULL""", {"names": sorted(names)}
-            ).fetchall()
-    aggregates = aggregate_evaluations(evaluations)
+    aggregates = get_supplier_recommendations(names)
     for case, suppliers in zip(cases, case_names):
         case["supplier_recommendations"] = {name: aggregates[name] for name in suppliers if name in aggregates}

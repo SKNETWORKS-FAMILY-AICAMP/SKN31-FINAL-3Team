@@ -39,3 +39,23 @@ def test_refresh_batches_suppliers_and_uses_current_history_not_snapshot():
     assert cases[0]["supplier_recommendations"]["A"]["average_score"] == 4.5
     assert "Unrated" not in cases[0]["supplier_recommendations"]
     assert cases[1]["supplier_recommendations"] == cases[0]["supplier_recommendations"]
+
+
+def test_manual_supplier_evaluations_can_be_loaded_without_candidate_case():
+    from backend_logic2.api.procurement_routes import get_supplier_evaluations, SupplierEvaluationRequest
+    expected = {"SUP-0001": {"average_score": 4.5, "evaluation_count": 1}}
+    with patch("backend_logic2.services.supplier_recommendations.get_supplier_recommendations", return_value=expected) as query:
+        result = get_supplier_evaluations(SupplierEvaluationRequest(names=["SUP-0001"]), {"id": "buyer"})
+    assert result["items"] == expected
+    query.assert_called_once_with(["SUP-0001"])
+
+
+def test_search_includes_recommendation_using_supplier_id():
+    from backend_logic2.api.procurement_routes import search_suppliers_for_frontend
+    with (
+        patch("backend_logic2.api.procurement_routes.erp_get", return_value=[{"name": "SUP-1", "supplier_name": "표시 이름"}]),
+        patch("backend_logic2.services.supplier_recommendations.get_supplier_recommendations", return_value={"SUP-1": {"average_score": 4.5}}) as query,
+    ):
+        result = search_suppliers_for_frontend({"id": "buyer"}, q="표시", field="name")
+    query.assert_called_once_with(["SUP-1"])
+    assert result["items"][0]["recommendation"]["average_score"] == 4.5
