@@ -367,12 +367,13 @@ SCORECARD_WEIGHTS = {
 def calculate_scorecard_weighted_score(
     scorecard: dict[str, float],
 ) -> float | None:
-    """5개 평가 항목이 모두 유효할 때 구매 가중평균 점수를 계산한다."""
+    """가격이 제외된 평가는 나머지 네 항목의 가중치를 정규화한다."""
 
-    if not all(field in scorecard for field in SCORECARD_WEIGHTS):
+    if not all(field in scorecard for field in SCORECARD_WEIGHTS if field != "price"):
         return None
+    weights = {field: weight for field, weight in SCORECARD_WEIGHTS.items() if field in scorecard}
     return round(
-        sum(scorecard[field] * weight for field, weight in SCORECARD_WEIGHTS.items()),
+        sum(scorecard[field] * weight for field, weight in weights.items()) / sum(weights.values()),
         2,
     )
 

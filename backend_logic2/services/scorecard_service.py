@@ -56,7 +56,8 @@ def completed_scores(case: dict[str, Any], delivery: dict[str, Any], answer: dic
     if any(type(answer[key]) not in (int, float) or answer[key] not in (1, 2, 3, 4, 5) for key in manual):
         raise ValueError("직접 평가 항목은 각각 1~5점의 정수여야 합니다.")
     automatic = automatic_scores(case, delivery)
-    if len(automatic["scores"]) != 2:
-        raise ValueError("자동 평가에 필요한 납기일, 실제 수령일 또는 비교 견적을 확인해주세요.")
+    if "leadTime" not in automatic["scores"]:
+        raise ValueError("자동 평가에 필요한 약정 납기일과 실제 수령일을 확인해주세요.")
     return {**{key: answer[key] for key in manual}, **automatic["scores"],
-            "calculation": {"version": 1, "reasons": automatic["reasons"]}}
+            "calculation": {"version": 1, "reasons": automatic["reasons"],
+                            "excluded_fields": [] if "price" in automatic["scores"] else ["price"]}}

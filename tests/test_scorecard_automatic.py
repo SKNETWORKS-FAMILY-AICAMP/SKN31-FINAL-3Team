@@ -41,11 +41,13 @@ def test_unrelated_and_cancelled_quotes_do_not_change_price(basis):
 
 @pytest.mark.parametrize("key,value", [("rate", 0), ("rate", "NaN"), ("rate", "Infinity"),
     ("currency", "USD"), ("uom", "BOX")])
-def test_invalid_or_incomparable_quotes_block_completion(basis, key, value):
+def test_invalid_or_incomparable_quotes_exclude_price(basis, key, value):
     case, delivery = basis
     case["quotation_snapshot"]["quotations"][0][key] = value
-    with pytest.raises(ValueError):
-        completed_scores(case, delivery, {"quality": 4, "service": 3, "communication": 5})
+    result = completed_scores(case, delivery, {"quality": 4, "service": 3, "communication": 5, "price": 5})
+    assert "price" not in result
+    assert result["calculation"]["excluded_fields"] == ["price"]
+    assert result["leadTime"] == 3
 
 
 def test_server_ignores_client_automatic_values(basis):
@@ -69,6 +71,8 @@ def test_missing_receipt_and_missing_quotes_are_not_fabricated(basis):
     delivery["full_receipt_date"] = None
     case["quotation_snapshot"] = {}
     assert automatic_scores(case, delivery)["scores"] == {}
+    with pytest.raises(ValueError):
+        completed_scores(case, delivery, {"quality": 4, "service": 3, "communication": 5})
 
 
 def test_partial_receipt_not_rated(basis):
@@ -77,9 +81,12 @@ def test_partial_receipt_not_rated(basis):
     assert "leadTime" not in automatic_scores(case, delivery)["scores"]
 
 
-def test_submission_persists_server_scores_and_completes_workflow(basis):
+@pytest.mark.parametrize("has_price", [True, False])
+def test_submission_persists_server_scores_and_completes_workflow(basis, has_price):
     from backend_logic2.services import workflow_service
     case, delivery = basis
+    if not has_price:
+        case["quotation_snapshot"] = {}
     case.update(case_id="case-1", status="WAITING_INPUT", stage="SCORECARD")
     task = {"case_id": "case-1", "status": "PENDING", "task_type": "supplier_scorecard"}
     with (
@@ -95,6 +102,16 @@ def test_submission_persists_server_scores_and_completes_workflow(basis):
         workflow_service.resume_task("task-1", answer={"quality": 4, "service": 3, "communication": 5},
                                      answered_by="buyer", expected_version=1)
     assert save.call_args.args[1]["leadTime"] == 3
-    assert save.call_args.args[1]["price"] == 2.5
+    if has_price:
+        assert save.call_args.args[1]["price"] == 2.5
+    else:
+        assert "price" not in save.call_args.args[1]
+        assert save.call_args.args[1]["calculation"]["excluded_fields"] == ["price"]
     complete.assert_called_once()
     assert transition.call_args.kwargs["status"] == "COMPLETED"
+
+
+def test_four_scores_average_uses_only_available_weights():
+    from backend_logic2.repositories.deliveries import calculate_scorecard_weighted_score
+    assert calculate_scorecard_weighted_score({"leadTime": 5, "quality": 5, "service": 5, "communication": 5}) == 5
+    assert calculate_scorecard_weighted_score({"leadTime": 5, "quality": 3, "service": 5, "communication": 5}) == 4.25
