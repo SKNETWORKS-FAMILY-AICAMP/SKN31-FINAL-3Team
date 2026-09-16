@@ -30,6 +30,16 @@ class AIGuidance(StrictModel):
 class CompanyPolicy(StrictModel):
     rules: PurchasingRules = Field(default_factory=PurchasingRules)
     guidance: AIGuidance = Field(default_factory=AIGuidance)
+    # Legacy snapshots without this key retain the previous Tavily-only path.
+    supplier_sources: list[Literal['tavily', 'narajangteo', 'db']] = Field(
+        default_factory=lambda: ['tavily'], min_length=1, max_length=3)
+
+    @field_validator('supplier_sources')
+    @classmethod
+    def unique_sources(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError('탐색 소스는 중복 선택할 수 없습니다.')
+        return sorted(value)
 
 
 class PublishPolicy(StrictModel):
@@ -43,7 +53,7 @@ class PublishPolicy(StrictModel):
         # A partial API payload must not silently reset unspecified settings.
         if isinstance(value, CompanyPolicy):
             return value
-        if not isinstance(value, dict) or set(value) != {"rules", "guidance"}:
+        if not isinstance(value, dict) or set(value) != {"rules", "guidance", "supplier_sources"}:
             raise ValueError("게시할 전체 정책을 전달해야 합니다.")
         for name, model in (("rules", PurchasingRules), ("guidance", AIGuidance)):
             if not isinstance(value[name], dict) or set(value[name]) != set(model.model_fields):

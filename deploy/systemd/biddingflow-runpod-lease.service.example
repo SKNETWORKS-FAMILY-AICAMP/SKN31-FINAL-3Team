@@ -1,0 +1,14 @@
+[Unit]
+Description=BiddingFlow RunPod warm worker lease safety check
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/biddingflow/backend
+EnvironmentFile=/etc/biddingflow/backend.env
+ExecStart=/opt/biddingflow/backend/.venv/bin/python scripts/reconcile_runpod_worker_leases.py
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true

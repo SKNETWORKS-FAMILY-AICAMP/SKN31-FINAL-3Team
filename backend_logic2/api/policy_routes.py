@@ -6,12 +6,37 @@ from fastapi import APIRouter, HTTPException
 from auth_service.dependencies import CurrentUser
 from backend_logic2.policies.access import read_policy_access, PolicyAccessUnavailable
 from backend_logic2.policies import repository
-from backend_logic2.policies.schema import PublishPolicy
+from backend_logic2.policies.schema import PublishPolicy, CompanyPolicy
 from procurement_db.config import ProcurementDatabaseConfigurationError
 from backend_logic2.policies import allowlist
+from backend_logic2.services import runpod_worker_control as worker_control
 
 router = APIRouter(prefix="/api/company-policy", tags=["Company policy"])
 logger = logging.getLogger(__name__)
+
+
+@router.get('/runpod-worker')
+def read_runpod_worker(user: CurrentUser):
+    _require_admin(user)
+    try:
+        return worker_control.status()
+    except worker_control.ControlUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        raise HTTPException(503, '워커 설정 저장소를 확인할 수 없습니다.') from exc
+
+
+@router.post('/runpod-worker')
+def change_runpod_worker(body: worker_control.WorkerCommand, user: CurrentUser):
+    actor = _require_admin(user)
+    try:
+        return worker_control.command(body, actor)
+    except worker_control.ControlConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except worker_control.ControlUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        raise HTTPException(503, '워커 설정 저장 결과를 확인할 수 없습니다. 새로고침 후 확인하세요.') from exc
 
 
 def _actor(user):
@@ -41,7 +66,12 @@ def capabilities(user: CurrentUser):
 def read_policy(user: CurrentUser):
     _require_admin(user)
     try:
-        return {"active": repository.get_active(), "history": repository.list_versions()}
+        # Expand defaults at the read boundary; immutable old DB versions stay
+        # untouched and can still be restored through the current editor.
+        def expanded(row):
+            return {**row, 'policy': CompanyPolicy.model_validate(row['policy']).model_dump()}
+        return {"active": expanded(repository.get_active()),
+                "history": [expanded(row) for row in repository.list_versions()]}
     except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
         logger.exception("Policy lookup failed")
         raise HTTPException(503, "정책 저장소에 연결할 수 없습니다. 관리자에게 마이그레이션 상태를 확인해주세요.") from exc

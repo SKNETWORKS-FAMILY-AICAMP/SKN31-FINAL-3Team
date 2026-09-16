@@ -256,6 +256,8 @@ async def _recover_runpod_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from backend_logic2.services.runpod_worker_control import reconciliation_loop
+    worker_lease_task = asyncio.create_task(reconciliation_loop(), name="runpod-worker-lease-expiry")
     from backend_logic2.services.runpod_quotation_jobs import webhook_mode, callback_url
     if webhook_mode():
         callback_url()
@@ -300,6 +302,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        worker_lease_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker_lease_task
         runpod_task.cancel()
         with suppress(asyncio.CancelledError):
             await runpod_task

@@ -1,6 +1,9 @@
 """
 supplier_search.py - 최종 통합 파이프라인 (tools/ 밖, 최상위 실행파일).
 
+2026-09-16: 회사 정책 supplier_sources로 Tavily/나라장터/DB를 복수 선택.
+기본값은 기존 Tavily 단독. 선택 소스별 캐시를 분리하며 아래 내용은 변경 이력임.
+
 2026-09-07 구조 개편(2차): 후보 수집을 나라장터API+DB캐시+Tavily 3소스
 병렬에서, "Tavily(구조화 추출 기반) 단일 소스"로 일단 축소함. 나라장터
 API/DB캐시는 코드를 지우지 않고 이 파일에서 호출만 뺌(아래 주석 참고) -
@@ -77,9 +80,6 @@ from backend_logic2.nodes.supplier.tools.narajangteo_search_based_tool import (
 from backend_logic2.nodes.supplier.tools.web_search_based_tool import (
     normalize_item_name,
 )
-from backend_logic2.nodes.supplier.tools.structured_item_search_tool import (
-    collect_candidate_names_structured,
-)
 from backend_logic2.nodes.supplier.tools.dart_verification_tool import (
     dart_verify_and_fetch_contacts,
 )
@@ -89,6 +89,8 @@ from backend_logic2.nodes.supplier.tools.supplier_search_cache import (
     save_to_cache,
 )
 from backend_logic2.nodes.supplier.tools.case_logging import log_status_change
+from backend_logic2.nodes.supplier.source_selection import collect_selected, search_cache_key
+from backend_logic2.policies.runtime import current_policy
 
 # 2026-09-07 기준 미사용(호출만 뺌, 함수 자체는 narajangteo_search_based_tool.py에
 # 그대로 남아있음). 나라장터API/DB캐시를 다시 병렬 수집에 넣고 싶으면:
@@ -123,10 +125,12 @@ def supplier_search(item_name, target_count=10, case_id=None):
     print(f"품목명 정규화 중... (캐시 키 용도)")
     print(f"{'=' * 60}")
     normalized = normalize_item_name(item_name)
+    sources = current_policy().supplier_sources
+    cache_key = search_cache_key(normalized, sources)
 
     cleanup_expired_cache()
 
-    cached = get_cached_results(normalized)
+    cached = get_cached_results(cache_key)
     if cached:
         print(f"\n{'=' * 60}")
         print(f"[캐시 히트] '{normalized}' 캐시에서 {len(cached)}건 재사용 (신규탐색 생략)")
@@ -140,21 +144,17 @@ def supplier_search(item_name, target_count=10, case_id=None):
     print(f"\n{'=' * 60}")
     print(f"[캐시 미스] '{normalized}' 캐시 없음, 신규탐색 진행")
     print(f"{'=' * 60}")
-    log_status_change(case_id, "searching", reason=f"'{normalized}' 캐시 미스, Tavily(구조화) 수집 시작")
+    log_status_change(case_id, "searching", reason=f"'{normalized}' 캐시 미스, 선택 소스 {', '.join(sources)} 수집 시작")
 
     collect_target = target_count * 2
 
     print(f"\n{'=' * 60}")
-    print(f"[후보 수집] Tavily(구조화 추출 기반) 실행 중... (나라장터API/DB캐시는 지금 안 씀)")
+    print(f"[후보 수집] 선택 소스: {', '.join(sources)}")
     print(f"{'=' * 60}")
     # 구조화추출은 정규화된 문자열(normalized)이 아니라 원본 item_name으로
     # 함 - 안전등급/규격코드(예: "2B 10K") 같은 신호가 normalize_item_name
     # 단계에서 이미 지워졌을 수 있어서, 구조화추출 자체는 원본을 다시 봄.
-    try:
-        candidates = collect_candidate_names_structured(item_name, collect_target, case_id=case_id)
-    except Exception as e:
-        print(f"  [Tavily-구조화] 예외 발생, 후보 없음으로 진행: {e}")
-        candidates = []
+    candidates = collect_selected(item_name, normalized, collect_target, sources, case_id)
 
     seen_keys = set()
     deduped = []
@@ -167,12 +167,12 @@ def supplier_search(item_name, target_count=10, case_id=None):
     candidates = deduped
 
     print(f"\n{'=' * 60}")
-    print(f"[수집 결과] Tavily(구조화) {len(candidates)}건 (중복제거 후)")
+    print(f"[수집 결과] {', '.join(sources)} {len(candidates)}건 (중복제거 후)")
     print(f"{'=' * 60}")
 
     log_status_change(
         case_id, "collected",
-        reason=f"Tavily(구조화) 수집+중복제거 완료: {len(candidates)}건",
+        reason=f"{', '.join(sources)} 수집+중복제거 완료: {len(candidates)}건",
     )
 
     print(f"\n{'=' * 60}")
@@ -204,7 +204,7 @@ def supplier_search(item_name, target_count=10, case_id=None):
     )
     print(f"{'=' * 60}")
 
-    save_to_cache(normalized, results)
+    save_to_cache(cache_key, results)
 
     log_status_change(
         case_id, "search_completed",

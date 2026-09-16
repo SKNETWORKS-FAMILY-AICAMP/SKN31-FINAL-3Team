@@ -21,7 +21,7 @@ from backend_logic2.policies.repository import PolicyConflict
 def test_seed_matches_defaults_exactly():
     migration = Path(__file__).resolve().parents[1] / 'migrations/014_create_company_policy.sql'
     seed = re.search(r"VALUES \(1, '(.*?)',", migration.read_text(encoding='utf-8')).group(1)
-    assert json.loads(seed) == CompanyPolicy().model_dump()
+    assert CompanyPolicy.model_validate(json.loads(seed)) == CompanyPolicy()
 
 
 def test_partial_publish_cannot_reset_unspecified_settings():
