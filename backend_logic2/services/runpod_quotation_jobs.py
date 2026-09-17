@@ -67,6 +67,7 @@ def enqueue(data, filename, rfq_name, *, supplier_id, supplier_name,
             'message_id': message_id, 'content_type': content_type,
             'source_kind': prepared.kind.value, 'evidence': prepared.evidence,
             'document_fallbacks': document_fallbacks,
+            'pipeline_version': parser.config.pipeline_version,
         }, worker_input['prompt_sha256'], worker_input['prompt_version'],
     )
     if created:
@@ -102,9 +103,19 @@ def _register(job):
     kind = context.pop('source_kind')
     evidence = context.pop('evidence', [])
     document_fallbacks = context.pop('document_fallbacks', {})
+    context.pop('pipeline_version', None)
     prepared = PreparedSource(kind=SourceKind(kind), text='', evidence=evidence)
     extraction = dict(job['result_json']['extraction'])
     apply_document_fallbacks(extraction, document_fallbacks)
+    recovery_text = job['result_json'].get('recovery_text')
+    if recovery_text is not None:
+        max_text_chars = int(os.getenv('RUNPOD_QUOTATION_MAX_TEXT_CHARS', '60000'))
+        if not isinstance(recovery_text, str) or len(recovery_text) > max_text_chars:
+            raise ValueError('RunPod recovery_text is invalid')
+        apply_document_fallbacks(
+            extraction,
+            extract_document_fallbacks(recovery_text),
+        )
     quotation = _extract_prepared_quotation(
         prepared, model_parser=_RecordedParser(extraction), **context,
     )
@@ -146,10 +157,13 @@ def process_job(job_id):
                 if status != 'COMPLETED':
                     return
                 output = response.get('output') or {}
+                expected_pipeline = job['context'].get('pipeline_version')
                 if (output.get('status') != 'success'
                         or output.get('request_id') != job['request_id']
                         or output.get('prompt_sha256') != job['prompt_sha256']
                         or output.get('prompt_version') != job['prompt_version']
+                        or (expected_pipeline
+                            and output.get('worker_version') != expected_pipeline)
                         or not isinstance(output.get('extraction'), dict)):
                     jobs.fail_job(job_id, 'RunPod result identity/schema mismatch', terminal=True)
                     return

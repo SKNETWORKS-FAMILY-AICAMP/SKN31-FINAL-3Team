@@ -568,7 +568,8 @@ def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
     document.  These values are used only when the model returned ``null``.
     """
 
-    compact = re.sub(r"\s+", "", str(document_text or ""))
+    source_text = str(document_text or "")
+    compact = re.sub(r"\s+", "", source_text)
     if not compact:
         return {}
 
@@ -607,6 +608,18 @@ def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
         value = compact[start:end].strip("•·-:：")
         if value:
             notes.append(f"{display}: {value}")
+
+    # The conditional visual recovery pass emits one explicitly labelled line
+    # per free-form term. Keep line boundaries so arbitrary special clauses
+    # can be recovered without teaching this deterministic parser their text.
+    generic_note_pattern = re.compile(
+        r"(?im)^\s*(?:[-•·]\s*)?[\[【]?(특약사항|특이사항|비고|조건)"
+        r"[\]】]?\s*[:：]\s*(.+?)\s*$"
+    )
+    for match in generic_note_pattern.finditer(source_text):
+        note = f"{match.group(1)}: {match.group(2).strip()}"
+        if note not in notes:
+            notes.append(note)
 
     result: dict[str, Any] = {}
     if valid_until:

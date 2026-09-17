@@ -65,6 +65,7 @@ class RunPodQuotationConfig:
     max_new_tokens: int = 512
     status_max_attempts: int = 3
     prompt_version: str = "qwen35-quotation-json-v3"
+    pipeline_version: str = "visual-recovery-v1"
 
     @classmethod
     def from_env(cls) -> "RunPodQuotationConfig":
@@ -113,6 +114,13 @@ class RunPodQuotationConfig:
                     "qwen35-quotation-json-v3",
                 ).strip()
                 or "qwen35-quotation-json-v3"
+            ),
+            pipeline_version=(
+                os.getenv(
+                    "RUNPOD_QUOTATION_PIPELINE_VERSION",
+                    "visual-recovery-v1",
+                ).strip()
+                or "visual-recovery-v1"
             ),
         )
 
@@ -231,6 +239,7 @@ class RunPodQuotationParser:
         rfq_name: str,
         supplier_name: str | None,
         prompt_sha256: str,
+        pipeline_version: str,
     ) -> str:
         digest = hashlib.sha256()
         digest.update(str(rfq_name).encode("utf-8"))
@@ -238,6 +247,8 @@ class RunPodQuotationParser:
         digest.update(str(supplier_name or "").encode("utf-8"))
         digest.update(b"\0")
         digest.update(prompt_sha256.encode("ascii"))
+        digest.update(b"\0")
+        digest.update(pipeline_version.encode("utf-8"))
         digest.update(b"\0")
         digest.update(document_text.encode("utf-8"))
         for document in documents:
@@ -313,17 +324,39 @@ class RunPodQuotationParser:
             ) from exc
         return self._json_response(response, "상태 조회")
 
-    @staticmethod
-    def _completed_output(payload: dict[str, Any]) -> dict[str, Any]:
+    def _completed_output(self, payload: dict[str, Any]) -> dict[str, Any]:
         output = payload.get("output")
         if not isinstance(output, dict):
             raise RunPodQuotationParserError("RunPod 완료 응답에 output이 없습니다.")
         if str(output.get("status") or "").lower() != "success":
             raise RunPodQuotationParserError("RunPod 견적 모델 실행이 실패했습니다.")
+        if output.get("worker_version") != self.config.pipeline_version:
+            raise RunPodQuotationParserError(
+                "RunPod 워커 버전이 요청한 추출 파이프라인과 일치하지 않습니다."
+            )
         extraction = output.get("extraction")
         if not isinstance(extraction, dict):
             raise RunPodQuotationParserError(
                 "RunPod 완료 응답에 견적 extraction이 없습니다."
+            )
+        extraction = dict(extraction)
+        recovery_text = output.get("recovery_text")
+        if recovery_text is not None:
+            if (
+                not isinstance(recovery_text, str)
+                or len(recovery_text) > self.config.max_text_chars
+            ):
+                raise RunPodQuotationParserError(
+                    "RunPod 완료 응답의 보완 전사 텍스트가 올바르지 않습니다."
+                )
+            from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
+                apply_document_fallbacks,
+                extract_document_fallbacks,
+            )
+
+            apply_document_fallbacks(
+                extraction,
+                extract_document_fallbacks(recovery_text),
             )
         return extraction
 
@@ -386,11 +419,13 @@ class RunPodQuotationParser:
                 rfq_name,
                 supplier_name,
                 prompt_sha256,
+                self.config.pipeline_version,
             ),
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
             "prompt_version": self.config.prompt_version,
             "prompt_sha256": prompt_sha256,
+            "pipeline_version": self.config.pipeline_version,
             "documents": documents,
             "document_text": document_text,
             "input_mode": (

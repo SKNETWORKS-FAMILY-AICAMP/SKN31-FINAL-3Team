@@ -24,7 +24,8 @@ class MemoryJobs:
             'context': {'rfq_name': 'RFQ-1', 'supplier_id': 'SUP-1', 'supplier_name': 'Trusted',
                         'source_filename': 'quotation.png', 'source_kind': 'image',
                         'fallback_quotation_id': 'EMAIL-1', 'message_id': 'COMM-1',
-                        'content_type': 'image/png', 'evidence': []},
+                        'content_type': 'image/png', 'evidence': [],
+                        'pipeline_version': 'visual-recovery-v1'},
             'next_check_at': datetime.now(timezone.utc) - timedelta(seconds=1),
         }
         self.errors = []
@@ -63,7 +64,8 @@ def setup(monkeypatch):
     repository = MemoryJobs()
     monkeypatch.setattr(service, 'jobs', repository)
     output = {'status': 'success', 'request_id': 'request-1', 'prompt_sha256': 'hash-1',
-              'prompt_version': 'version-1', 'extraction': _extraction()}
+              'prompt_version': 'version-1', 'worker_version': 'visual-recovery-v1',
+              'extraction': _extraction()}
     parser = Mock()
     parser.job_status.return_value = {'id': 'remote-job', 'status': 'COMPLETED', 'output': output}
     factory = Mock(return_value=parser)
@@ -97,7 +99,9 @@ def test_completion_duplicate_and_original_endpoint(setup):
     refresh.assert_called_once()
 
 
-@pytest.mark.parametrize('field', ['request_id', 'prompt_sha256', 'prompt_version'])
+@pytest.mark.parametrize(
+    'field', ['request_id', 'prompt_sha256', 'prompt_version', 'worker_version'],
+)
 def test_mismatched_result_cannot_register(setup, field):
     repo, parser, register, *_ = setup
     parser.job_status.return_value['output'][field] = 'wrong'
@@ -174,6 +178,28 @@ def test_saved_result_uses_trusted_supplier(monkeypatch):
     assert quotation.supplier_name == 'Trusted'
     assert quotation.supplier_id == 'SUP-1'
     assert quotation.rfq_name == 'RFQ-1'
+
+
+def test_saved_result_applies_visual_recovery_text(monkeypatch):
+    from backend_logic2.services import quotation_service
+    repo = MemoryJobs()
+    repo.row['result_json'] = {
+        'extraction': _extraction(),
+        'recovery_text': (
+            '유효기간: 2026-09-30\n'
+            '예상 납품일: 2026-09-30\n'
+            '특약사항: 지정 장소 도착도'
+        ),
+    }
+    register = Mock(return_value={'name': 'SQ-1'})
+    monkeypatch.setattr(quotation_service, 'register_supplier_quotation', register)
+
+    service._register(repo.row)
+
+    quotation = register.call_args.args[0]
+    assert quotation.valid_until.isoformat() == '2026-09-30'
+    assert quotation.items[0].expected_delivery_date.isoformat() == '2026-09-30'
+    assert '특약사항: 지정 장소 도착도' in quotation.notes
 
 
 def test_duplicate_enqueue_never_submits_again(monkeypatch):
