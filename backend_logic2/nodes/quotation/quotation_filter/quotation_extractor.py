@@ -556,6 +556,84 @@ def _normalize_date(value: Any) -> Any:
     return value
 
 
+def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
+    """Read explicit terms/dates that a model may omit from document text.
+
+    PDF text layers commonly insert whitespace between every Korean syllable
+    and may split a date across lines.  Compacting whitespace makes labelled
+    fields deterministic without guessing values that are absent from the
+    document.  These values are used only when the model returned ``null``.
+    """
+
+    compact = re.sub(r"\s+", "", str(document_text or ""))
+    if not compact:
+        return {}
+
+    date_pattern = r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})"
+
+    def labelled_date(labels: tuple[str, ...]) -> str | None:
+        joined = "|".join(re.escape(label) for label in labels)
+        match = re.search(rf"(?:{joined})[:：]?{date_pattern}", compact)
+        if not match:
+            return None
+        year, month, day = map(int, match.groups()[-3:])
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            return None
+
+    valid_until = labelled_date(("유효기간", "견적유효기간", "validuntil", "validity"))
+    expected_delivery_date = labelled_date((
+        "예상납품일", "납품예정일", "납기일", "출고예정일", "deliverydate",
+    ))
+
+    note_labels = (
+        ("예상납품일", "예상 납품일"),
+        ("납품장소", "납품 장소"),
+        ("사양특기", "사양 특기"),
+        ("발주시", "발주 조건"),
+    )
+    found = [(compact.find(label), label, display) for label, display in note_labels]
+    found = sorted((position, label, display) for position, label, display in found if position >= 0)
+    notes: list[str] = []
+    for index, (position, label, display) in enumerate(found):
+        start = position + len(label)
+        if start < len(compact) and compact[start] in ":：":
+            start += 1
+        end = found[index + 1][0] if index + 1 < len(found) else len(compact)
+        value = compact[start:end].strip("•·-:：")
+        if value:
+            notes.append(f"{display}: {value}")
+
+    result: dict[str, Any] = {}
+    if valid_until:
+        result["valid_until"] = valid_until
+    if expected_delivery_date:
+        result["expected_delivery_date"] = expected_delivery_date
+    if notes:
+        result["notes"] = "\n".join(notes)
+    return result
+
+
+def apply_document_fallbacks(
+    payload: dict[str, Any],
+    fallbacks: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Fill only model-omitted values from deterministic document evidence."""
+
+    fallbacks = fallbacks or {}
+    if not payload.get("valid_until") and fallbacks.get("valid_until"):
+        payload["valid_until"] = fallbacks["valid_until"]
+    if not str(payload.get("notes") or "").strip() and fallbacks.get("notes"):
+        payload["notes"] = fallbacks["notes"]
+    delivery = fallbacks.get("expected_delivery_date")
+    if delivery:
+        for item in payload.get("items") or []:
+            if isinstance(item, dict) and not item.get("expected_delivery_date"):
+                item["expected_delivery_date"] = delivery
+    return payload
+
+
 def _normalize_generated_quotation(
     payload: dict[str, Any],
     document_text: str,
@@ -1132,6 +1210,7 @@ def _extract_prepared_quotation(
     parsed_value = parser(prepared, rfq_name, supplier_name, reflection_errors or [])
     parsed = parsed_value if isinstance(parsed_value, _ParsedQuotation) else _ParsedQuotation.model_validate(parsed_value)
     payload = parsed.model_dump()
+    apply_document_fallbacks(payload, extract_document_fallbacks(prepared.text))
     parsed_quotation_id = str(parsed.quotation_id or "").strip()
     if parsed_quotation_id.casefold() == rfq_name.casefold():
         parsed_quotation_id = ""

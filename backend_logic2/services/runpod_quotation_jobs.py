@@ -16,7 +16,8 @@ from backend_logic2.integrations.quotation_extraction.runpod import (
 )
 from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
     PreparedSource, _extract_prepared_quotation, _normalize_finetuned_quotation,
-    prepare_source_bytes, prepare_rfq_specifications,
+    apply_document_fallbacks, extract_document_fallbacks, prepare_source_bytes,
+    prepare_rfq_specifications,
 )
 from backend_logic2.nodes.quotation.quotation_filter.quotation_models import SourceKind
 from backend_logic2.repositories import quotation_jobs as jobs
@@ -54,6 +55,7 @@ def enqueue(data, filename, rfq_name, *, supplier_id, supplier_name,
     parser = _parser()
     prepared = prepare_source_bytes(data, filename)
     prepare_rfq_specifications(prepared, rfq_requirements)
+    document_fallbacks = extract_document_fallbacks(prepared.text)
     worker_input = parser.build_worker_input(prepared, rfq_name, supplier_name, [])
     # Application request_id deduplicates overlapping Communication/File events.
     # RunPod itself does not promise idempotency for repeated POST /run calls.
@@ -64,6 +66,7 @@ def enqueue(data, filename, rfq_name, *, supplier_id, supplier_name,
             'source_filename': filename, 'fallback_quotation_id': fallback_quotation_id,
             'message_id': message_id, 'content_type': content_type,
             'source_kind': prepared.kind.value, 'evidence': prepared.evidence,
+            'document_fallbacks': document_fallbacks,
         }, worker_input['prompt_sha256'], worker_input['prompt_version'],
     )
     if created:
@@ -98,9 +101,12 @@ def _register(job):
     context = dict(job['context'])
     kind = context.pop('source_kind')
     evidence = context.pop('evidence', [])
+    document_fallbacks = context.pop('document_fallbacks', {})
     prepared = PreparedSource(kind=SourceKind(kind), text='', evidence=evidence)
+    extraction = dict(job['result_json']['extraction'])
+    apply_document_fallbacks(extraction, document_fallbacks)
     quotation = _extract_prepared_quotation(
-        prepared, model_parser=_RecordedParser(job['result_json']['extraction']), **context,
+        prepared, model_parser=_RecordedParser(extraction), **context,
     )
     return quotation_service.register_supplier_quotation(quotation)
 

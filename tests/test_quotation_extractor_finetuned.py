@@ -15,7 +15,9 @@ from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import 
     VisionInput,
     _ParsedQuotation,
     _normalize_finetuned_quotation,
+    apply_document_fallbacks,
     classify_source,
+    extract_document_fallbacks,
     extract_quotation,
     extract_quotation_bytes,
     prepare_source,
@@ -235,6 +237,50 @@ def test_expected_delivery_date_reaches_public_quotation_model(tmp_path) -> None
     )
 
     assert quotation.items[0].expected_delivery_date.isoformat() == "2026-09-20"
+
+
+def test_document_text_fills_omitted_terms_validity_and_delivery_date() -> None:
+    text = """
+    유 효 기 간 : 2026-09-30
+    납 기 일 2026-09-
+    30
+    예 상 납 품 일 : 2026-09-30 ( 요 청 납 기 일 엄 수 )
+    납 품 장 소 : 지 정 장 소 도 착 도
+    사 양 특 기 : 전 용 하 드 케 이 스 포 함
+    발 주 시 상 기 단 가 및 납 품 일 정 조 건 이 유 효 합 니 다.
+    """
+    fallbacks = extract_document_fallbacks(text)
+    payload = {
+        "valid_until": None,
+        "notes": None,
+        "items": [{"expected_delivery_date": None}],
+    }
+
+    apply_document_fallbacks(payload, fallbacks)
+
+    assert payload["valid_until"] == "2026-09-30"
+    assert payload["items"][0]["expected_delivery_date"] == "2026-09-30"
+    assert "예상 납품일: 2026-09-30" in payload["notes"]
+    assert "납품 장소:" in payload["notes"]
+    assert "사양 특기:" in payload["notes"]
+
+
+def test_document_fallbacks_do_not_replace_model_values() -> None:
+    payload = {
+        "valid_until": "2026-10-01",
+        "notes": "모델이 추출한 특이사항",
+        "items": [{"expected_delivery_date": "2026-10-02"}],
+    }
+
+    apply_document_fallbacks(payload, {
+        "valid_until": "2026-09-30",
+        "expected_delivery_date": "2026-09-30",
+        "notes": "문서 보완값",
+    })
+
+    assert payload["valid_until"] == "2026-10-01"
+    assert payload["notes"] == "모델이 추출한 특이사항"
+    assert payload["items"][0]["expected_delivery_date"] == "2026-10-02"
 
 
 def test_erp_attachment_bytes_are_extracted_without_local_path() -> None:
