@@ -13,6 +13,11 @@ $(document).ready(function () {
 
 class RFQPortal {
 	constructor() {
+		this.submitting = false;
+		this.submitted = Boolean(doc.rfq_links && doc.rfq_links.length);
+		if (this.submitted) {
+			$(".rfq-content input, .rfq-content textarea, .rfq-valid-till").prop("disabled", true);
+		}
 		this.onfocus_select_all();
 		this.change_qty();
 		this.change_rate();
@@ -107,11 +112,13 @@ class RFQPortal {
 
 	submit_rfq() {
 		const me = this;
-		$(".btn-sm").click(function () {
+		$(".rfq-submit").click(function () {
+			if (me.submitting || me.submitted) return;
 			if (!me.validate_dates()) {
 				return;
 			}
 
+			me.submitting = true;
 			frappe.freeze();
 			frappe.call({
 				type: "POST",
@@ -119,13 +126,16 @@ class RFQPortal {
 				args: { doc },
 				btn: this,
 				callback(r) {
+					me.submitting = false;
 					frappe.unfreeze();
 					if (r.message) {
-						$(".btn-sm").hide();
+						me.submitted = true;
+						$(".rfq-submit").hide();
 						window.location.href = "/supplier-quotations/" + encodeURIComponent(r.message);
 					}
 				},
 				error() {
+					me.submitting = false;
 					frappe.unfreeze();
 				},
 			});

@@ -13,14 +13,21 @@
 {% endblock %}
 
 {% block header_actions %}
-{% if doc.items %}
-<button class="btn btn-primary btn-sm" type="button">
+{% if doc.rfq_links %}
+<span class="indicator green">견적 제출 완료</span>
+{% elif doc.items %}
+<button class="btn btn-primary btn-sm rfq-submit" type="button">
     {{ _("Make Quotation") }}
 </button>
 {% endif %}
 {% endblock %}
 
 {% block page_content %}
+{% if doc.rfq_links %}
+<div class="alert alert-info" role="status">
+    이미 견적을 제출했습니다. 같은 요청에 다시 제출할 수 없습니다. 아래 견적 목록에서 제출한 내용을 확인해주세요.
+</div>
+{% endif %}
 <div class="row">
     <div class="col-6">
         <div class="rfq-supplier">{{ doc.supplier }}</div>

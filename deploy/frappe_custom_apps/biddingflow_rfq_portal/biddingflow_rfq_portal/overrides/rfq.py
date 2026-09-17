@@ -46,6 +46,39 @@ def _validate_dates(doc: frappe._dict) -> None:
             )
 
 
+def _lock_rfq_and_find_quotation(doc, supplier):
+    """Serialize portal submissions until Frappe commits the POST transaction."""
+    items = doc.get("items") or []
+    rfqs = {item.get("parent") for item in items}
+    if not items or len(rfqs) != 1 or not all(rfqs):
+        frappe.throw(_("A quotation must belong to one Request for Quotation."))
+    rfq = next(iter(rfqs))
+    if not frappe.db.exists("Request for Quotation Supplier", {"parent": rfq, "supplier": supplier}):
+        frappe.throw(_("Not Permitted"), frappe.PermissionError)
+    locked = frappe.db.sql(
+        "SELECT name, docstatus FROM `tabRequest for Quotation` WHERE name=%s FOR UPDATE",
+        (rfq,), as_dict=True,
+    )
+    if not locked or locked[0].docstatus != 1:
+        frappe.throw(_("This Request for Quotation is not open for submission."))
+    for item in items:
+        if not frappe.db.exists("Request for Quotation Item", {
+            "parent": rfq, "name": item.get("name"), "item_code": item.get("item_code"),
+        }):
+            frappe.throw(_("Invalid Request for Quotation item."))
+    # A locking read sees the preceding request's committed draft even with
+    # MariaDB REPEATABLE READ. Drafts count as received; cancelled quotes do not.
+    existing = frappe.db.sql(
+        """SELECT sq.name FROM `tabSupplier Quotation` sq
+           INNER JOIN `tabSupplier Quotation Item` item ON item.parent=sq.name
+           WHERE sq.supplier=%s AND item.request_for_quotation=%s
+             AND sq.docstatus < 2
+           ORDER BY sq.creation ASC LIMIT 1 FOR UPDATE""",
+        (supplier, rfq), as_dict=True,
+    )
+    return existing[0].name if existing else None
+
+
 def _append_items(sq_doc, supplier: str, items: list[dict]) -> None:
     """Map RFQ portal rows to Supplier Quotation Item rows."""
     copied_fields = (
@@ -89,6 +122,10 @@ def create_supplier_quotation(doc):
 
     supplier = doc.get("supplier")
     _validate_portal_supplier(supplier)
+    existing = _lock_rfq_and_find_quotation(doc, supplier)
+    if existing:
+        frappe.msgprint(_("A quotation has already been received for this request. Opening the existing quotation."))
+        return existing
     _validate_dates(doc)
 
     sq_doc = frappe.get_doc(
