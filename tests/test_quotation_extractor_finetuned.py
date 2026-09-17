@@ -5,6 +5,8 @@ from decimal import Decimal
 from email.message import EmailMessage
 from unittest.mock import Mock
 
+import pytest
+
 from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
     DEFAULT_VISION_ADAPTER,
     DEFAULT_VISION_MODEL,
@@ -15,6 +17,8 @@ from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import 
     VisionInput,
     _ParsedQuotation,
     _normalize_finetuned_quotation,
+    _normalize_generated_quotation,
+    _normalize_currency,
     apply_document_fallbacks,
     classify_source,
     extract_document_fallbacks,
@@ -180,7 +184,7 @@ def test_finetuned_output_normalizes_adapter_schema_without_recalculation() -> N
     parsed = _ParsedQuotation.model_validate(normalized)
 
     assert parsed.supplier_name is None
-    assert parsed.currency == "KRW"
+    assert parsed.currency is None
     assert parsed.total_amount == Decimal("1500")
     assert parsed.items[0].expected_delivery_date.isoformat() == "2026-09-20"
 
@@ -208,6 +212,37 @@ def test_finetuned_output_infers_zero_tax_when_total_equals_subtotal() -> None:
 
     assert parsed.tax_amount == Decimal("0")
     assert parsed.subtotal == parsed.total_amount == Decimal("3900000")
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("원", "KRW"),
+    ("$", "USD"),
+    ("엔", "JPY"),
+    ("€", "EUR"),
+    ("RMB", "CNY"),
+    (None, None),
+    ("", None),
+])
+def test_currency_is_normalized_only_when_explicit(raw, expected) -> None:
+    assert _normalize_currency(raw) == expected
+
+
+def test_missing_currency_blocks_automatic_registration(tmp_path) -> None:
+    image_path = tmp_path / "quote.png"
+    image_path.write_bytes(b"test image bytes")
+
+    def injected_parser(*_args):
+        payload = _generated_payload_with_delivery(None)
+        payload["currency"] = None
+        return payload
+
+    with pytest.raises(ValueError, match="결제 통화"):
+        extract_quotation(
+            image_path,
+            "RFQ-001",
+            supplier_name="공급사",
+            model_parser=injected_parser,
+        )
 
 
 def test_expected_delivery_date_reaches_public_quotation_model(tmp_path) -> None:
@@ -284,6 +319,90 @@ def test_document_fallbacks_do_not_replace_model_values() -> None:
     assert payload["valid_until"] == "2026-10-01"
     assert payload["notes"] == "모델이 추출한 특이사항"
     assert payload["items"][0]["expected_delivery_date"] == "2026-10-02"
+
+
+def test_conflicting_validity_dates_are_not_silently_merged() -> None:
+    fallbacks = extract_document_fallbacks(
+        "유효기간: 2026-09-30\n유효기간: 2026-09-20"
+    )
+    payload = {"valid_until": None, "notes": None, "items": []}
+
+    apply_document_fallbacks(payload, fallbacks)
+
+    assert payload["valid_until"] is None
+    assert fallbacks["conflicts"]["valid_until"] == [
+        "2026-09-30",
+        "2026-09-20",
+    ]
+
+
+def _generated_payload_with_delivery(
+    delivery_date: str | None,
+    lead_time_days: int | None = None,
+) -> dict:
+    return {
+        "quotation_id": None,
+        "currency": "KRW",
+        "subtotal": 1000,
+        "tax_amount": 100,
+        "total_amount": 1100,
+        "items": [{
+            "item_code": "ITEM-1",
+            "item_name": "테스트 품목",
+            "quantity": 1,
+            "unit_price": 1000,
+            "amount": 1000,
+            "expected_delivery_date": delivery_date,
+            "lead_time_days": lead_time_days,
+        }],
+    }
+
+
+def test_delivery_word_alone_does_not_authorize_model_date() -> None:
+    normalized = _normalize_generated_quotation(
+        _generated_payload_with_delivery("2026-09-30"),
+        "배송 조건은 추후 협의합니다.",
+        None,
+    )
+
+    assert normalized["items"][0]["expected_delivery_date"] is None
+
+
+def test_model_delivery_value_must_match_explicit_document_evidence() -> None:
+    matched = _normalize_generated_quotation(
+        _generated_payload_with_delivery("2026-09-30", 14),
+        "납품 예정일: 2026-09-30\n리드 타임: 2주",
+        None,
+    )
+    mismatched = _normalize_generated_quotation(
+        _generated_payload_with_delivery("2026-10-01", 10),
+        "납품 예정일: 2026-09-30\n리드 타임: 2주",
+        None,
+    )
+
+    assert matched["items"][0]["expected_delivery_date"] == "2026-09-30"
+    assert matched["items"][0]["lead_time_days"] == 14
+    assert mismatched["items"][0]["expected_delivery_date"] is None
+    assert mismatched["items"][0]["lead_time_days"] is None
+
+
+def test_conflicting_delivery_dates_are_not_silently_merged() -> None:
+    fallbacks = extract_document_fallbacks(
+        "납품 예정일: 2026-09-30\n출고 예정일: 2026-09-20"
+    )
+    payload = {
+        "valid_until": None,
+        "notes": None,
+        "items": [{"expected_delivery_date": None}],
+    }
+
+    apply_document_fallbacks(payload, fallbacks)
+
+    assert payload["items"][0]["expected_delivery_date"] is None
+    assert fallbacks["conflicts"]["expected_delivery_date"] == [
+        "2026-09-30",
+        "2026-09-20",
+    ]
 
 
 def test_erp_attachment_bytes_are_extracted_without_local_path() -> None:

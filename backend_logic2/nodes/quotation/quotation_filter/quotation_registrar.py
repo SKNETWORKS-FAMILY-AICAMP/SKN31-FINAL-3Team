@@ -41,6 +41,10 @@ class SupplierQuotationRegistrationError(RuntimeError):
     """ERP 등록 전에 발견된 RFQ 매핑·중복 충돌 오류."""
 
 
+class QuotationArithmeticValidationError(SupplierQuotationRegistrationError):
+    """Extracted quotation amounts fail deterministic arithmetic checks."""
+
+
 def _notes_to_terms(notes: str | None) -> str | None:
     """Render extracted plain-text notes safely in ERPNext's rich-text field."""
 
@@ -87,6 +91,50 @@ def _normalized_text(value: Any) -> str:
 
 def _money(value: Any) -> Decimal:
     return Decimal(str(value or 0)).quantize(Decimal("0.01"))
+
+
+def validate_quotation_arithmetic(
+    quotation_data: Quotation | dict[str, Any],
+) -> Quotation:
+    """Validate extracted amounts without recalculating or replacing them."""
+
+    quotation = (
+        quotation_data
+        if isinstance(quotation_data, Quotation)
+        else Quotation.model_validate(quotation_data)
+    )
+    errors: list[str] = []
+    item_sum = Decimal("0")
+    for index, item in enumerate(quotation.items):
+        calculated = _money(item.quantity * item.unit_price)
+        stated = _money(item.amount)
+        if calculated != stated:
+            errors.append(
+                f"items[{index}]: quantity({item.quantity}) × "
+                f"unit_price({item.unit_price})={calculated}, amount={stated}"
+            )
+        item_sum += item.amount
+
+    stated_subtotal = _money(quotation.subtotal)
+    calculated_subtotal = _money(item_sum)
+    if calculated_subtotal != stated_subtotal:
+        errors.append(
+            f"subtotal: item sum={calculated_subtotal}, stated={stated_subtotal}"
+        )
+
+    calculated_total = _money(quotation.subtotal + quotation.tax_amount)
+    stated_total = _money(quotation.total_amount)
+    if calculated_total != stated_total:
+        errors.append(
+            f"total: subtotal+tax={calculated_total}, stated={stated_total}"
+        )
+
+    if errors:
+        raise QuotationArithmeticValidationError(
+            "견적 금액 산술 검증에 실패하여 자동 등록하지 않습니다: "
+            + "; ".join(errors)
+        )
+    return quotation
 
 
 def _resolve_supplier(rfq: dict[str, Any], quotation: Quotation) -> str:
@@ -236,6 +284,7 @@ def build_supplier_quotation_payload(
         if isinstance(quotation_data, Quotation)
         else Quotation.model_validate(quotation_data)
     )
+    validate_quotation_arithmetic(quotation)
     get_one = get_one or erp_get_one
     get_many = get_many or erp_get
 
@@ -304,7 +353,7 @@ def build_supplier_quotation_payload(
         get_many=get_many,
         get_one=get_one,
     )
-    currency = quotation.currency or company_doc.get("default_currency") or "KRW"
+    currency = quotation.currency
     company_currency = str(company_doc.get("default_currency") or "KRW").upper()
     payload: dict[str, Any] = {
         "supplier": supplier,

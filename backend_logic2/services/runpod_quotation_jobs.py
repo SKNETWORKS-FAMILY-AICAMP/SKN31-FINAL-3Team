@@ -16,10 +16,15 @@ from backend_logic2.integrations.quotation_extraction.runpod import (
 )
 from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
     PreparedSource, _extract_prepared_quotation, _normalize_finetuned_quotation,
+    _normalize_currency,
     apply_document_fallbacks, extract_document_fallbacks, prepare_source_bytes,
     prepare_rfq_specifications,
+    validate_document_delivery_evidence,
 )
 from backend_logic2.nodes.quotation.quotation_filter.quotation_models import SourceKind
+from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
+    QuotationArithmeticValidationError,
+)
 from backend_logic2.repositories import quotation_jobs as jobs
 
 
@@ -107,6 +112,17 @@ def _register(job):
     prepared = PreparedSource(kind=SourceKind(kind), text='', evidence=evidence)
     extraction = dict(job['result_json']['extraction'])
     apply_document_fallbacks(extraction, document_fallbacks)
+    extracted_document_text = job['result_json'].get('document_text')
+    if extracted_document_text is not None:
+        max_text_chars = int(os.getenv('RUNPOD_QUOTATION_MAX_TEXT_CHARS', '60000'))
+        if (not isinstance(extracted_document_text, str)
+                or len(extracted_document_text) > max_text_chars):
+            raise ValueError('RunPod document_text is invalid')
+        extracted_fallbacks = extract_document_fallbacks(extracted_document_text)
+        if extracted_fallbacks.get('conflicts'):
+            raise ValueError('RunPod document_text contains conflicting date or lead-time values')
+        validate_document_delivery_evidence(extraction, extracted_document_text)
+        apply_document_fallbacks(extraction, extracted_fallbacks)
     recovery_text = job['result_json'].get('recovery_text')
     if recovery_text is not None:
         max_text_chars = int(os.getenv('RUNPOD_QUOTATION_MAX_TEXT_CHARS', '60000'))
@@ -157,14 +173,31 @@ def process_job(job_id):
                 if status != 'COMPLETED':
                     return
                 output = response.get('output') or {}
+                output_extraction = output.get('extraction')
                 expected_pipeline = job['context'].get('pipeline_version')
+                output_document_text = output.get('document_text')
+                max_text_chars = int(
+                    os.getenv('RUNPOD_QUOTATION_MAX_TEXT_CHARS', '60000')
+                )
+                document_conflicts = (
+                    extract_document_fallbacks(output_document_text).get('conflicts')
+                    if (isinstance(output_document_text, str)
+                        and len(output_document_text) <= max_text_chars) else None
+                )
                 if (output.get('status') != 'success'
                         or output.get('request_id') != job['request_id']
                         or output.get('prompt_sha256') != job['prompt_sha256']
                         or output.get('prompt_version') != job['prompt_version']
                         or (expected_pipeline
                             and output.get('worker_version') != expected_pipeline)
-                        or not isinstance(output.get('extraction'), dict)):
+                        or (expected_pipeline == 'document-text-v1'
+                            and (not isinstance(output_document_text, str)
+                                 or not output_document_text.strip()
+                                 or len(output_document_text) > max_text_chars))
+                        or bool(document_conflicts)
+                        or not isinstance(output_extraction, dict)
+                        or (isinstance(output_extraction, dict)
+                            and not _normalize_currency(output_extraction.get('currency')))):
                     jobs.fail_job(job_id, 'RunPod result identity/schema mismatch', terminal=True)
                     return
                 # Save before ERP I/O: recovery no longer depends on RunPod retention.
@@ -176,6 +209,13 @@ def process_job(job_id):
                 job = jobs.get_job(job_id)
             _refresh(job)
             jobs.complete_job(job_id)
+        except QuotationArithmeticValidationError as exc:
+            jobs.fail_job(
+                job_id,
+                f'Arithmetic validation failed: {exc}',
+                terminal=True,
+            )
+            LOGGER.warning('RunPod quotation job %s rejected by arithmetic validation', job_id)
         except Exception as exc:
             jobs.fail_job(job_id, f'Completion failed: {type(exc).__name__}')
             LOGGER.warning('RunPod quotation job %s deferred (%s)', job_id, type(exc).__name__)

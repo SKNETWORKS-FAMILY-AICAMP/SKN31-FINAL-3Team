@@ -64,8 +64,8 @@ class RunPodQuotationConfig:
     max_documents: int = 8
     max_new_tokens: int = 512
     status_max_attempts: int = 3
-    prompt_version: str = "qwen35-quotation-json-v3"
-    pipeline_version: str = "visual-recovery-v1"
+    prompt_version: str = "qwen35-quotation-text-json-v1"
+    pipeline_version: str = "document-text-v1"
 
     @classmethod
     def from_env(cls) -> "RunPodQuotationConfig":
@@ -111,16 +111,16 @@ class RunPodQuotationConfig:
             prompt_version=(
                 os.getenv(
                     "RUNPOD_QUOTATION_PROMPT_VERSION",
-                    "qwen35-quotation-json-v3",
+                    "qwen35-quotation-text-json-v1",
                 ).strip()
-                or "qwen35-quotation-json-v3"
+                or "qwen35-quotation-text-json-v1"
             ),
             pipeline_version=(
                 os.getenv(
                     "RUNPOD_QUOTATION_PIPELINE_VERSION",
-                    "visual-recovery-v1",
+                    "document-text-v1",
                 ).strip()
-                or "visual-recovery-v1"
+                or "document-text-v1"
             ),
         )
 
@@ -207,8 +207,8 @@ class RunPodQuotationParser:
         # the supplied prompt/hash, which allows prompt revisions without a
         # worker image rebuild.
         from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
-            FINETUNED_SYSTEM_PROMPT,
-            FINETUNED_USER_PROMPT,
+            TEXT_STRUCTURE_SYSTEM_PROMPT,
+            TEXT_STRUCTURE_USER_PROMPT,
         )
 
         additions: list[str] = []
@@ -227,10 +227,10 @@ class RunPodQuotationParser:
                 + "\n".join(f"- {value}" for value in reflection_errors)
                 + "\n위 오류를 입력 문서와 다시 대조해 교정하세요."
             )
-        user_prompt = FINETUNED_USER_PROMPT
+        user_prompt = TEXT_STRUCTURE_USER_PROMPT
         if additions:
             user_prompt += "\n\n" + "\n\n".join(additions)
-        return FINETUNED_SYSTEM_PROMPT, user_prompt
+        return TEXT_STRUCTURE_SYSTEM_PROMPT, user_prompt
 
     @staticmethod
     def _request_id(
@@ -340,6 +340,39 @@ class RunPodQuotationParser:
                 "RunPod 완료 응답에 견적 extraction이 없습니다."
             )
         extraction = dict(extraction)
+        from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
+            _normalize_currency,
+        )
+
+        currency = _normalize_currency(extraction.get("currency"))
+        if not currency:
+            raise RunPodQuotationParserError(
+                "견적서에서 결제 통화를 확인할 수 없어 자동 등록하지 않습니다."
+            )
+        extraction["currency"] = currency
+        document_text = output.get("document_text")
+        if self.config.pipeline_version == "document-text-v1":
+            if (
+                not isinstance(document_text, str)
+                or not document_text.strip()
+                or len(document_text) > self.config.max_text_chars
+            ):
+                raise RunPodQuotationParserError(
+                    "RunPod 완료 응답의 document_text가 올바르지 않습니다."
+                )
+            from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
+                apply_document_fallbacks,
+                extract_document_fallbacks,
+                validate_document_delivery_evidence,
+            )
+
+            fallbacks = extract_document_fallbacks(document_text)
+            if fallbacks.get("conflicts"):
+                raise RunPodQuotationParserError(
+                    "OCR 원문에 서로 다른 날짜 또는 납기 값이 있어 자동 등록하지 않습니다."
+                )
+            validate_document_delivery_evidence(extraction, document_text)
+            apply_document_fallbacks(extraction, fallbacks)
         recovery_text = output.get("recovery_text")
         if recovery_text is not None:
             if (
@@ -402,7 +435,8 @@ class RunPodQuotationParser:
         supplier_name: str | None,
         reflection_errors: list[str],
     ) -> dict[str, Any]:
-        documents = self._documents(prepared)
+        requires_ocr = bool(getattr(prepared, "vision_inputs", []) or [])
+        documents = self._documents(prepared) if requires_ocr else []
         document_text = self._document_text(prepared)
         if not documents and not document_text:
             raise RunPodQuotationParserError(
@@ -428,9 +462,10 @@ class RunPodQuotationParser:
             "pipeline_version": self.config.pipeline_version,
             "documents": documents,
             "document_text": document_text,
+            "requires_ocr": requires_ocr,
             "input_mode": (
-                "hybrid" if documents and document_text
-                else "vision" if documents
+                "ocr_text" if documents and document_text
+                else "ocr" if documents
                 else "text"
             ),
             "max_new_tokens": self.config.max_new_tokens,

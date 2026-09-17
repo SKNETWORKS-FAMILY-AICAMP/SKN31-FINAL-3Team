@@ -76,7 +76,7 @@ class Quotation(StrictModel):
     # valid_until is the quotation validity deadline.
     quotation_date: date | None = None
     valid_until: date | None = None
-    currency: str = "KRW"
+    currency: str
     subtotal: Decimal = Field(ge=0)
     tax_amount: Decimal = Field(ge=0)
     total_amount: Decimal = Field(ge=0)

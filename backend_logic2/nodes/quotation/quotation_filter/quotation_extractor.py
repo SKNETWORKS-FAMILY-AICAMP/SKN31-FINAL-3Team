@@ -55,21 +55,17 @@ PDF_SUFFIXES = {".pdf"}
 EMAIL_SUFFIXES = {".eml"}
 TEXT_SUFFIXES = {".txt", ".md"}
 
-DELIVERY_FIELD_PATTERN = re.compile(
-    r"(?:"
-    r"delivery(?:\s+date)?(?!\s+(?:fee|charge|cost))|deliver(?:y|ed)?\s+by|"
-    r"lead[\s_-]*time|ETA|"
-    r"ship(?:ping|ment)?(?:\s+date)?|dispatch(?:\s+date)?|arrival(?:\s+date)?|"
-    r"납기(?:일|일자|예정일|기한)?|"
-    r"납품(?:일|일자|예정일|기한)?|"
-    r"배송(?:일|일자|예정일)?(?!비|료)|"
-    r"인도(?:일|일자|예정일|기한)?|"
-    r"출고(?:일|일자|예정일)?|"
-    r"도착(?:일|일자|예정일)?|"
-    r"발송(?:일|일자|예정일)?|"
-    r"리드\s*타임|소요\s*기간|제작\s*기간|공급\s*기간"
-    r")",
-    re.IGNORECASE,
+VALID_UNTIL_LABELS = (
+    "유효기간", "견적유효기간", "validuntil", "validity",
+)
+DELIVERY_DATE_LABELS = (
+    "예상납품일", "납품예정일", "납기일", "납기일자", "납기예정일",
+    "출고예정일", "배송예정일", "인도예정일", "도착예정일", "발송예정일",
+    "deliverydate", "deliverby", "shippingdate", "shipmentdate",
+    "dispatchdate", "arrivaldate", "eta",
+)
+LEAD_TIME_LABELS = (
+    "리드타임", "소요기간", "제작기간", "공급기간", "leadtime",
 )
 
 DEFAULT_TEXT_MODEL = "Qwen/Qwen3.5-9B"
@@ -130,6 +126,20 @@ FINETUNED_USER_PROMPT = """이 견적서의 정보를 아래 규칙과 JSON 스�
 
 유효한 JSON 객체 하나만 출력하세요."""
 
+TEXT_STRUCTURE_SYSTEM_PROMPT = (
+    "견적서에서 추출된 원문 텍스트를 해석해 지정된 JSON만 출력한다. "
+    "원문에 없는 값은 null로 출력하고 OCR 충돌값을 임의로 합치지 않는다."
+)
+TEXT_STRUCTURE_USER_PROMPT = FINETUNED_USER_PROMPT.replace(
+    "이 견적서의 정보를",
+    "아래 [견적 원문]의 정보를",
+    1,
+).replace(
+    "13. 전체 페이지 이미지 뒤에 상단 또는 하단 확대 이미지가 추가로 제공될 수 있습니다. 확대 이미지는 같은 문서의 세부 영역이므로 품목을 중복 생성하지 말고, 전체 이미지에서 작게 보여 누락되기 쉬운 유효기간·납기일·특약사항을 보완하는 데 사용합니다.",
+    "13. 원문에는 전체 이미지와 확대 영역에서 전사한 문장이 중복될 수 있습니다. 완전히 같은 근거만 중복으로 판단하고, 날짜·금액·수량·품목코드가 다르면 어느 한쪽을 임의로 선택하거나 합치지 않습니다.\n"
+    "14. supplier_name은 참고용 문서 값입니다. 실제 ERPNext 등록 공급사는 RFQ 회신 문맥에서 백엔드가 확정하며 이 출력으로 변경되지 않습니다.",
+)
+
 
 def _project_model_setting(name: str) -> str | None:
     """Read only quotation model settings from the repository .env file.
@@ -171,7 +181,7 @@ class _ParsedQuotation(BaseModel):
     business_registration_no: str | None = None
     quotation_date: date | None = None
     valid_until: date | None = None
-    currency: str = "KRW"
+    currency: str | None = None
     subtotal: Decimal = Field(ge=0)
     tax_amount: Decimal = Field(ge=0)
     total_amount: Decimal = Field(ge=0)
@@ -366,7 +376,8 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
             pdf_text, pdf_images, pdf_evidence = _pdf_to_source(payload, attachment_name)
             body_parts.append(f"[attachment: {attachment_name}]\n{pdf_text}")
             vision_inputs.extend(pdf_images)
-            document_inputs.append(VisionInput(data=payload, filename=attachment_name))
+            if pdf_images:
+                document_inputs.append(VisionInput(data=payload, filename=attachment_name))
             evidence.extend(pdf_evidence)
         elif suffix in IMAGE_SUFFIXES:
             image_input = VisionInput(data=payload, filename=attachment_name)
@@ -537,6 +548,29 @@ def _normalize_decimal(value: Any) -> Any:
     return -number if negative else number
 
 
+def _normalize_currency(value: Any) -> str | None:
+    """Normalize an explicitly extracted currency without inventing a default."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    upper = text.upper()
+    aliases = {
+        "원": "KRW", "₩": "KRW", "WON": "KRW", "KOREAN WON": "KRW",
+        "달러": "USD", "$": "USD", "US$": "USD", "DOLLAR": "USD",
+        "DOLLARS": "USD", "US DOLLAR": "USD", "US DOLLARS": "USD",
+        "엔": "JPY", "円": "JPY", "YEN": "JPY", "JAPANESE YEN": "JPY",
+        "유로": "EUR", "€": "EUR", "EURO": "EUR", "EUROS": "EUR",
+        "위안": "CNY", "元": "CNY", "RMB": "CNY", "YUAN": "CNY",
+        "파운드": "GBP", "£": "GBP", "POUND": "GBP", "POUNDS": "GBP",
+    }
+    if upper in aliases:
+        return aliases[upper]
+    return upper if re.fullmatch(r"[A-Z]{3}", upper) else None
+
+
 def _normalize_date(value: Any) -> Any:
     """Normalize common model date output to Pydantic's ISO date format."""
     if value is None or isinstance(value, date):
@@ -559,6 +593,63 @@ def _normalize_date(value: Any) -> Any:
     return value
 
 
+def _labelled_date_values(
+    document_text: str,
+    labels: tuple[str, ...],
+) -> list[str]:
+    """Return distinct, valid dates that are explicitly attached to a label."""
+
+    compact = re.sub(r"\s+", "", str(document_text or "")).casefold()
+    if not compact:
+        return []
+    joined = "|".join(
+        re.escape(label.casefold())
+        for label in sorted(labels, key=len, reverse=True)
+    )
+    date_pattern = r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})"
+    values: list[str] = []
+    for match in re.finditer(rf"(?:{joined})[:：]?{date_pattern}", compact):
+        year, month, day = map(int, match.groups()[-3:])
+        try:
+            normalized = date(year, month, day).isoformat()
+        except ValueError:
+            continue
+        if normalized not in values:
+            values.append(normalized)
+    return values
+
+
+def _labelled_lead_time_days(document_text: str) -> list[int]:
+    """Return explicit day/week lead times without inferring from bare words."""
+
+    compact = re.sub(r"\s+", "", str(document_text or "")).casefold()
+    if not compact:
+        return []
+    joined = "|".join(
+        re.escape(label.casefold())
+        for label in sorted(LEAD_TIME_LABELS, key=len, reverse=True)
+    )
+    values: list[int] = []
+    pattern = rf"(?:{joined})[:：]?(\d{{1,4}})(일|days?|주|weeks?)"
+    for match in re.finditer(pattern, compact, flags=re.IGNORECASE):
+        amount = int(match.group(1))
+        unit = match.group(2).casefold()
+        days = amount * 7 if unit in {"주", "week", "weeks"} else amount
+        if days not in values:
+            values.append(days)
+    return values
+
+
+def _normalize_lead_time_days(value: Any) -> int | None:
+    try:
+        number = Decimal(str(value))
+    except Exception:
+        return None
+    if number < 0 or number != number.to_integral_value():
+        return None
+    return int(number)
+
+
 def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
     """Read explicit terms/dates that a model may omit from document text.
 
@@ -573,23 +664,12 @@ def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
     if not compact:
         return {}
 
-    date_pattern = r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})"
-
-    def labelled_date(labels: tuple[str, ...]) -> str | None:
-        joined = "|".join(re.escape(label) for label in labels)
-        match = re.search(rf"(?:{joined})[:：]?{date_pattern}", compact)
-        if not match:
-            return None
-        year, month, day = map(int, match.groups()[-3:])
-        try:
-            return date(year, month, day).isoformat()
-        except ValueError:
-            return None
-
-    valid_until = labelled_date(("유효기간", "견적유효기간", "validuntil", "validity"))
-    expected_delivery_date = labelled_date((
-        "예상납품일", "납품예정일", "납기일", "출고예정일", "deliverydate",
-    ))
+    valid_until_values = _labelled_date_values(source_text, VALID_UNTIL_LABELS)
+    delivery_values = _labelled_date_values(source_text, DELIVERY_DATE_LABELS)
+    lead_time_values = _labelled_lead_time_days(source_text)
+    valid_until = valid_until_values[0] if len(valid_until_values) == 1 else None
+    expected_delivery_date = delivery_values[0] if len(delivery_values) == 1 else None
+    lead_time_days = lead_time_values[0] if len(lead_time_values) == 1 else None
 
     note_labels = (
         ("예상납품일", "예상 납품일"),
@@ -626,8 +706,19 @@ def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
         result["valid_until"] = valid_until
     if expected_delivery_date:
         result["expected_delivery_date"] = expected_delivery_date
+    if lead_time_days is not None:
+        result["lead_time_days"] = lead_time_days
     if notes:
         result["notes"] = "\n".join(notes)
+    conflicts: dict[str, list[Any]] = {}
+    if len(valid_until_values) > 1:
+        conflicts["valid_until"] = valid_until_values
+    if len(delivery_values) > 1:
+        conflicts["expected_delivery_date"] = delivery_values
+    if len(lead_time_values) > 1:
+        conflicts["lead_time_days"] = lead_time_values
+    if conflicts:
+        result["conflicts"] = conflicts
     return result
 
 
@@ -643,10 +734,38 @@ def apply_document_fallbacks(
     if not str(payload.get("notes") or "").strip() and fallbacks.get("notes"):
         payload["notes"] = fallbacks["notes"]
     delivery = fallbacks.get("expected_delivery_date")
+    lead_time_days = fallbacks.get("lead_time_days")
     if delivery:
         for item in payload.get("items") or []:
             if isinstance(item, dict) and not item.get("expected_delivery_date"):
                 item["expected_delivery_date"] = delivery
+    if lead_time_days is not None:
+        for item in payload.get("items") or []:
+            if isinstance(item, dict) and item.get("lead_time_days") is None:
+                item["lead_time_days"] = lead_time_days
+    return payload
+
+
+def validate_document_delivery_evidence(
+    payload: dict[str, Any],
+    document_text: str,
+) -> dict[str, Any]:
+    """Discard model delivery values that lack matching labelled source text."""
+
+    fallbacks = extract_document_fallbacks(document_text)
+    evidenced_delivery_date = fallbacks.get("expected_delivery_date")
+    evidenced_lead_time_days = fallbacks.get("lead_time_days")
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        model_delivery_date = _normalize_date(
+            item.get("expected_delivery_date", item.get("delivery_date"))
+        )
+        if model_delivery_date != evidenced_delivery_date:
+            item["expected_delivery_date"] = None
+        model_lead_time_days = _normalize_lead_time_days(item.get("lead_time_days"))
+        if model_lead_time_days != evidenced_lead_time_days:
+            item["lead_time_days"] = None
     return payload
 
 
@@ -661,10 +780,19 @@ def _normalize_generated_quotation(
     raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
     erpnext_prices = _erpnext_pdf_item_prices(document_text, len(raw_items))
     erpnext_totals = _erpnext_document_totals(document_text)
-    # 모델이 만든 날짜를 그대로 신뢰하지는 않되, 공급사별 다양한 배송 라벨을
-    # 원문 근거로 인정한다. 이미지용 파인튜닝 경로는 이 함수가 아닌 별도
-    # normalization을 사용하므로 해당 경로의 모델 출력은 여기서 지워지지 않는다.
-    has_delivery_field = bool(DELIVERY_FIELD_PATTERN.search(document_text))
+    # A delivery-related word alone is not evidence for a model-generated value.
+    # Accept it only when one unambiguous labelled value exists in the source.
+    delivery_date_values = _labelled_date_values(
+        document_text,
+        DELIVERY_DATE_LABELS,
+    )
+    evidenced_delivery_date = (
+        delivery_date_values[0] if len(delivery_date_values) == 1 else None
+    )
+    lead_time_values = _labelled_lead_time_days(document_text)
+    evidenced_lead_time_days = (
+        lead_time_values[0] if len(lead_time_values) == 1 else None
+    )
     items: list[dict[str, Any]] = []
     for index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict):
@@ -705,6 +833,22 @@ def _normalize_generated_quotation(
             or re.fullmatch(r"(?i)(?:KRW|USD|EUR|JPY|CNY)?\s*[\d,.]+", raw_description_text)
         ):
             raw_description = description
+        model_delivery_date = _normalize_date(
+            raw_item.get("expected_delivery_date", raw_item.get("delivery_date"))
+        )
+        expected_delivery_date = (
+            model_delivery_date
+            if model_delivery_date == evidenced_delivery_date
+            else None
+        )
+        normalized_lead_time_days = _normalize_lead_time_days(
+            raw_item.get("lead_time_days")
+        )
+        lead_time_days = (
+            normalized_lead_time_days
+            if normalized_lead_time_days == evidenced_lead_time_days
+            else None
+        )
         items.append({
             "item_code": item_code,
             "item_name": item_name,
@@ -713,14 +857,8 @@ def _normalize_generated_quotation(
             "unit": unit,
             "unit_price": unit_price,
             "amount": amount,
-            "expected_delivery_date": (
-                _normalize_date(
-                    raw_item.get("expected_delivery_date", raw_item.get("delivery_date"))
-                )
-                if has_delivery_field
-                else None
-            ),
-            "lead_time_days": raw_item.get("lead_time_days") if has_delivery_field else None,
+            "expected_delivery_date": expected_delivery_date,
+            "lead_time_days": lead_time_days,
             "specifications": specifications,
             "raw_description": raw_description,
         })
@@ -768,7 +906,7 @@ def _normalize_generated_quotation(
         "business_registration_no": payload.get("business_registration_no"),
         "quotation_date": _normalize_date(payload.get("quotation_date", payload.get("date"))),
         "valid_until": _normalize_date(payload.get("valid_until")),
-        "currency": payload.get("currency") or "KRW",
+        "currency": _normalize_currency(payload.get("currency")),
         "subtotal": subtotal,
         "tax_amount": tax_amount,
         "total_amount": total_amount,
@@ -816,7 +954,7 @@ def _normalize_finetuned_quotation(payload: dict[str, Any]) -> dict[str, Any]:
         "business_registration_no": payload.get("business_registration_no"),
         "quotation_date": _normalize_date(payload.get("quotation_date")),
         "valid_until": _normalize_date(payload.get("valid_until")),
-        "currency": payload.get("currency") or "KRW",
+        "currency": _normalize_currency(payload.get("currency")),
         "subtotal": subtotal,
         "tax_amount": tax_amount,
         "total_amount": total_amount,
@@ -1227,6 +1365,10 @@ def _extract_prepared_quotation(
     parsed = parsed_value if isinstance(parsed_value, _ParsedQuotation) else _ParsedQuotation.model_validate(parsed_value)
     payload = parsed.model_dump()
     apply_document_fallbacks(payload, extract_document_fallbacks(prepared.text))
+    if not payload.get("currency"):
+        raise ValueError(
+            "견적서에서 결제 통화를 확인할 수 없어 자동 등록하지 않습니다."
+        )
     parsed_quotation_id = str(parsed.quotation_id or "").strip()
     if parsed_quotation_id.casefold() == rfq_name.casefold():
         parsed_quotation_id = ""

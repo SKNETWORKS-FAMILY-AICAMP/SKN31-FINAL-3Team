@@ -13,6 +13,9 @@ from backend_logic2.api import runpod_routes
 from backend_logic2.services import runpod_quotation_jobs as service
 from test_runpod_quotation_adapter import _config, _extraction, _prepared, _Session
 from backend_logic2.integrations.quotation_extraction.runpod import RunPodQuotationParser
+from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
+    QuotationArithmeticValidationError,
+)
 
 
 class MemoryJobs:
@@ -25,7 +28,7 @@ class MemoryJobs:
                         'source_filename': 'quotation.png', 'source_kind': 'image',
                         'fallback_quotation_id': 'EMAIL-1', 'message_id': 'COMM-1',
                         'content_type': 'image/png', 'evidence': [],
-                        'pipeline_version': 'visual-recovery-v1'},
+                        'pipeline_version': 'document-text-v1'},
             'next_check_at': datetime.now(timezone.utc) - timedelta(seconds=1),
         }
         self.errors = []
@@ -64,7 +67,8 @@ def setup(monkeypatch):
     repository = MemoryJobs()
     monkeypatch.setattr(service, 'jobs', repository)
     output = {'status': 'success', 'request_id': 'request-1', 'prompt_sha256': 'hash-1',
-              'prompt_version': 'version-1', 'worker_version': 'visual-recovery-v1',
+              'prompt_version': 'version-1', 'worker_version': 'document-text-v1',
+              'document_text': '품목명: 안전모',
               'extraction': _extraction()}
     parser = Mock()
     parser.job_status.return_value = {'id': 'remote-job', 'status': 'COMPLETED', 'output': output}
@@ -116,6 +120,17 @@ def test_failed_remote_job_is_terminal(setup):
     service.process_job('local-job')
     assert repo.row['status'] == 'FAILED'
     register.assert_not_called()
+
+
+def test_arithmetic_validation_failure_is_terminal(setup):
+    repo, _parser, register, refresh, _factory = setup
+    register.side_effect = QuotationArithmeticValidationError("subtotal mismatch")
+
+    service.process_job("local-job")
+
+    assert repo.row["status"] == "FAILED"
+    assert any("Arithmetic validation failed" in error for error in repo.errors)
+    refresh.assert_not_called()
 
 
 def test_restart_after_result_saved_does_not_call_model_again(setup):
@@ -186,6 +201,28 @@ def test_saved_result_applies_visual_recovery_text(monkeypatch):
     repo.row['result_json'] = {
         'extraction': _extraction(),
         'recovery_text': (
+            '유효기간: 2026-09-30\n'
+            '예상 납품일: 2026-09-30\n'
+            '특약사항: 지정 장소 도착도'
+        ),
+    }
+    register = Mock(return_value={'name': 'SQ-1'})
+    monkeypatch.setattr(quotation_service, 'register_supplier_quotation', register)
+
+    service._register(repo.row)
+
+    quotation = register.call_args.args[0]
+    assert quotation.valid_until.isoformat() == '2026-09-30'
+    assert quotation.items[0].expected_delivery_date.isoformat() == '2026-09-30'
+    assert '특약사항: 지정 장소 도착도' in quotation.notes
+
+
+def test_saved_result_applies_document_text_fallbacks(monkeypatch):
+    from backend_logic2.services import quotation_service
+    repo = MemoryJobs()
+    repo.row['result_json'] = {
+        'extraction': _extraction(),
+        'document_text': (
             '유효기간: 2026-09-30\n'
             '예상 납품일: 2026-09-30\n'
             '특약사항: 지정 장소 도착도'

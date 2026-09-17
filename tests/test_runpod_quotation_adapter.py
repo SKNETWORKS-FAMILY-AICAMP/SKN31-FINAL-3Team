@@ -16,6 +16,7 @@ from backend_logic2.integrations.quotation_extraction.runpod import (
 )
 from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
     PreparedSource,
+    TEXT_STRUCTURE_USER_PROMPT,
     VisionInput,
     extract_quotation_bytes,
 )
@@ -112,7 +113,8 @@ def test_submit_then_poll_returns_extraction(monkeypatch) -> None:
                 "status": "COMPLETED",
                 "output": {
                     "status": "success",
-                    "worker_version": "visual-recovery-v1",
+                    "worker_version": "document-text-v1",
+                    "document_text": "품목명: 안전모",
                     "extraction": _extraction(),
                 },
             },
@@ -131,19 +133,20 @@ def test_submit_then_poll_returns_extraction(monkeypatch) -> None:
     worker_input = request["json"]["input"]
     assert base64.b64decode(worker_input["documents"][0]["base64"]) == b"image-bytes"
     assert worker_input["documents"][0]["filename"] == "quotation.png"
-    assert worker_input["pipeline_version"] == "visual-recovery-v1"
+    assert worker_input["pipeline_version"] == "document-text-v1"
+    assert worker_input["requires_ocr"] is True
     assert len(worker_input["prompt_sha256"]) == 64
     assert "secret-test-key" not in str(request["json"])
 
 
-def test_completed_output_fills_missing_fields_from_visual_recovery_text() -> None:
+def test_completed_output_fills_missing_fields_from_document_text() -> None:
     session = _Session({
         "status": "COMPLETED",
         "output": {
             "status": "success",
-            "worker_version": "visual-recovery-v1",
+            "worker_version": "document-text-v1",
             "extraction": _extraction(),
-            "recovery_text": (
+            "document_text": (
                 "유효기간: 2026-09-30\n"
                 "예상 납품일: 2026-09-30\n"
                 "특약사항: 지정 장소 도착도"
@@ -159,6 +162,27 @@ def test_completed_output_fills_missing_fields_from_visual_recovery_text() -> No
     assert "특약사항: 지정 장소 도착도" in result["notes"]
 
 
+def test_completed_output_replaces_unsupported_model_delivery_values() -> None:
+    extraction = _extraction()
+    extraction["items"][0]["expected_delivery_date"] = "2026-10-10"
+    extraction["items"][0]["lead_time_days"] = 99
+    session = _Session({
+        "status": "COMPLETED",
+        "output": {
+            "status": "success",
+            "worker_version": "document-text-v1",
+            "extraction": extraction,
+            "document_text": "납품 예정일: 2026-09-30\n리드 타임: 2주",
+        },
+    })
+    parser = RunPodQuotationParser(_config(), session=session)
+
+    result = parser(_prepared(), "RFQ-1", "Supplier", [])
+
+    assert result["items"][0]["expected_delivery_date"] == "2026-09-30"
+    assert result["items"][0]["lead_time_days"] == 14
+
+
 def test_failed_job_error_does_not_expose_api_key() -> None:
     parser = RunPodQuotationParser(
         _config(),
@@ -170,6 +194,26 @@ def test_failed_job_error_does_not_expose_api_key() -> None:
 
     assert "FAILED" in str(captured.value)
     assert "secret-test-key" not in str(captured.value)
+
+
+def test_completed_output_without_currency_is_rejected() -> None:
+    extraction = _extraction()
+    extraction["currency"] = None
+    parser = RunPodQuotationParser(
+        _config(),
+        session=_Session({
+            "status": "COMPLETED",
+            "output": {
+                "status": "success",
+                "worker_version": "document-text-v1",
+                "document_text": "공급가액: 1,000",
+                "extraction": extraction,
+            },
+        }),
+    )
+
+    with pytest.raises(RunPodQuotationParserError, match="결제 통화"):
+        parser(_prepared(), "RFQ-1", "Supplier", [])
 
 
 def test_completed_output_rejects_old_worker_version() -> None:
@@ -185,12 +229,33 @@ def test_completed_output_rejects_old_worker_version() -> None:
         parser(_prepared(), "RFQ-1", "Supplier", [])
 
 
+def test_completed_output_rejects_conflicting_ocr_validity_dates() -> None:
+    parser = RunPodQuotationParser(
+        _config(),
+        session=_Session({
+            "status": "COMPLETED",
+            "output": {
+                "status": "success",
+                "worker_version": "document-text-v1",
+                "document_text": (
+                    "유효기간: 2026-09-30\n유효기간: 2026-09-20"
+                ),
+                "extraction": _extraction(),
+            },
+        }),
+    )
+
+    with pytest.raises(RunPodQuotationParserError, match="자동 등록하지 않습니다"):
+        parser(_prepared(), "RFQ-1", "Supplier", [])
+
+
 def test_runpod_sends_python_extracted_text_without_document_bytes() -> None:
     session = _Session({
         "status": "COMPLETED",
         "output": {
             "status": "success",
-            "worker_version": "visual-recovery-v1",
+            "worker_version": "document-text-v1",
+            "document_text": "품목명 | 수량 | 단가\n안전모 | 1 | 1,000",
             "extraction": _extraction(),
         },
     })
@@ -209,7 +274,7 @@ def test_runpod_sends_python_extracted_text_without_document_bytes() -> None:
     assert "안전모 | 1 | 1,000" in worker_input["document_text"]
 
 
-def test_runpod_builds_hybrid_input_for_text_pdf() -> None:
+def test_runpod_text_pdf_uses_library_text_without_ocr_document() -> None:
     document = VisionInput(data=b"%PDF-test", filename="quotation.pdf")
     prepared = PreparedSource(
         kind=SourceKind.PDF,
@@ -221,9 +286,20 @@ def test_runpod_builds_hybrid_input_for_text_pdf() -> None:
         prepared, "RFQ-1", "Supplier", [],
     )
 
-    assert worker_input["input_mode"] == "hybrid"
+    assert worker_input["input_mode"] == "text"
+    assert worker_input["requires_ocr"] is False
     assert worker_input["document_text"].startswith("[page 1]")
-    assert base64.b64decode(worker_input["documents"][0]["base64"]) == b"%PDF-test"
+    assert worker_input["documents"] == []
+
+
+def test_runpod_uses_text_structure_prompt_not_image_prompt() -> None:
+    worker_input = RunPodQuotationParser(_config()).build_worker_input(
+        _prepared(), "RFQ-1", "Supplier", [],
+    )
+
+    assert worker_input["user_prompt"] == TEXT_STRUCTURE_USER_PROMPT
+    assert "[견적 원문]" in worker_input["user_prompt"]
+    assert "확대 이미지가 추가" not in worker_input["user_prompt"]
 
 
 def test_pipeline_version_changes_request_identity() -> None:
@@ -266,11 +342,12 @@ def test_env_uses_current_prompt_version_by_default(monkeypatch) -> None:
     monkeypatch.setenv("RUNPOD_QUOTATION_ENDPOINT_ID", "endpoint-123")
     monkeypatch.setenv("RUNPOD_API_KEY", "secret-test-key")
     monkeypatch.delenv("RUNPOD_QUOTATION_PROMPT_VERSION", raising=False)
+    monkeypatch.delenv("RUNPOD_QUOTATION_PIPELINE_VERSION", raising=False)
 
     config = RunPodQuotationConfig.from_env()
 
-    assert config.prompt_version == "qwen35-quotation-json-v3"
-    assert config.pipeline_version == "visual-recovery-v1"
+    assert config.prompt_version == "qwen35-quotation-text-json-v1"
+    assert config.pipeline_version == "document-text-v1"
 
 
 def test_common_extractor_uses_configured_adapter_and_trusts_app_metadata(
