@@ -64,7 +64,7 @@ class RunPodQuotationConfig:
     max_documents: int = 8
     max_new_tokens: int = 512
     status_max_attempts: int = 3
-    prompt_version: str = "qwen35-quotation-json-v2"
+    prompt_version: str = "qwen35-quotation-json-v3"
 
     @classmethod
     def from_env(cls) -> "RunPodQuotationConfig":
@@ -110,9 +110,9 @@ class RunPodQuotationConfig:
             prompt_version=(
                 os.getenv(
                     "RUNPOD_QUOTATION_PROMPT_VERSION",
-                    "qwen35-quotation-json-v2",
+                    "qwen35-quotation-json-v3",
                 ).strip()
-                or "qwen35-quotation-json-v2"
+                or "qwen35-quotation-json-v3"
             ),
         )
 

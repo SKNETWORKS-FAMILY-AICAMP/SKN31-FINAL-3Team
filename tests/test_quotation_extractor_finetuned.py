@@ -64,6 +64,9 @@ def test_finetuned_defaults_match_uploaded_adapter(monkeypatch) -> None:
     assert parser.vision_max_pixels == 802816
     assert parser.vision_max_new_tokens == 512
     assert "expected_delivery_date" in FINETUNED_USER_PROMPT
+    assert "문서 하단" in FINETUNED_USER_PROMPT
+    assert "유효기간" in FINETUNED_USER_PROMPT
+    assert "확대 이미지" in FINETUNED_USER_PROMPT
 
 
 def test_image_source_uses_direct_finetuned_extraction() -> None:

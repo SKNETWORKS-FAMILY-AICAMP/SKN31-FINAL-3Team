@@ -207,6 +207,16 @@ def test_env_requires_key_without_printing_it(monkeypatch) -> None:
         RunPodQuotationConfig.from_env()
 
 
+def test_env_uses_current_prompt_version_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("RUNPOD_QUOTATION_ENDPOINT_ID", "endpoint-123")
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret-test-key")
+    monkeypatch.delenv("RUNPOD_QUOTATION_PROMPT_VERSION", raising=False)
+
+    config = RunPodQuotationConfig.from_env()
+
+    assert config.prompt_version == "qwen35-quotation-json-v3"
+
+
 def test_common_extractor_uses_configured_adapter_and_trusts_app_metadata(
     monkeypatch,
 ) -> None:
