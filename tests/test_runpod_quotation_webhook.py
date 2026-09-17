@@ -15,6 +15,7 @@ from test_runpod_quotation_adapter import _config, _extraction, _prepared, _Sess
 from backend_logic2.integrations.quotation_extraction.runpod import RunPodQuotationParser
 from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
     QuotationArithmeticValidationError,
+    SupplierQuotationRegistrationError,
 )
 
 
@@ -130,6 +131,23 @@ def test_arithmetic_validation_failure_is_terminal(setup):
 
     assert repo.row["status"] == "FAILED"
     assert any("Arithmetic validation failed" in error for error in repo.errors)
+    refresh.assert_not_called()
+
+
+def test_registration_validation_failure_is_terminal_and_records_reason(setup):
+    repo, _parser, register, refresh, _factory = setup
+    register.side_effect = SupplierQuotationRegistrationError(
+        "external quotation number conflicts within this RFQ"
+    )
+
+    service.process_job("local-job")
+
+    assert repo.row["status"] == "FAILED"
+    assert any(
+        "Registration validation failed: external quotation number conflicts within this RFQ"
+        in error
+        for error in repo.errors
+    )
     refresh.assert_not_called()
 
 

@@ -3,6 +3,7 @@ import pytest
 from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
     SupplierQuotationRegistrationError,
     build_supplier_quotation_payload,
+    register_supplier_quotation,
 )
 
 
@@ -110,4 +111,84 @@ def test_multiple_external_items_do_not_use_single_item_fallback() -> None:
             quotation,
             get_one=_get_one,
             get_many=lambda *_args, **_kwargs: [],
+        )
+
+
+def test_external_quotation_number_may_repeat_for_a_different_rfq() -> None:
+    existing = {
+        "name": "SQ-OLD",
+        "supplier": "SUP-1",
+        "quotation_number": "EXT-Q-1",
+        "currency": "KRW",
+        "grand_total": 9999,
+        "items": [{
+            "request_for_quotation": "RFQ-OLD",
+            "item_code": "ITEM-1",
+            "qty": 1,
+            "rate": 9999,
+            "amount": 9999,
+        }],
+    }
+
+    def get_one(doctype: str, name: str):
+        if doctype == "Supplier Quotation":
+            return existing
+        return _get_one(doctype, name)
+
+    def get_many(doctype: str, **_kwargs):
+        if doctype == "Supplier Quotation":
+            return [{
+                "name": "SQ-OLD",
+                "supplier": "SUP-1",
+                "quotation_number": "EXT-Q-1",
+            }]
+        return []
+
+    created = register_supplier_quotation(
+        _quotation(None),
+        get_one=get_one,
+        get_many=get_many,
+        post_one=lambda _doctype, payload: {"name": "SQ-NEW", **payload},
+    )
+
+    assert created["status"] == "created"
+    assert created["name"] == "SQ-NEW"
+
+
+def test_external_quotation_number_conflict_is_rejected_within_same_rfq() -> None:
+    existing = {
+        "name": "SQ-OLD",
+        "supplier": "SUP-1",
+        "quotation_number": "EXT-Q-1",
+        "currency": "KRW",
+        "grand_total": 9999,
+        "items": [{
+            "request_for_quotation": "RFQ-1",
+            "item_code": "ITEM-1",
+            "qty": 1,
+            "rate": 9999,
+            "amount": 9999,
+        }],
+    }
+
+    def get_one(doctype: str, name: str):
+        if doctype == "Supplier Quotation":
+            return existing
+        return _get_one(doctype, name)
+
+    def get_many(doctype: str, **_kwargs):
+        if doctype == "Supplier Quotation":
+            return [{
+                "name": "SQ-OLD",
+                "supplier": "SUP-1",
+                "quotation_number": "EXT-Q-1",
+            }]
+        return []
+
+    with pytest.raises(SupplierQuotationRegistrationError):
+        register_supplier_quotation(
+            _quotation(None),
+            get_one=get_one,
+            get_many=get_many,
+            post_one=lambda *_args: pytest.fail("must not create a conflicting quote"),
         )

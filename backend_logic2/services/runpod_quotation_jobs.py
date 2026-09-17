@@ -24,6 +24,7 @@ from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import 
 from backend_logic2.nodes.quotation.quotation_filter.quotation_models import SourceKind
 from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
     QuotationArithmeticValidationError,
+    SupplierQuotationRegistrationError,
 )
 from backend_logic2.repositories import quotation_jobs as jobs
 
@@ -216,6 +217,16 @@ def process_job(job_id):
                 terminal=True,
             )
             LOGGER.warning('RunPod quotation job %s rejected by arithmetic validation', job_id)
+        except SupplierQuotationRegistrationError as exc:
+            # These are deterministic RFQ mapping, policy, or duplicate conflicts.
+            # The messages are application-controlled and contain no provider
+            # response bodies, so retaining them is safe and useful to operators.
+            jobs.fail_job(
+                job_id,
+                f'Registration validation failed: {exc}',
+                terminal=True,
+            )
+            LOGGER.warning('RunPod quotation job %s rejected by registration validation', job_id)
         except Exception as exc:
             jobs.fail_job(job_id, f'Completion failed: {type(exc).__name__}')
             LOGGER.warning('RunPod quotation job %s deferred (%s)', job_id, type(exc).__name__)

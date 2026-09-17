@@ -423,6 +423,19 @@ def _fingerprint_incoming(
     )
 
 
+def _document_references_rfq(document: dict[str, Any], rfq_name: str) -> bool:
+    """Return whether an existing Supplier Quotation belongs to this RFQ.
+
+    Supplier-provided quotation numbers are not globally unique.  Duplicate
+    detection must therefore be scoped to the trusted RFQ and supplier pair.
+    """
+    return any(
+        str(row.get("request_for_quotation") or "") == rfq_name
+        for row in document.get("items") or []
+        if isinstance(row, dict)
+    )
+
+
 def register_supplier_quotation(
     quotation_data: Quotation | dict[str, Any],
     *,
@@ -463,6 +476,8 @@ def register_supplier_quotation(
         if summary.get("supplier") != payload["supplier"]:
             continue
         detail = get_one("Supplier Quotation", str(summary["name"])) or {}
+        if not _document_references_rfq(detail, quotation.rfq_name):
+            continue
         same_external_number = (
             detail.get("quotation_number") == quotation.quotation_id
             or summary.get("quotation_number") == quotation.quotation_id
