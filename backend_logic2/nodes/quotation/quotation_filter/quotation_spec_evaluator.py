@@ -260,6 +260,42 @@ def _quotation_payload(rfq: RFQRequirements, quotation: Any) -> dict[str, Any]:
     }
 
 
+def specification_evaluation_fingerprint(
+    rfq: RFQRequirements,
+    quotation: Any,
+    evaluator: "QuotationSpecEvaluator",
+) -> str:
+    """Identify an assessment by every input that can change its meaning."""
+
+    cache_identity = {
+        "model": evaluator.model_name,
+        "instructions": INSTRUCTIONS,
+        "schema_prompt": RUNPOD_SCHEMA_PROMPT,
+        "prompt_version": (
+            os.getenv("RUNPOD_SPEC_PROMPT_VERSION", "qwen35-spec-eval-v1").strip()
+            or "qwen35-spec-eval-v1"
+        ),
+        "pipeline_version": (
+            os.getenv("RUNPOD_SPEC_PIPELINE_VERSION", "document-text-v1").strip()
+            or "document-text-v1"
+        ),
+        # Increment this when endpoint weights or inference behavior changes
+        # without changing the public model/prompt version strings.
+        "cache_version": (
+            os.getenv("RUNPOD_SPEC_CACHE_VERSION", "v1").strip() or "v1"
+        ),
+        "payload": _quotation_payload(rfq, quotation),
+    }
+    canonical = json.dumps(
+        cache_identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class QuotationSpecEvaluator(Protocol):
     model_name: str
 

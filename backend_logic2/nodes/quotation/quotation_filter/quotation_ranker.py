@@ -11,6 +11,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
+import psycopg
+
 try:
     from .quotation_models import (
         QuotationReview,
@@ -46,17 +48,20 @@ except ImportError:
     )
 
 from backend_logic2.repositories.deliveries import get_supplier_latest_scorecards
+from procurement_db import ProcurementDatabaseConfigurationError
 try:
     from .quotation_spec_evaluator import (
         QuotationSpecEvaluator,
         QuotationSpecAssessment,
         build_quotation_spec_evaluator,
+        specification_evaluation_fingerprint,
     )
 except ImportError:
     from backend_logic2.nodes.quotation.quotation_filter.quotation_spec_evaluator import (
         QuotationSpecEvaluator,
         QuotationSpecAssessment,
         build_quotation_spec_evaluator,
+        specification_evaluation_fingerprint,
     )
 
 
@@ -626,9 +631,49 @@ def evaluate_quotations(
         for row in quotations
         if row.get("supplier_scorecard") is not None
     }
+    spec_assessments: dict[str, QuotationSpecAssessment] = {}
+    cache_misses: list[QuotationReview] = []
+    cache_hits = 0
     try:
         evaluator = spec_evaluator or build_quotation_spec_evaluator()
-        spec_assessments = evaluator.evaluate(rfq, reviews)
+        fingerprints = {
+            review.quotation_id: specification_evaluation_fingerprint(
+                rfq, review.quotation, evaluator
+            )
+            for review in reviews
+            if review.quotation is not None
+        }
+        try:
+            from backend_logic2.repositories.quotation_specification_cache import (
+                load_matching,
+            )
+
+            cached_rows = load_matching(
+                rfq.rfq_name,
+                fingerprints,
+                evaluator.model_name,
+            )
+        except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+            # Cache infrastructure failure must not block fresh analysis.
+            LOGGER.warning("Quotation specification cache read failed: %s", exc)
+            cached_rows = {}
+        for review in reviews:
+            quotation = review.quotation
+            if quotation is None:
+                continue
+            try:
+                cached = QuotationSpecAssessment.model_validate(
+                    cached_rows.get(review.quotation_id)
+                )
+            except (TypeError, ValueError):
+                cache_misses.append(review)
+                continue
+            spec_assessments[review.quotation_id] = cached
+            cache_hits += 1
+
+        fresh_assessments = (
+            evaluator.evaluate(rfq, cache_misses) if cache_misses else {}
+        )
     except (TypeError, ValueError) as exc:
         return {
             "requirements": rfq.model_dump(mode="json"),
@@ -638,7 +683,7 @@ def evaluate_quotations(
         }
     try:
         numeric_weight, specification_weight = quotation_score_weights()
-        if spec_assessments is None:
+        if fresh_assessments is None:
             # Never disguise an unavailable semantic evaluator as a successful
             # legacy/rule-only analysis.  The frontend must keep the previous
             # result marked stale (or show the error) and let the user retry.
@@ -658,6 +703,29 @@ def evaluate_quotations(
                     "specification_weight": specification_weight,
                 },
             }
+        for review in cache_misses:
+            assessment = fresh_assessments.get(review.quotation_id)
+            if assessment is None:
+                continue
+            spec_assessments[review.quotation_id] = assessment
+        if fresh_assessments:
+            try:
+                from backend_logic2.repositories.quotation_specification_cache import (
+                    save_assessments,
+                )
+
+                save_assessments(
+                    rfq.rfq_name,
+                    fingerprints,
+                    evaluator.model_name,
+                    {
+                        quotation_id: assessment.model_dump(mode="json")
+                        for quotation_id, assessment in fresh_assessments.items()
+                    },
+                )
+            except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+                # A cache write failure cannot invalidate good scores.
+                LOGGER.warning("Quotation specification cache write failed: %s", exc)
         result = rank_quotations_with_spec_scores(
             reviews,
             rfq,
@@ -715,6 +783,8 @@ def evaluate_quotations(
         "specification_evaluation": {
             "status": evaluation_status,
             "model": evaluator.model_name,
+            "cache_hits": cache_hits,
+            "cache_misses": len(cache_misses),
             "numeric_weight": numeric_weight,
             "specification_weight": specification_weight,
         },
