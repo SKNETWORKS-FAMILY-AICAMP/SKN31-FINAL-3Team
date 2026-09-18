@@ -59,15 +59,42 @@ def save_assessments(
     if not rows:
         return
     with get_connection() as connection:
-        connection.executemany(
+        case_row = connection.execute(
             """
-            INSERT INTO procurement.quotation_specification_cache
-                (rfq_name, quotation_id, input_hash, evaluation_source,
-                 assessment_json)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (rfq_name, quotation_id, input_hash, evaluation_source)
-            DO UPDATE SET assessment_json = EXCLUDED.assessment_json,
-                          updated_at = now()
+            SELECT case_id
+            FROM procurement.procurement_case
+            WHERE workflow_snapshot #>> '{values,rfq_name}' = %(rfq_name)s
+               OR EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                        COALESCE(
+                            workflow_snapshot #> '{values,rfq_rounds}',
+                            '[]'::jsonb
+                        )
+                    ) AS round_entry
+                    WHERE round_entry->>'rfq_name' = %(rfq_name)s
+               )
+            ORDER BY updated_at DESC
+            LIMIT 1
             """,
-            rows,
-        )
+            {"rfq_name": rfq_name},
+        ).fetchone()
+        case_id = case_row["case_id"] if case_row else None
+        linked_rows = [(*row, case_id) for row in rows]
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO procurement.quotation_specification_cache
+                    (rfq_name, quotation_id, input_hash, evaluation_source,
+                     assessment_json, case_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (rfq_name, quotation_id, input_hash, evaluation_source)
+                DO UPDATE SET assessment_json = EXCLUDED.assessment_json,
+                              case_id = COALESCE(
+                                  EXCLUDED.case_id,
+                                  quotation_specification_cache.case_id
+                              ),
+                              updated_at = now()
+                """,
+                linked_rows,
+            )
