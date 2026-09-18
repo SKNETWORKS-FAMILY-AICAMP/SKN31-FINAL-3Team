@@ -31,6 +31,9 @@ class SpecItemAssessment(BaseModel):
 
     quotation_item: str
     rfq_item: str
+    # Accepted only for compatibility with assessments produced before the
+    # score/reason-only contract. New prompts neither request nor display it.
+    compliant: bool | None = Field(default=None, exclude=True)
     score: float = Field(ge=0, le=100)
     reason: str
 
@@ -39,6 +42,10 @@ class QuotationSpecAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     quotation_id: str
+    # Deprecated compatibility inputs. Qwen's active output contract remains
+    # quotation_id + score + reason + items.
+    compliant: bool | None = Field(default=None, exclude=True)
+    confidence: float | None = Field(default=None, ge=0, le=1, exclude=True)
     score: float = Field(ge=0, le=100)
     reason: str
     items: list[SpecItemAssessment]

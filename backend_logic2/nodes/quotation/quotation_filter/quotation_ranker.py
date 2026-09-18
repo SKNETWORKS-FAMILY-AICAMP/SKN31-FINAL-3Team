@@ -65,7 +65,10 @@ LOGGER = logging.getLogger(__name__)
 AI_SPEC_ISSUE_CODES = frozenset({"MISSING_SPECIFICATION", "SPECIFICATION_MISMATCH"})
 DEFAULT_NUMERIC_SCORE_WEIGHT = 0.6
 DEFAULT_SPECIFICATION_SCORE_WEIGHT = 0.4
-DEFAULT_SPEC_EVALUATION_SOURCE = "qwen3.5-9b-4bit"
+# Direct/library callers created before provider selection relied on this
+# label. The production evaluate_quotations path always supplies the actual
+# evaluator.model_name (Qwen by default).
+DEFAULT_SPEC_EVALUATION_SOURCE = "gpt-5.6-luna"
 
 
 def _weight_setting(name: str, default: float) -> float:
@@ -201,7 +204,15 @@ def rank_quotations_with_spec_scores(
         evidence = structural_evidence
         if assessment is None:
             evidence = [*evidence, "AI 규격 평가 점수와 이유가 없습니다."]
-        if not structurally_rankable or assessment is None:
+        # A deprecated explicit compliant=False is still honored for callers
+        # that construct legacy assessment objects. The active Qwen contract
+        # omits this field, so low/mismatched specs remain rankable by score.
+        legacy_noncompliant = bool(
+            assessment is not None and assessment.compliant is False
+        )
+        if legacy_noncompliant:
+            evidence = [*evidence, assessment.reason]
+        if not structurally_rankable or assessment is None or legacy_noncompliant:
             excluded.append({
                 "quotation_id": review.quotation_id,
                 "supplier_name": review.supplier_name,
@@ -628,28 +639,36 @@ def evaluate_quotations(
     try:
         numeric_weight, specification_weight = quotation_score_weights()
         if spec_assessments is None:
-            LOGGER.warning(
-                "AI 규격 평가를 사용할 수 없어 기존 규칙 기반 순위를 반환합니다."
-            )
-            result = rank_quotations(
-                reviews,
-                rfq,
-                top_k=top_k,
-                supplier_scorecards=scorecards,
-            )
-            evaluation_status = "unavailable"
-        else:
-            result = rank_quotations_with_spec_scores(
-                reviews,
-                rfq,
-                spec_assessments,
-                top_k=top_k,
-                supplier_scorecards=scorecards,
-                numeric_weight=numeric_weight,
-                specification_weight=specification_weight,
-                evaluation_source=evaluator.model_name,
-            )
-            evaluation_status = "completed"
+            # Never disguise an unavailable semantic evaluator as a successful
+            # legacy/rule-only analysis.  The frontend must keep the previous
+            # result marked stale (or show the error) and let the user retry.
+            return {
+                "requirements": rfq.model_dump(mode="json"),
+                "quotations": quotations,
+                "ranking": [],
+                "error": (
+                    f"{evaluator.model_name} 규격 평가가 완료되지 않아 "
+                    "기존 규칙 기반 순위로 대체하지 않습니다. "
+                    "RunPod 설정과 작업 로그를 확인한 뒤 다시 시도하세요."
+                ),
+                "specification_evaluation": {
+                    "status": "failed",
+                    "model": evaluator.model_name,
+                    "numeric_weight": numeric_weight,
+                    "specification_weight": specification_weight,
+                },
+            }
+        result = rank_quotations_with_spec_scores(
+            reviews,
+            rfq,
+            spec_assessments,
+            top_k=top_k,
+            supplier_scorecards=scorecards,
+            numeric_weight=numeric_weight,
+            specification_weight=specification_weight,
+            evaluation_source=evaluator.model_name,
+        )
+        evaluation_status = "completed"
     except ValueError as exc:
         return {
             "requirements": rfq.model_dump(mode="json"),
