@@ -33,10 +33,12 @@ from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations imp
 )
 
 
-ERP_DOMAIN = os.getenv(
-    "ERP_DOMAIN",
-    "http://13.209.103.102:8080",
-)
+ERP_DOMAIN = os.environ.get("SITE_URL")
+if not ERP_DOMAIN:
+    raise RuntimeError(
+        "필수 환경 변수 ERP_DOMAIN이 .env 파일에 설정되지 않았습니다. "
+        "(공급사에게 발송되는 PO 포털 링크의 기준 도메인이므로, 배포 환경마다 반드시 직접 지정해야 합니다.)"
+    )
 
 ERP_PORTAL_PATH_TEMPLATE = os.getenv(
     "ERP_PORTAL_PATH_TEMPLATE",

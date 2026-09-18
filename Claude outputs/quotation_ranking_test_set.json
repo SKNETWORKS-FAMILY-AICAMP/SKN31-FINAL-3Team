@@ -1,0 +1,172 @@
+{
+  "_설명": "견적 비교/순위 AI 테스트셋 — 5개 견적 모두 동일 RFQ(스테인리스 볼밸브)에 대한 응답. 스키마는 quotation_extractor.py / RunPod 워커(SKNFinal-VLM-Model)가 실제로 출력하는 추출 직후 JSON 구조와 동일합니다 (ERPNext Supplier Quotation 등록 이후가 아니라, 그 직전 단계). specifications, raw_description, notes에 일부러 까다로운 표현을 섞었습니다. 실제로는 없는 evaluator_answer_key 섹션은 채점용이니 AI/파이프라인 입력에서는 제외하고 참고만 하세요.",
+
+  "rfq_context": {
+    "rfq_name": "RFQ-2026-00042",
+    "item_name": "스테인리스 볼밸브 15A",
+    "required_quantity": 100,
+    "unit": "EA",
+    "required_specifications": {
+      "material": "SUS304 이상",
+      "pressure_rating": "10bar 이상",
+      "size": "15A (1/2인치)"
+    },
+    "desired_delivery_date": "2026-09-24"
+  },
+
+  "quotations": [
+    {
+      "_case_id": "Q1_한빛밸브_기준선",
+      "quotation_id": "SQ-HB-2026-0912",
+      "supplier_name": "(주)한빛밸브",
+      "business_registration_no": "123-45-67890",
+      "quotation_date": "2026-09-12",
+      "valid_until": "2026-09-30",
+      "currency": "KRW",
+      "subtotal": 820000,
+      "tax_amount": 82000,
+      "total_amount": 902000,
+      "items": [
+        {
+          "item_code": "VALVE-SUS-15A",
+          "item_name": "스테인리스 볼밸브",
+          "description": "규격: SUS304, 15A, 10bar",
+          "quantity": 100,
+          "unit": "EA",
+          "unit_price": 8200,
+          "amount": 820000,
+          "expected_delivery_date": "2026-09-24",
+          "lead_time_days": 12,
+          "specifications": { "material": "SUS304", "pressure": "10bar", "size": "15A" },
+          "raw_description": "볼밸브 15A / 규격: SUS304, 15A, 10bar"
+        }
+      ],
+      "notes": null
+    },
+
+    {
+      "_case_id": "Q2_대성정밀_자연어규격",
+      "quotation_id": "SQ-DS-2026-0912",
+      "supplier_name": "대성정밀",
+      "business_registration_no": "234-56-78901",
+      "quotation_date": "2026-09-12",
+      "valid_until": "2026-09-26",
+      "currency": "KRW",
+      "subtotal": 860000,
+      "tax_amount": 86000,
+      "total_amount": 946000,
+      "items": [
+        {
+          "item_code": "VALVE-STS-15A",
+          "item_name": "볼밸브",
+          "description": "본 제품은 STS304 재질로 제작되었으며, 최대 사용압력 12bar까지 견딜 수 있고 배관 규격은 15A(1/2인치)입니다.",
+          "quantity": 100,
+          "unit": "EA",
+          "unit_price": 8600,
+          "amount": 860000,
+          "expected_delivery_date": "2026-09-24",
+          "lead_time_days": 12,
+          "specifications": {},
+          "raw_description": "본 제품은 STS304 재질로 제작되었으며, 최대 사용압력 12bar까지 견딜 수 있고 배관 규격은 15A(1/2인치)입니다."
+        }
+      ],
+      "notes": null
+    },
+
+    {
+      "_case_id": "Q3_삼진스틸_최저가_숨은지연",
+      "quotation_id": "SQ-SJ-2026-0912",
+      "supplier_name": "삼진스틸",
+      "business_registration_no": "345-67-89012",
+      "quotation_date": "2026-09-12",
+      "valid_until": "2026-09-30",
+      "currency": "KRW",
+      "subtotal": 790000,
+      "tax_amount": 79000,
+      "total_amount": 869000,
+      "items": [
+        {
+          "item_code": "VALVE-SUS-15A",
+          "item_name": "스테인리스 볼밸브",
+          "description": "규격: SUS304, 15A, 10bar",
+          "quantity": 100,
+          "unit": "EA",
+          "unit_price": 7900,
+          "amount": 790000,
+          "expected_delivery_date": "2026-09-24",
+          "lead_time_days": 12,
+          "specifications": { "material": "SUS304", "pressure": "10bar", "size": "15A" },
+          "raw_description": "볼밸브 15A / 규격: SUS304, 15A, 10bar"
+        }
+      ],
+      "notes": "당사 재고 상황에 따라 100개 중 60개는 9월 24일 출고 가능하며, 잔여 40개는 재입고 후 최대 10일이 추가로 소요될 수 있습니다. 정확한 잔여 물량 출고일은 발주 확정 후 안내드립니다."
+    },
+
+    {
+      "_case_id": "Q4_우진산업_유사규격트랩",
+      "quotation_id": "SQ-WJ-2026-0912",
+      "supplier_name": "우진산업",
+      "business_registration_no": "456-78-90123",
+      "quotation_date": "2026-09-12",
+      "valid_until": "2026-09-28",
+      "currency": "KRW",
+      "subtotal": 800000,
+      "tax_amount": 80000,
+      "total_amount": 880000,
+      "items": [
+        {
+          "item_code": "VALVE-SUS303-15A",
+          "item_name": "스테인리스 볼밸브",
+          "description": "규격: SUS303, 15A, 10bar",
+          "quantity": 100,
+          "unit": "EA",
+          "unit_price": 8000,
+          "amount": 800000,
+          "expected_delivery_date": "2026-09-23",
+          "lead_time_days": 11,
+          "specifications": { "material": "SUS303", "pressure": "10bar", "size": "15A" },
+          "raw_description": "볼밸브 15A / 규격: SUS303, 15A, 10bar"
+        }
+      ],
+      "notes": null
+    },
+
+    {
+      "_case_id": "Q5_동양특수강_단위트랩_유효기간",
+      "quotation_id": "SQ-DY-2026-0912",
+      "supplier_name": "동양특수강",
+      "business_registration_no": "567-89-01234",
+      "quotation_date": "2026-09-12",
+      "valid_until": "2026-09-17",
+      "currency": "KRW",
+      "subtotal": 750000,
+      "tax_amount": 75000,
+      "total_amount": 825000,
+      "items": [
+        {
+          "item_code": "VALVE-SUS-15A-SET2",
+          "item_name": "스테인리스 볼밸브 (2개입 SET)",
+          "description": "규격: SUS304, 15A, 10bar / 2개입 1SET 단위 판매",
+          "quantity": 50,
+          "unit": "SET(2개입)",
+          "unit_price": 15000,
+          "amount": 750000,
+          "expected_delivery_date": "2026-09-24",
+          "lead_time_days": 12,
+          "specifications": { "material": "SUS304", "pressure": "10bar", "size": "15A", "packaging": "2개입 SET" },
+          "raw_description": "볼밸브 15A (2개입 SET), 규격: SUS304, 15A, 10bar"
+        }
+      ],
+      "notes": "본 견적은 발행일로부터 5일간 유효합니다. 기간 경과 시 단가가 변동될 수 있습니다."
+    }
+  ],
+
+  "evaluator_answer_key": {
+    "_주의": "이 섹션은 AI/파이프라인에 입력하지 말고, 결과를 채점할 때만 사람이 참고하세요.",
+    "Q1_한빛밸브_기준선": "라벨(규격:)이 명확해서 정규식도 통과하는 기준 케이스. 개당 8,200원. 특이사항 없음.",
+    "Q2_대성정밀_자연어규격": "지금 정규식(SPEC_LABELS 6개 라벨+콜론 패턴)은 못 잡는 케이스 — 'STS304'는 재질 라벨 목록에 없고, 콜론 형식도 아님. STS304=SUS304와 같은 재질을 가리키는 표기이고, 12bar>10bar, 15A 일치라 규격은 실제로 충족. 규칙기반이면 '규격 정보 없음'으로 오판할 가능성이 높고, AI라면 자연어에서 이 세 값을 다 찾아내 충족 판정을 내려야 정답.",
+    "Q3_삼진스틸_최저가_숨은지연": "구조화된 expected_delivery_date는 요청 납기(9/24)와 정확히 일치해서 규칙기반 비교에서는 '납기 문제 없음+최저가'로 1위가 되기 쉬움. 그런데 notes에 100개 중 40개가 최대 10일 늦어질 수 있다는 부분납품 리스크가 숨어있음 — 이게 이번 대화에서 계속 얘기한, 등록 과정에서 아예 유실되는 바로 그 정보. 정답은 '가격은 매력적이나 부분납품 리스크 있음, 확인 필요'로 플래그를 다는 것.",
+    "Q4_우진산업_유사규격트랩": "표면적으로는 Q1과 완전히 같은 포맷(규격: XXX304, 15A, 10bar)이라 정규식이 '규격 있음'으로 통과시키기 쉬움. 하지만 SUS303은 SUS304보다 내식성이 낮은 다른 등급으로, RFQ 요구사항 'SUS304 이상'을 충족하지 못함. 숫자가 비슷해서 대충 보면 통과로 착각하기 쉬운 함정 — 정답은 '규격 미달, 탈락'.",
+    "Q5_동양특수강_단위트랩_유효기간": "단가 15,000원만 보면 제일 비싸 보이지만 단위가 EA가 아니라 'SET(2개입)'이라 실제로는 개당 7,500원으로 전체 5개 중 최저가. 수량도 50(SET) vs 요청수량 100(EA)이라 단순 비교하면 수량 미달로 착각하기 쉬움. 게다가 valid_until이 발행일+5일(9/17)뿐이라, 의사결정이 조금만 늦어져도 이미 만료된 견적일 수 있음. 정답은 '단위 환산하면 사실상 최저가이나, 유효기간이 매우 촉박해 신속한 확정이 필요'."
+  }
+}
