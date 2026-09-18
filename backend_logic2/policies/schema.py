@@ -1,7 +1,7 @@
 """Public JSON contract. Defaults preserve the pre-policy purchasing behavior."""
 
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -18,6 +18,19 @@ class PurchasingRules(StrictModel):
     min_competing_suppliers: int = Field(default=3, ge=1, le=20)
     supplier_refresh_years: int = Field(default=3, ge=1, le=20)
     quotation_priority: Literal["price_then_delivery", "delivery_then_price"] = "price_then_delivery"
+    quotation_numeric_score_weight: float = Field(
+        default=60.0, ge=0, le=100, allow_inf_nan=False
+    )
+    quotation_spec_score_weight: float = Field(
+        default=40.0, ge=0, le=100, allow_inf_nan=False
+    )
+
+    @model_validator(mode="after")
+    def quotation_weights_total_one_hundred(self):
+        total = self.quotation_numeric_score_weight + self.quotation_spec_score_weight
+        if abs(total - 100.0) > 1e-6:
+            raise ValueError("견적 평가 가중치의 합계는 100%여야 합니다.")
+        return self
 
 
 class AIGuidance(StrictModel):

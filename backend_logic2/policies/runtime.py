@@ -13,6 +13,11 @@ def current_policy() -> CompanyPolicy:
     return _policy.get() or CompanyPolicy()
 
 
+def scoped_policy() -> CompanyPolicy | None:
+    """Return the explicitly bound DB snapshot, without synthesizing defaults."""
+    return _policy.get()
+
+
 @contextmanager
 def policy_scope(policy):
     token = _policy.set(policy)

@@ -1,4 +1,4 @@
-"""검토 통과 견적을 규격 적합성, 총금액, 납기 순으로 정렬한다.
+"""규칙 기반 수치 점수와 Qwen 규격 점수를 결합해 견적 순위를 계산한다.
 
 """
 
@@ -48,19 +48,24 @@ except ImportError:
 from backend_logic2.repositories.deliveries import get_supplier_latest_scorecards
 try:
     from .quotation_spec_evaluator import (
-        LunaQuotationSpecEvaluator,
+        QuotationSpecEvaluator,
         QuotationSpecAssessment,
+        build_quotation_spec_evaluator,
     )
 except ImportError:
     from backend_logic2.nodes.quotation.quotation_filter.quotation_spec_evaluator import (
-        LunaQuotationSpecEvaluator,
+        QuotationSpecEvaluator,
         QuotationSpecAssessment,
+        build_quotation_spec_evaluator,
     )
 
 
 LOGGER = logging.getLogger(__name__)
 
 AI_SPEC_ISSUE_CODES = frozenset({"MISSING_SPECIFICATION", "SPECIFICATION_MISMATCH"})
+DEFAULT_NUMERIC_SCORE_WEIGHT = 0.6
+DEFAULT_SPECIFICATION_SCORE_WEIGHT = 0.4
+DEFAULT_SPEC_EVALUATION_SOURCE = "qwen3.5-9b-4bit"
 
 
 def _weight_setting(name: str, default: float) -> float:
@@ -69,6 +74,51 @@ def _weight_setting(name: str, default: float) -> float:
     except ValueError:
         value = default
     return max(0.0, value)
+
+
+def quotation_score_weights(
+    *,
+    numeric_weight: float | None = None,
+    specification_weight: float | None = None,
+) -> tuple[float, float]:
+    """Resolve and normalize quotation score weights.
+
+    During a procurement workflow, omitted values come from the case-pinned
+    company policy. CLI/direct calls retain the environment-variable fallback.
+    Ratios such as 0.6/0.4 and percentages such as 60/40 are equivalent because
+    the pair is normalized.
+    """
+    from backend_logic2.policies.runtime import scoped_policy
+
+    policy = scoped_policy()
+    numeric = (
+        (
+            policy.rules.quotation_numeric_score_weight
+            if policy is not None
+            else _weight_setting(
+                "QUOTATION_NUMERIC_SCORE_WEIGHT",
+                DEFAULT_NUMERIC_SCORE_WEIGHT,
+            )
+        )
+        if numeric_weight is None
+        else float(numeric_weight)
+    )
+    specification = (
+        (
+            policy.rules.quotation_spec_score_weight
+            if policy is not None
+            else _weight_setting(
+                "QUOTATION_SPEC_SCORE_WEIGHT",
+                DEFAULT_SPECIFICATION_SCORE_WEIGHT,
+            )
+        )
+        if specification_weight is None
+        else float(specification_weight)
+    )
+    if numeric < 0 or specification < 0 or numeric + specification <= 0:
+        raise ValueError("수치·규격 가중치 중 하나 이상은 양수여야 합니다.")
+    total = numeric + specification
+    return numeric / total, specification / total
 
 
 def _delivery_metrics(
@@ -124,19 +174,18 @@ def rank_quotations_with_spec_scores(
     *,
     top_k: int = 3,
     supplier_scorecards: dict[str, dict[str, Any]] | None = None,
-    numeric_weight: float = 0.6,
-    specification_weight: float = 0.4,
-    evaluation_source: str = "gpt-5.6-luna",
+    numeric_weight: float | None = None,
+    specification_weight: float | None = None,
+    evaluation_source: str = DEFAULT_SPEC_EVALUATION_SOURCE,
 ) -> RankingResult:
-    """Rank deterministic price/delivery metrics and Luna spec scores together."""
+    """Combine deterministic price/delivery metrics with semantic spec scores."""
 
+    numeric_weight, specification_weight = quotation_score_weights(
+        numeric_weight=numeric_weight,
+        specification_weight=specification_weight,
+    )
     if top_k < 1:
         raise ValueError("top_k는 1 이상이어야 합니다.")
-    if numeric_weight < 0 or specification_weight < 0 or numeric_weight + specification_weight <= 0:
-        raise ValueError("수치·규격 가중치 중 하나 이상은 양수여야 합니다.")
-    weight_total = numeric_weight + specification_weight
-    numeric_weight /= weight_total
-    specification_weight /= weight_total
 
     rfq = rfq_data if isinstance(rfq_data, RFQRequirements) else RFQRequirements.model_validate(rfq_data)
     reviews = [
@@ -151,17 +200,14 @@ def rank_quotations_with_spec_scores(
         assessment = spec_assessments.get(review.quotation_id)
         evidence = structural_evidence
         if assessment is None:
-            evidence = [*evidence, "Luna 규격 평가 결과가 없습니다."]
-        elif not assessment.compliant:
-            evidence = [*evidence, assessment.reason]
-        if not structurally_rankable or assessment is None or not assessment.compliant:
+            evidence = [*evidence, "AI 규격 평가 점수와 이유가 없습니다."]
+        if not structurally_rankable or assessment is None:
             excluded.append({
                 "quotation_id": review.quotation_id,
                 "supplier_name": review.supplier_name,
-                "status": "specification_excluded" if assessment and not assessment.compliant else review.status.value,
+                "status": review.status.value,
                 "evidence": evidence or review.rejection_evidence,
                 "specification_score": assessment.score if assessment else None,
-                "specification_confidence": assessment.confidence if assessment else None,
                 "specification_reason": assessment.reason if assessment else None,
                 "evaluation_source": evaluation_source if assessment else None,
             })
@@ -220,6 +266,8 @@ def rank_quotations_with_spec_scores(
             else min(100.0, max(0.0, 100.0 - late_days * 5.0))
         )
         numeric_score = round(price_score * 0.75 + delivery_score * 0.25, 2)
+        # Missing or conflicting specifications lower only the specification
+        # component; they do not remove an otherwise valid quotation.
         specification_score = float(row["assessment"].score)
         overall_score = round(
             numeric_score * numeric_weight + specification_score * specification_weight,
@@ -280,7 +328,6 @@ def rank_quotations_with_spec_scores(
             numeric_score=row["numeric_score"],
             specification_score=row["specification_score"],
             overall_score=row["overall_score"],
-            specification_confidence=assessment.confidence,
             specification_reason=assessment.reason,
             specification_items=[item.model_dump(mode="json") for item in assessment.items],
             evaluation_source=evaluation_source,
@@ -544,9 +591,9 @@ def evaluate_quotations(
     rfq_name: str,
     *,
     top_k: int = 3,
-    spec_evaluator: LunaQuotationSpecEvaluator | None = None,
+    spec_evaluator: QuotationSpecEvaluator | None = None,
 ) -> dict[str, Any]:
-    """Validate ERP quotations and combine numeric metrics with Luna spec fit."""
+    """Validate ERP quotations and combine numeric metrics with semantic spec fit."""
     try:
         rfq = load_rfq_requirements(rfq_name)
     except Exception as exc:
@@ -568,14 +615,21 @@ def evaluate_quotations(
         for row in quotations
         if row.get("supplier_scorecard") is not None
     }
-    evaluator = spec_evaluator or LunaQuotationSpecEvaluator()
-    spec_assessments = evaluator.evaluate(rfq, reviews)
-    numeric_weight = _weight_setting("QUOTATION_NUMERIC_SCORE_WEIGHT", 0.6)
-    specification_weight = _weight_setting("QUOTATION_SPEC_SCORE_WEIGHT", 0.4)
     try:
+        evaluator = spec_evaluator or build_quotation_spec_evaluator()
+        spec_assessments = evaluator.evaluate(rfq, reviews)
+    except (TypeError, ValueError) as exc:
+        return {
+            "requirements": rfq.model_dump(mode="json"),
+            "quotations": quotations,
+            "ranking": [],
+            "error": f"규격 평가기 설정이 올바르지 않습니다: {exc}",
+        }
+    try:
+        numeric_weight, specification_weight = quotation_score_weights()
         if spec_assessments is None:
             LOGGER.warning(
-                "Luna 규격 평가를 사용할 수 없어 기존 규칙 기반 순위를 반환합니다."
+                "AI 규격 평가를 사용할 수 없어 기존 규칙 기반 순위를 반환합니다."
             )
             result = rank_quotations(
                 reviews,
@@ -607,11 +661,6 @@ def evaluate_quotations(
     ranking: list[dict[str, Any]] = []
     for ranked in result.recommended:
         review = reviews_by_id[ranked.quotation_id]
-        spec_assessment = (
-            spec_assessments.get(ranked.quotation_id)
-            if spec_assessments is not None
-            else None
-        )
         ranking.append({
             "name": ranked.quotation_id,
             "quotation_id": ranked.quotation_id,
@@ -619,11 +668,6 @@ def evaluate_quotations(
             "supplier_name": ranked.supplier_name,
             "rank": ranked.rank,
             "fulfills_qty": all(item.quantity_compliant for item in review.item_compliance),
-            "spec_match": (
-                spec_assessment.compliant
-                if spec_assessment is not None
-                else review.specification_compliant
-            ),
             "reason": ranked.reason,
             "issues": [issue.message for issue in review.issues],
             "currency": ranked.currency,
@@ -640,7 +684,6 @@ def evaluate_quotations(
             "numeric_score": ranked.numeric_score,
             "specification_score": ranked.specification_score,
             "overall_score": ranked.overall_score,
-            "specification_confidence": ranked.specification_confidence,
             "specification_reason": ranked.specification_reason,
             "specification_items": ranked.specification_items,
             "evaluation_source": ranked.evaluation_source,
@@ -660,7 +703,7 @@ def evaluate_quotations(
 
 
 def print_evaluation(result: dict[str, Any]) -> None:
-    """워크플로 로그에 외부 AI 없는 견적 평가 결과를 간결하게 출력한다."""
+    """워크플로 로그에 견적 점수와 순위를 간결하게 출력한다."""
     if result.get("error") or result.get("message"):
         print(result.get("error") or result.get("message"))
         return

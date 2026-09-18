@@ -160,7 +160,6 @@ class RankedQuotation(StrictModel):
     numeric_score: float | None = Field(default=None, ge=0, le=100)
     specification_score: float | None = Field(default=None, ge=0, le=100)
     overall_score: float | None = Field(default=None, ge=0, le=100)
-    specification_confidence: float | None = Field(default=None, ge=0, le=1)
     specification_reason: str | None = None
     specification_items: list[dict[str, Any]] = Field(default_factory=list)
     evaluation_source: str | None = None
