@@ -1,6 +1,7 @@
 """Admin-only policy editor. Authentication/authorization is enforced server-side."""
 
 import logging
+from uuid import UUID
 import psycopg
 from fastapi import APIRouter, HTTPException
 from auth_service.dependencies import CurrentUser
@@ -10,9 +11,42 @@ from backend_logic2.policies.schema import PublishPolicy, CompanyPolicy
 from procurement_db.config import ProcurementDatabaseConfigurationError
 from backend_logic2.policies import allowlist
 from backend_logic2.services import runpod_worker_control as worker_control
+from backend_logic2.repositories import ai_decisions
 
 router = APIRouter(prefix="/api/company-policy", tags=["Company policy"])
 logger = logging.getLogger(__name__)
+
+
+@router.get('/ai-decisions')
+def read_ai_decisions(
+    user: CurrentUser,
+    node: str | None = None,
+    case_id: UUID | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Return the administrator-visible AI reasoning audit trail."""
+
+    _require_admin(user)
+    if limit < 1 or limit > 200 or offset < 0:
+        raise HTTPException(422, "limit은 1~200, offset은 0 이상이어야 합니다.")
+    try:
+        items, count = ai_decisions.list_decisions(
+            node=node,
+            case_id=str(case_id) if case_id else None,
+            limit=limit,
+            offset=offset,
+        )
+        return {
+            "items": items,
+            "count": count,
+            "nodes": ai_decisions.list_nodes(),
+            "limit": limit,
+            "offset": offset,
+        }
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        logger.exception("AI decision audit lookup failed")
+        raise HTTPException(503, "AI 판단 로그 저장소를 조회할 수 없습니다.") from exc
 
 
 @router.get('/runpod-worker')
