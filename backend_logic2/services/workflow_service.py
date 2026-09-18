@@ -6,6 +6,7 @@ from threading import RLock
 from typing import Any
 from datetime import datetime, timezone
 
+from fastapi import BackgroundTasks
 from langgraph.types import Command
 
 from backend_logic2.integrations.erp_client import (
@@ -51,6 +52,134 @@ _TASK_STAGE = {
 }
 
 _TERMINAL_CASE_STATUSES = {"COMPLETED", "CANCELLED", "REJECTED"}
+
+
+def _run_queued_quotation_analysis(
+    task_id: str,
+    *,
+    answer: dict[str, Any],
+    answered_by: str,
+    claimed_version: int,
+    case_id: str,
+    stage: str,
+) -> None:
+    """Resume a long quotation analysis after its HTTP request has returned."""
+
+    try:
+        case = case_repository.get_case(case_id)
+        if case is None:
+            raise LookupError(case_id)
+        app = get_process_app()
+        with _GRAPH_LOCK:
+            config = _config(case["thread_id"] or case["mr_name"])
+            snapshot = app.get_state(config)
+            active_task_types = {
+                task_presentation(payload)["task_type"]
+                for payload in _interrupt_payloads(snapshot)
+            }
+            if not ({"quotation_check", "check_quotations"} & active_task_types):
+                raise ValueError(
+                    "현재 LangGraph 인터럽트와 견적 분석 작업이 일치하지 않습니다."
+                )
+            app.invoke(Command(resume=answer), config=config)
+            task_repository.complete_claimed_task(
+                task_id,
+                claimed_version=claimed_version,
+            )
+            _delete_case_notifications_safely(case_id)
+            project_case_from_checkpoint(case_id)
+    except Exception as exc:  # noqa: BLE001 - background failures need projection
+        try:
+            task_repository.release_claimed_task(
+                task_id,
+                claimed_version=claimed_version,
+            )
+        except Exception as release_exc:  # noqa: BLE001
+            print(f"[quotation analysis] 작업 잠금 해제 오류: {release_exc}")
+        # Make a retryable failure visible instead of leaving RUNNING forever.
+        try:
+            case = case_repository.get_case(case_id)
+            if case and case["status"] not in _TERMINAL_CASE_STATUSES:
+                case_repository.transition_case(
+                    case_id,
+                    status="WAITING_INPUT",
+                    stage=stage,
+                    reason="견적 AI 분석 중 오류가 발생했습니다.",
+                    triggered_by=answered_by,
+                    last_error=str(exc),
+                )
+        except Exception as projection_exc:  # noqa: BLE001
+            print(
+                "[quotation analysis] 실패 상태 저장 오류: "
+                f"{projection_exc}; original={exc}"
+            )
+
+
+def queue_quotation_analysis(
+    task_id: str,
+    *,
+    answer: dict[str, Any],
+    answered_by: str,
+    expected_version: int | None,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    """Queue a RunPod-backed quotation check without holding the HTTP socket."""
+
+    if expected_version is None:
+        raise ValueError("작업 버전이 필요합니다. 목록을 새로고침한 뒤 다시 시도해 주세요.")
+    task = task_repository.get_task(task_id)
+    if task is None:
+        raise LookupError(task_id)
+    if task["status"] != "PENDING":
+        raise ValueError("이미 처리 중이거나 완료된 작업입니다.")
+    if task["task_type"] not in {"quotation_check", "check_quotations"}:
+        raise ValueError("견적 분석 작업이 아닙니다.")
+    case_id = str(task["case_id"])
+    case = case_repository.get_case(case_id)
+    if case is None:
+        raise LookupError(case_id)
+    if case["status"] == "RUNNING":
+        raise ValueError("이미 견적 AI 분석이 진행 중입니다.")
+    if case["status"] in _TERMINAL_CASE_STATUSES:
+        raise ValueError("이미 종료된 구매 건입니다.")
+
+    stage = str(case.get("stage") or _TASK_STAGE[task["task_type"]])
+    claimed = task_repository.claim_task(
+        task_id,
+        answer=answer,
+        answered_by=answered_by,
+        expected_version=expected_version,
+    )
+    try:
+        case_repository.transition_case(
+            case_id,
+            status="RUNNING",
+            stage=stage,
+            reason="RunPod 견적 AI 분석을 시작했습니다.",
+            triggered_by=answered_by,
+            last_error=None,
+        )
+    except Exception:
+        task_repository.release_claimed_task(
+            task_id,
+            claimed_version=int(claimed["version"]),
+        )
+        raise
+    background_tasks.add_task(
+        _run_queued_quotation_analysis,
+        task_id,
+        answer=answer,
+        answered_by=answered_by,
+        claimed_version=int(claimed["version"]),
+        case_id=case_id,
+        stage=stage,
+    )
+    return {
+        "accepted": True,
+        "case_id": case_id,
+        "task_id": task_id,
+        "status": "RUNNING",
+    }
 
 
 def _create_notification_safely(**kwargs: Any) -> None:

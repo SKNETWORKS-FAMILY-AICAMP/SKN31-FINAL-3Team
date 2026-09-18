@@ -335,7 +335,13 @@ def get_tasks(
 
 
 @router.post("/tasks/{task_id}/answer")
-def answer_task(task_id: str, body: ResumeTaskRequest, current_user: CurrentUser):
+def answer_task(
+    task_id: str,
+    body: ResumeTaskRequest,
+    current_user: CurrentUser,
+    background_tasks: BackgroundTasks,
+    response: Response,
+):
     task = task_repository.get_task(task_id)
 
     if task is None:
@@ -348,8 +354,25 @@ def answer_task(task_id: str, body: ResumeTaskRequest, current_user: CurrentUser
         str(task["case_id"]),
         current_user,
     )
-    
+
     try:
+        # Qwen serverless cold starts can exceed nginx's ordinary request
+        # timeout. Keep the browser request short and let the existing case
+        # polling surface the completed checkpoint instead of losing the
+        # response at the proxy after the GPU work has already started.
+        if (
+            task["task_type"] in {"quotation_check", "check_quotations"}
+            and str(body.answer.get("decision") or "").strip() == "check"
+        ):
+            queued = workflow_service.queue_quotation_analysis(
+                task_id,
+                answer=body.answer,
+                answered_by=_user_id(current_user),
+                expected_version=body.version,
+                background_tasks=background_tasks,
+            )
+            response.status_code = status.HTTP_202_ACCEPTED
+            return queued
         return workflow_service.resume_task(
             task_id,
             answer=body.answer,
