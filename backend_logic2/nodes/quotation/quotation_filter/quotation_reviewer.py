@@ -100,6 +100,12 @@ SPEC_LABELS = {
     "grade": "grade",
     "규격": "specification",
     "specification": "specification",
+    "규격(치수)": "dimensions",
+    "규격（치수）": "dimensions",
+    "길이": "length",
+    "length": "length",
+    "전압": "voltage",
+    "voltage": "voltage",
 }
 
 
@@ -114,9 +120,9 @@ def extract_specifications(description: Any) -> dict[str, str]:
     for line in text.splitlines():
         match = re.match(r"\s*([^:：]+)\s*[:：]\s*(.+?)\s*$", line)
         if match:
-            key = SPEC_LABELS.get(match.group(1).strip().casefold())
-            if key:
-                specifications[key] = match.group(2).strip()
+            raw_key = re.sub(r"\s+", " ", match.group(1)).strip()
+            key = SPEC_LABELS.get(raw_key.casefold(), raw_key)
+            specifications[key] = match.group(2).strip()
 
     # 외부 견적을 ERP에 등록할 때 설명이 한 줄(``M100, 색상: 흰색``)로
     # 저장되는 경우도 있으므로 줄 시작에 한정하지 않고 알려진 라벨을 찾는다.
