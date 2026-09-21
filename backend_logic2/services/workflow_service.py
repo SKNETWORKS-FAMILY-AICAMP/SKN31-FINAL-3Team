@@ -327,9 +327,10 @@ def _is_missing_erp_document(exc: ERPNextAPIError) -> bool:
     return "404" in str(exc)
 
 
-def _close_case_missing_in_erp(case: dict[str, Any], *, triggered_by: str) -> dict[str, Any]:
+def _close_case_no_longer_pending(
+    case: dict[str, Any], *, reason: str, triggered_by: str
+) -> dict[str, Any]:
     case_id = str(case["case_id"])
-    reason = "ERPNext에서 Material Request가 삭제되어 대사 과정에서 종료했습니다."
     closed = case_repository.transition_case(
         case_id,
         status="CANCELLED",
@@ -341,6 +342,29 @@ def _close_case_missing_in_erp(case: dict[str, Any], *, triggered_by: str) -> di
     _delete_case_notifications_safely(case_id)
     _delete_thread_checkpoint_safely(case)
     return closed
+
+
+def _close_case_missing_in_erp(case: dict[str, Any], *, triggered_by: str) -> dict[str, Any]:
+    return _close_case_no_longer_pending(
+        case,
+        reason="ERPNext에서 Material Request가 삭제되어 대사 과정에서 종료했습니다.",
+        triggered_by=triggered_by,
+    )
+
+
+def _close_case_submitted_outside_biddingflow(
+    case: dict[str, Any], *, triggered_by: str
+) -> dict[str, Any]:
+    """Close an unstarted inbox case that was submitted directly in ERPNext."""
+
+    return _close_case_no_longer_pending(
+        case,
+        reason=(
+            "ERPNext에서 Material Request가 외부 제출되어 "
+            "Bidding Flow 대기 목록에서 종료했습니다."
+        ),
+        triggered_by=triggered_by,
+    )
 
 
 def sync_draft_material_requests(*, reconcile_existing: bool = True) -> list[dict[str, Any]]:
@@ -412,17 +436,23 @@ def sync_draft_material_requests(*, reconcile_existing: bool = True) -> list[dic
         if material_request is None:
             _close_case_missing_in_erp(persisted_case, triggered_by="reconciliation")
             continue
-        if int(material_request.get("docstatus") or 0) == 2:
+        docstatus = int(material_request.get("docstatus") or 0)
+        if docstatus == 2:
             reason = "ERPNext에서 Material Request가 취소되어 대사 과정에서 종료했습니다."
-            closed = case_repository.transition_case(
-                str(persisted_case["case_id"]),
-                status="CANCELLED",
-                stage="CANCELLED",
+            closed = _close_case_no_longer_pending(
+                persisted_case,
                 reason=reason,
                 triggered_by="reconciliation",
             )
-            task_repository.cancel_pending_tasks(str(persisted_case["case_id"]), reason=reason)
-            _delete_case_notifications_safely(str(persisted_case["case_id"]))
+            cases_by_mr[mr_name] = closed
+            continue
+        if (
+            docstatus == 1
+            and persisted_case.get("status") == "AWAITING_MR_REVIEW"
+        ):
+            closed = _close_case_submitted_outside_biddingflow(
+                persisted_case, triggered_by="reconciliation"
+            )
             cases_by_mr[mr_name] = closed
             continue
         if len(material_request.get("items") or []) == 1:
@@ -510,21 +540,23 @@ def register_material_request_event(
             # Webhook은 Insert뿐 아니라 Submit/Cancel 갱신에도 올 수 있다.
             # 이미 실행 중인 케이스를 Draft 초기 상태로 되돌리지 않는다.
             case = case_repository.get_case_by_mr(mr_name) or {"mr_name": mr_name}
-            if docstatus == 2 and case.get("case_id") and case.get("status") not in {
+            if (
+                docstatus == 1
+                and case.get("case_id")
+                and case.get("status") == "AWAITING_MR_REVIEW"
+            ):
+                case = _close_case_submitted_outside_biddingflow(
+                    case, triggered_by="erpnext_webhook"
+                )
+            elif docstatus == 2 and case.get("case_id") and case.get("status") not in {
                 "CANCELLED", "REJECTED", "COMPLETED"
             }:
                 cancel_reason = "ERPNext에서 Material Request가 취소되었습니다."
-                case = case_repository.transition_case(
-                    str(case["case_id"]),
-                    status="CANCELLED",
-                    stage="CANCELLED",
+                case = _close_case_no_longer_pending(
+                    case,
                     reason=cancel_reason,
                     triggered_by="erpnext_webhook",
                 )
-                task_repository.cancel_pending_tasks(
-                    str(case["case_id"]), reason=cancel_reason
-                )
-                _delete_case_notifications_safely(str(case["case_id"]))
     except Exception as exc:
         event_repository.fail_event(str(event["event_id"]), str(exc))
         raise
