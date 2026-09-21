@@ -337,27 +337,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SKN31 Purchasing Agent API", lifespan=lifespan)
 
-# SITE_URL(ERPNext 주소)을 CORS 허용 목록에 자동으로 추가함(2026-09-01) -
+# ERPNext 주소를 CORS 허용 목록에 자동으로 추가함(2026-09-01) -
 # MR의 "AI 대체품 확인" Client Script가 ERPNext 페이지 안에서 이 API로
 # fetch()를 날리는데, ERPNext 주소가 이 목록에 없으면 브라우저가 CORS로
-# 그 요청 자체를 막아버림(배포 위치가 어디든 상관없이 무조건 걸리는
-# 문제라 SITE_URL 기준으로 자동 반영되게 함 - .env에 SITE_URL 값이
-# 바뀌어도 여기 따로 손댈 필요 없음).
+# 그 요청 자체를 막아버린다. ERPNEXT_BASE_URL은 서버 내부 주소이고
+# SITE_URL은 브라우저가 여는 공개 주소인 배포도 있으므로 둘 다 허용한다.
 configured_frontend_origins = [
     value.strip().rstrip("/")
     for value in os.getenv("FRONTEND_ORIGINS", "").split(",")
     if value.strip()
 ]
+configured_erp_origins = [
+    value.strip().rstrip("/")
+    for value in (
+        os.getenv("ERPNEXT_BASE_URL", ""),
+        os.getenv("SITE_URL", ""),
+        SITE_URL,
+    )
+    if value.strip()
+]
+allowed_origins = list(dict.fromkeys([
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    *configured_erp_origins,
+    *configured_frontend_origins,
+]))
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        SITE_URL.rstrip("/"),
-        *configured_frontend_origins,
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
