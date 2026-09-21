@@ -1,7 +1,8 @@
 """
 nexterp 자동화 - ERPNext API 클라이언트
 
-연결 설정(SITE_URL, API_KEY, API_SECRET)은 .env에서 가져옴.
+연결 설정(ERPNEXT_BASE_URL, ERPNEXT_API_KEY, ERPNEXT_API_SECRET)은 .env에서
+가져오며, 기존 SITE_URL/API_KEY/API_SECRET도 하위 호환용으로 지원함.
 설정값 바꾸고 싶으면 .env 파일을 수정할 것 (config.py는 더 이상 안 씀).
 """
 
@@ -22,9 +23,18 @@ load_dotenv()
 
 router = APIRouter(prefix="/purchase", tags=["Purchase Order Automation"])
 
-SITE_URL = os.environ["SITE_URL"]
-API_KEY = os.environ["API_KEY"]
-API_SECRET = os.environ["API_SECRET"]
+SITE_URL = (
+    os.environ.get("ERPNEXT_BASE_URL", "").strip()
+    or os.environ.get("SITE_URL", "").strip()
+).rstrip("/")
+API_KEY = (
+    os.environ.get("ERPNEXT_API_KEY", "").strip()
+    or os.environ.get("API_KEY", "").strip()
+)
+API_SECRET = (
+    os.environ.get("ERPNEXT_API_SECRET", "").strip()
+    or os.environ.get("API_SECRET", "").strip()
+)
 
 HEADERS = {
     "Authorization": f"token {API_KEY}:{API_SECRET}",
@@ -33,7 +43,11 @@ HEADERS = {
 }
 
 if not all([SITE_URL, API_KEY, API_SECRET]):
-    raise RuntimeError("필수 환경 변수(SITE_URL, API_KEY, API_SECRET)가 .env 파일에 설정되지 않았습니다.")
+    raise RuntimeError(
+        "필수 ERPNext 연결 환경 변수(ERPNEXT_BASE_URL, ERPNEXT_API_KEY, "
+        "ERPNEXT_API_SECRET)가 .env 파일에 설정되지 않았습니다. 기존 "
+        "SITE_URL/API_KEY/API_SECRET도 호환됩니다."
+    )
 
 
 class ERPNextAPIError(Exception):

@@ -208,7 +208,10 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
         fields=["item_code", "item_name", "description"],
         limit=500,
     )
-    raw_candidates = [c for c in (raw_candidates or []) if c["item_code"] != item_code]
+    raw_candidates = [
+        {**candidate, "is_original_item": candidate["item_code"] == item_code}
+        for candidate in (raw_candidates or [])
+    ]
     print(f"    -> 후보 조회: {len(raw_candidates)}건 "
           f"{[c['item_code'] for c in raw_candidates]}")
 
@@ -230,8 +233,38 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
     if not stocked_candidates:
         return []
 
-    # ③ AI 최종 판단 (호출 2번째)
-    ranking = _ai_rank_substitutes(item_name, item_description, qty_needed, stocked_candidates, max_results)
+    # ③ 원본 품목 재고는 AI 판단 없이 항상 첫 번째로 알리고, 나머지
+    # 후보만 AI가 실제 대체 가능성을 판단한다.
+    original_stock = next(
+        (candidate for candidate in stocked_candidates if candidate["is_original_item"]),
+        None,
+    )
+    alternative_candidates = [
+        candidate
+        for candidate in stocked_candidates
+        if not candidate["is_original_item"]
+    ]
+    ranking = []
+    if original_stock is not None:
+        ranking.append({
+            "item_code": item_code,
+            "rank": 1,
+            "reason": (
+                f"요청한 원본 품목 재고가 {original_stock['total_qty']}개 있어 "
+                "신규 구매 대신 기존 재고를 사용할 수 있습니다."
+            ),
+        })
+    remaining = max(0, max_results - len(ranking))
+    if alternative_candidates and remaining:
+        ai_ranking = _ai_rank_substitutes(
+            item_name,
+            item_description,
+            qty_needed,
+            alternative_candidates,
+            remaining,
+        )
+        for position, assessment in enumerate(ai_ranking[:remaining], len(ranking) + 1):
+            ranking.append({**assessment, "rank": position})
     print(f"    -> AI 최종 선정 대체품: {len(ranking)}건 "
           f"{[(r.get('item_code'), r.get('reason')) for r in ranking]}")
 
@@ -247,6 +280,7 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
             "item_name": c["item_name"],
             "description": c.get("description"),
             "total_qty": c["total_qty"],
+            "is_original_item": c["is_original_item"],
             "rank": r.get("rank"),
             "reason": r.get("reason"),
             "last_rate": _get_last_purchase_rate(code),
@@ -330,8 +364,9 @@ def notify_requester_of_substitutes(mr: dict, substitute_results: dict) -> None:
 
     lines = ["[AI Procurement] 대체품 후보가 확인되었습니다.", ""]
     for i, sub in enumerate(flattened, start=1):
+        item_kind = "[원본 재고] " if sub.get("is_original_item") else ""
         lines.append(
-            f"{i}. {sub.get('item_name')} ({sub.get('item_code')}) "
+            f"{i}. {item_kind}{sub.get('item_name')} ({sub.get('item_code')}) "
             f"- 재고 {sub.get('total_qty')} - {sub.get('reason')}"
         )
     lines.append("")

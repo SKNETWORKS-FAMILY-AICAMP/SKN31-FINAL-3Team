@@ -160,6 +160,10 @@ def submit_substitute_decision(
 
     app = get_process_app()
     thread_id = _resolve_thread_id(mr_name)
+    current_values = (app.get_state(_config(thread_id)).values) or {}
+    current_candidates = flatten_substitute_candidates(
+        current_values.get("substitute_results", {})
+    )
     resume_data = {}
     if body.decision:
         resume_data["decision"] = body.decision
@@ -180,10 +184,16 @@ def submit_substitute_decision(
             str(body.decision or "").strip().lower() == "new_purchase"
             or str(body.item_code or "").strip().lower() == "new_purchase"
         )
+        uses_original_stock = any(
+            candidate.get("item_code") == body.item_code
+            and candidate.get("is_original_item")
+            for candidate in current_candidates
+        )
         project_substitute_decision(
             mr_name,
             new_purchase=is_new_purchase,
             selected_item_code=None if is_new_purchase else body.item_code,
+            existing_stock=uses_original_stock,
         )
     except Exception as exc:
         print(f"[mr_substitute_routes] 구매 작업 상태 투영 실패({mr_name}): {exc}")

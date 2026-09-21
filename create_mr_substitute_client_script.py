@@ -59,10 +59,11 @@ frappe.ui.form.on('Material Request', {{
                 }}
 
                 let fields = data.candidates.map(function(c, i) {{
+                    let itemKind = c.is_original_item ? '[원본 재고] ' : '';
                     return {{
                         fieldtype: 'Button',
                         fieldname: 'choice_' + i,
-                        label: (i + 1) + '. ' + c.item_name + ' (재고 ' + c.total_qty + ') - ' + (c.reason || ''),
+                        label: (i + 1) + '. ' + itemKind + c.item_name + ' (재고 ' + c.total_qty + ') - ' + (c.reason || ''),
                         click: function() {{
                             submit_substitute_decision(frm, {{item_code: c.item_code}});
                             d.hide();

@@ -210,7 +210,7 @@ def substitute_selection_command(state: PurchaseProcessState) -> Command:
         "type": "substitute_selection",
         "mr_name": state["mr_name"],
         "substitute_results": substitute_results,
-        "instructions": "대체품 중 하나를 item_code로 선택하거나, "
+        "instructions": "원본 재고 또는 대체품 중 하나를 item_code로 선택하거나, "
                          "'new_purchase'로 신규구매를 진행하세요.",
         "allowed_item_codes": [s["item_code"] for s in all_substitutes],
     })
@@ -228,12 +228,17 @@ def substitute_selection_command(state: PurchaseProcessState) -> Command:
         return Command(
             update={
                 "status": "awaiting_substitute_selection",
-                "error": "유효한 대체품 item_code 또는 'new_purchase'를 선택하세요.",
+                "error": "유효한 재고 후보 item_code 또는 'new_purchase'를 선택하세요.",
             },
             goto="substitute_selection",
         )
 
-    _apply_substitute_selected_to_mr(state["mr_name"], choice)
+    selected = next(candidate for candidate in all_substitutes if candidate["item_code"] == choice)
+    _apply_substitute_selected_to_mr(
+        state["mr_name"],
+        choice,
+        existing_stock=bool(selected.get("is_original_item")),
+    )
 
     return Command(
         update={"status": "substitute_selected", "selected_substitute": choice, "error": ""},
@@ -241,18 +246,28 @@ def substitute_selection_command(state: PurchaseProcessState) -> Command:
     )
 
 
-def _apply_substitute_selected_to_mr(mr_name: str, item_code: str) -> None:
-    """요청자가 대체품을 선택하면 원본 Draft MR을 즉시 폐기한다.
+def _apply_substitute_selected_to_mr(
+    mr_name: str,
+    item_code: str,
+    *,
+    existing_stock: bool = False,
+) -> None:
+    """요청자가 기존 재고나 대체품을 선택하면 원본 Draft MR을 폐기한다.
 
     이 단계까지 MR은 의도적으로 Draft를 유지한다. 표준 Discard가 실패한
     경우 그래프도 실패로 남겨 ERP와 BiddingFlow 상태가 어긋나지 않게 한다.
     """
     from backend_logic2.nodes.mr.reject_material_request import reject_material_request
 
+    reason = (
+        f"원본 품목({item_code})의 기존 재고 사용이 확정되어 구매 MR을 종료합니다."
+        if existing_stock
+        else f"대체품({item_code}) 사용이 확정되어 원본 MR을 종료합니다."
+    )
     reject_material_request(
         mr_name,
-        f"대체품({item_code}) 사용이 확정되어 원본 MR을 종료합니다.",
-        reason_code="SUBSTITUTE_SELECTED",
+        reason,
+        reason_code="EXISTING_STOCK_SELECTED" if existing_stock else "SUBSTITUTE_SELECTED",
     )
 
 

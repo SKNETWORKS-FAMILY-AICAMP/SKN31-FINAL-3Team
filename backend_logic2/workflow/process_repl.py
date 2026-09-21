@@ -59,8 +59,9 @@ def _handle_substitute_selection(payload: dict) -> dict:
 
     print("대체품 후보:")
     for i, s in enumerate(flattened, 1):
+        item_kind = "[원본 재고] " if s.get("is_original_item") else ""
         print(
-            f"  {i}. {s['item_code']} - {s.get('item_name')} "
+            f"  {i}. {item_kind}{s['item_code']} - {s.get('item_name')} "
             f"(재고 {s.get('total_qty')}) - {s.get('reason')}"
         )
     print("  n. 신규구매(대체품 안 씀, new_purchase)")

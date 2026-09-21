@@ -201,6 +201,11 @@ def process_mr(mr_name: str) -> None:
             mr_name,
             new_purchase=parsed.get("decision") == "new_purchase",
             selected_item_code=parsed.get("item_code"),
+            existing_stock=any(
+                candidate.get("item_code") == parsed.get("item_code")
+                and candidate.get("is_original_item")
+                for candidate in flattened
+            ),
         )
     except Exception as exc:
         print(f"  [{mr_name}] 댓글 결정의 구매 화면 투영 실패: {exc}")

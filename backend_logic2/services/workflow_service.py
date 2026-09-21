@@ -939,6 +939,7 @@ def project_substitute_decision(
     *,
     new_purchase: bool = False,
     selected_item_code: str | None = None,
+    existing_stock: bool = False,
 ) -> dict[str, Any] | None:
     """Project a requester decision and publish the corresponding UI event.
 
@@ -962,6 +963,22 @@ def project_substitute_decision(
             title="신규구매가 요청되었습니다",
             message=f"{mr_name} · 요청자가 대체품 대신 신규구매 진행을 선택했습니다.",
             payload={"mr_name": mr_name, "stage": projected.get("stage")},
+        )
+    elif selected_item_code and existing_stock:
+        _create_notification_safely(
+            case_id=case_id,
+            recipient_id=case.get("assigned_user_id"),
+            notification_type="EXISTING_STOCK_SELECTED",
+            title="기존 재고 사용이 확정되었습니다",
+            message=(
+                f"{mr_name} · 요청자가 원본 품목 {selected_item_code}의 기존 재고를 "
+                "사용하기로 하여 구매 요청이 종료되었습니다."
+            ),
+            payload={
+                "mr_name": mr_name,
+                "item_code": selected_item_code,
+                "stage": projected.get("stage"),
+            },
         )
     elif selected_item_code:
         _create_notification_safely(
