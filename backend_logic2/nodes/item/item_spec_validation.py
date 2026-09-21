@@ -10,7 +10,7 @@ nodes/item/item_spec_validation.py — item_group별 필수규격 정의 + 신�
 복구에서는 item_service.reconcile_disabled_items가 같은 진입점을 호출함.
 
 설계 결정(사용자 확인, 2026-09-01):
-  - item_group 최초 정의: AI(gpt-4o-mini, temperature=0 - 일관성 우선)한테
+  - item_group 최초 정의: AI(gpt-5.6-luna, temperature=0 - 일관성 우선)한테
     "이 카테고리 진짜 최소 필수규격이 뭐야" 물어보고 바로 저장. 사람이
     사전에 검토해야 하는 게이트는 안 둠 - DB 한 줄이라 나중에 틀린 게
     보이면 그때 그 카테고리만 고치면 됨(케이스로깅과 같은 "실패해도
@@ -179,7 +179,7 @@ def _ai_define_required_specs(item_group: str) -> dict:
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     prompt = PromptTemplate.from_template(
         "당신은 기업 구매팀의 품목등록 검수 담당자입니다. "
         "다음 품목분류(item_group)에 대해, 구매요청서에 '이것만은 반드시' "
@@ -244,7 +244,7 @@ def _ai_check_completeness(item_group: str, description: str, required_specs: li
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     prompt = PromptTemplate.from_template(
         "다음은 품목분류 '{item_group}'에 대한 구매요청 설명입니다.\n\n"
         "[설명]\n{description}\n\n"

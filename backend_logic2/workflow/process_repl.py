@@ -59,8 +59,10 @@ def _handle_substitute_selection(payload: dict) -> dict:
 
     print("대체품 후보:")
     for i, s in enumerate(flattened, 1):
-        fulfill = "전량충족" if s.get("fulfills_full_qty") else f"부분충족({s.get('total_qty')})"
-        print(f"  {i}. {s['item_code']} - {s.get('item_name')} ({fulfill}) - {s.get('reason')}")
+        print(
+            f"  {i}. {s['item_code']} - {s.get('item_name')} "
+            f"(재고 {s.get('total_qty')}) - {s.get('reason')}"
+        )
     print("  n. 신규구매(대체품 안 씀, new_purchase)")
 
     choice = _ask("선택 (번호 또는 n): ")

@@ -55,7 +55,7 @@ def normalize_item_name(item_name):
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     prompt = PromptTemplate.from_template(
         "당신은 B2B 구매/검색 시스템의 품목명 정규화 전문가입니다.\n"
         "입력된 ERP 상세 품목명에서 브랜드, 모델명, 용량/수치/스펙(전압, 무게, 규격, 색상, 맛 등), 포장단위를 모두 제거하고,\n"
@@ -122,7 +122,7 @@ def _filter_corporate_results(item_name, results):
     if not results:
         return []
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     items_text = "\n".join(
         f"{i}. 제목: {r.get('title', '')}\n   URL: {r.get('url', '')}\n   내용: {(r.get('content') or r.get('raw_content') or '')[:150]}"
         for i, r in enumerate(results)
@@ -168,7 +168,7 @@ def _extract_company_names_llm(item_name, text, case_id=None):
     if not text.strip():
         return []
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     prompt = PromptTemplate.from_template(
         "다음은 '{item_name}' 관련 검색결과 텍스트 모음입니다. "
         "이 안에서 실제 판매,공급업체로 보이는 회사명들을 찾아서 목록으로 뽑아주세요.\n\n"

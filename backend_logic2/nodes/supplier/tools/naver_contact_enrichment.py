@@ -145,7 +145,7 @@ def _pick_best_site_candidate(company_name, candidates, item_name=None, case_id=
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     item_context = f" (참고: 이 회사는 '{item_name}' 관련 업체로 추정됨)" if item_name else ""
     candidates_text = "\n".join(
         f"{i}. 제목: {c['title']} | URL: {c['link']} | 설명: {c['description']}"
@@ -333,7 +333,7 @@ def _extract_contacts_batch(companies, item_name=None, case_id=None):
     if not companies:
         return {}
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
 
     item_instruction = (
         f"\n각 회사가 실제로 '{item_name}'을(를) 취급한다는 근거가 페이지에 "

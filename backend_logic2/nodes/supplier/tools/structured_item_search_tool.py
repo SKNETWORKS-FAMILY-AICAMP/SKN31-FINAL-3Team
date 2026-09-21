@@ -49,7 +49,7 @@ def extract_structured_item(raw_item_name: str) -> dict:
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     prompt = PromptTemplate.from_template(
         "다음은 ERP에 등록된 품목명입니다. 이걸 아래 필드로 구조화해서 "
         "분해하세요.\n\n"

@@ -56,7 +56,7 @@ def _get_core_keyword(item_name: str) -> str:
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     prompt = PromptTemplate.from_template(
         "다음은 회사 내부에서 쓰는 품목명입니다. 색상·규격·사이즈·관리번호·등급·"
         "품질수식어 등 부가정보를 다 떼어내고, 핵심 물건 이름(명사)만 뽑아주세요.\n\n"
@@ -96,13 +96,14 @@ def _get_last_purchase_rate(item_code):
 
 
 def _check_stock(candidate, qty_needed):
-    """후보 하나의 재고를 조회 (병렬실행용 단위작업)"""
+    """요청수량을 엄격히 초과하는 후보 재고만 반환한다."""
     bins = erp_get(
         "Bin",
         filters=[["item_code", "=", candidate["item_code"]], ["actual_qty", ">", 0]],
         fields=["actual_qty"],
     )
     total_qty = sum(b["actual_qty"] for b in (bins or []))
+    # 운영 기준상 요청량과 같은 재고도 제외한다. 반드시 여유 재고가 있어야 한다.
     if total_qty > qty_needed:
         return {**candidate, "total_qty": total_qty}
     return None
@@ -122,7 +123,7 @@ def _ai_rank_substitutes(item_name, item_description, qty_needed, candidates, ma
     if not candidates:
         return []
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
 
     candidates_json = [
         {
@@ -146,7 +147,8 @@ def _ai_rank_substitutes(item_name, item_description, qty_needed, candidates, ma
         "이름이 비슷해도 제외하세요.\n"
         "- 스펙이 원본보다 낮아도(다운그레이드) 용도가 같으면 후보에 포함하되, "
         "reason에 그 사실을 명시하세요.\n"
-        "- 재고가 요청수량보다 적으면 reason에 '부분충족(N개)'이라고 언급하세요.\n"
+        "- 후보는 모두 요청수량보다 많은 재고를 보유하므로 수량 충족 여부를 "
+        "다시 판단하거나 reason에 언급하지 마세요.\n"
         "- 적합한 후보가 하나도 없으면 빈 리스트를 반환하세요.\n\n"
         '반드시 이 JSON 형식으로만 답하세요: '
         '{{"ranking": [{{"item_code": "...", "rank": 1, "reason": "짧은 이유"}}]}}'
@@ -179,7 +181,7 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
     ③ AI 1번 호출로 실제 대체가능한 것만 순위+이유 매겨서 반환
 
     반환: [{"item_code", "item_name", "description", "total_qty",
-            "fulfills_full_qty", "rank", "reason"}, ...]
+            "rank", "reason"}, ...]
     """
     item = erp_get_one("Item", item_code)
     if not item:
@@ -204,6 +206,7 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
         "Item",
         filters=filters,
         fields=["item_code", "item_name", "description"],
+        limit=500,
     )
     raw_candidates = [c for c in (raw_candidates or []) if c["item_code"] != item_code]
     print(f"    -> 후보 조회: {len(raw_candidates)}건 "
@@ -244,7 +247,6 @@ def find_substitute_items(item_code: str, qty_needed, max_results: int = 5) -> l
             "item_name": c["item_name"],
             "description": c.get("description"),
             "total_qty": c["total_qty"],
-            "fulfills_full_qty": c["total_qty"] >= qty_needed,
             "rank": r.get("rank"),
             "reason": r.get("reason"),
             "last_rate": _get_last_purchase_rate(code),
@@ -328,10 +330,9 @@ def notify_requester_of_substitutes(mr: dict, substitute_results: dict) -> None:
 
     lines = ["[AI Procurement] 대체품 후보가 확인되었습니다.", ""]
     for i, sub in enumerate(flattened, start=1):
-        fulfill = "전량충족" if sub.get("fulfills_full_qty") else f"부분충족({sub.get('total_qty')}개)"
         lines.append(
             f"{i}. {sub.get('item_name')} ({sub.get('item_code')}) "
-            f"- 재고 {sub.get('total_qty')} ({fulfill}) - {sub.get('reason')}"
+            f"- 재고 {sub.get('total_qty')} - {sub.get('reason')}"
         )
     lines.append("")
     lines.append("이 화면 위쪽의 'AI 대체품 확인' 버튼을 눌러서 선택해주세요:")
@@ -375,9 +376,8 @@ if __name__ == "__main__":
 
         for s in sorted(info["substitutes"], key=lambda x: x.get("rank") or 99):
             rate_disp = f"{s['last_rate']:,.0f}원" if s["last_rate"] is not None else "구매이력 없음"
-            fulfill_disp = "전량충족" if s["fulfills_full_qty"] else f"부분충족({s['total_qty']}개만 있음)"
 
             print(f"\n  #{s['rank']} {s['item_name']} ({s['item_code']})")
-            print(f"  재고: {s['total_qty']} | {fulfill_disp}")
+            print(f"  재고: {s['total_qty']} (요청수량 초과)")
             print(f"  최근단가: {rate_disp}")
             print(f"  AI 판단 이유: {s['reason']}")

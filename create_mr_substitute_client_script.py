@@ -59,11 +59,10 @@ frappe.ui.form.on('Material Request', {{
                 }}
 
                 let fields = data.candidates.map(function(c, i) {{
-                    let fulfill = c.fulfills_full_qty ? '전량충족' : '부분충족';
                     return {{
                         fieldtype: 'Button',
                         fieldname: 'choice_' + i,
-                        label: (i + 1) + '. ' + c.item_name + ' (재고 ' + c.total_qty + ', ' + fulfill + ') - ' + (c.reason || ''),
+                        label: (i + 1) + '. ' + c.item_name + ' (재고 ' + c.total_qty + ') - ' + (c.reason || ''),
                         click: function() {{
                             submit_substitute_decision(frm, {{item_code: c.item_code}});
                             d.hide();
@@ -147,15 +146,15 @@ function biddingflow_parse_candidates(content) {
         .split('\n')
         .map(function(line) { return line.trim(); })
         .map(function(line) {
-            const match = line.match(/^(\d+)\.\s+(.+)\s+\(([^()]+)\)\s+-\s+재고\s+([\d,.]+)\s+\(([^)]+)\)\s+-\s*(.*)$/);
+            // 괄호 안의 예전 상태 표기도 기존 대기 건 호환을 위해 허용한다.
+            const match = line.match(/^(\d+)\.\s+(.+)\s+\(([^()]+)\)\s+-\s+재고\s+([\d,.]+)(?:\s+\([^)]+\))?\s+-\s*(.*)$/);
             if (!match) return null;
             return {
                 number: parseInt(match[1], 10),
                 item_name: match[2],
                 item_code: match[3],
                 total_qty: match[4],
-                fulfillment: match[5],
-                reason: match[6]
+                reason: match[5]
             };
         })
         .filter(Boolean);
@@ -225,7 +224,7 @@ function biddingflow_show_substitute_dialog(frm, comment) {
             fieldname: 'candidate_' + candidate.number,
             label: candidate.number + '. ' + candidate.item_name +
                 ' (' + candidate.item_code + ') · 재고 ' + candidate.total_qty +
-                ' · ' + candidate.fulfillment,
+                ' · ' + candidate.reason,
             click: function() {
                 biddingflow_post_substitute_reply(frm, String(candidate.number), dialog);
             }
