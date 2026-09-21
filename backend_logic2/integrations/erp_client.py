@@ -11,7 +11,7 @@ import os
 from email.utils import getaddresses
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
@@ -337,6 +337,46 @@ def erp_post(doctype, payload):
     if res.status_code not in (200, 201):
         raise ERPNextAPIError(f"POST {doctype}: {res.status_code} - {res.text[:500]}")
     return res.json().get("data")
+
+
+def ensure_item_supplier(item_code: str, supplier_name: str) -> dict:
+    """ERPNext Item의 승인 공급사 목록에 공급사를 중복 없이 연결한다."""
+    item_code = str(item_code or "").strip()
+    supplier_name = str(supplier_name or "").strip()
+    if not item_code or not supplier_name:
+        raise ValueError("Item 코드와 Supplier 이름이 모두 필요합니다.")
+
+    item = erp_get_one("Item", item_code)
+    if not item:
+        raise ERPNextAPIError(f"Item/{item_code}: 문서를 찾을 수 없습니다.")
+
+    supplier_items = list(item.get("supplier_items") or [])
+    if any(
+        str(row.get("supplier") or "").strip() == supplier_name
+        for row in supplier_items
+        if isinstance(row, dict)
+    ):
+        return {
+            "item_code": item_code,
+            "supplier": supplier_name,
+            "created": False,
+        }
+
+    supplier_items.append({"supplier": supplier_name})
+    response = requests.put(
+        f"{SITE_URL}/api/resource/Item/{quote(item_code, safe='')}",
+        headers=HEADERS,
+        json={"supplier_items": supplier_items},
+    )
+    if response.status_code != 200:
+        raise ERPNextAPIError(
+            f"Item 공급사 연결 실패: {response.status_code} - {response.text[:500]}"
+        )
+    return {
+        "item_code": item_code,
+        "supplier": supplier_name,
+        "created": True,
+    }
 
 
 def erp_submit(doctype, name, max_retries=3):

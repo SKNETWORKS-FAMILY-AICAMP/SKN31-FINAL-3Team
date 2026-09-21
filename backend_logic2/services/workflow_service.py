@@ -1072,6 +1072,7 @@ def resume_task(
         )
 
     if task["task_type"] == "supplier_scorecard":
+        from backend_logic2.integrations.erp_client import ensure_item_supplier
         from backend_logic2.repositories.deliveries import complete_scorecard, get_delivery_by_case
         from backend_logic2.services.scorecard_service import completed_scores
 
@@ -1083,7 +1084,14 @@ def resume_task(
             expected_version=expected_version,
         )
         try:
-            complete_scorecard(str(case["case_id"]), answer)
+            completed_delivery = complete_scorecard(str(case["case_id"]), answer)
+            item_code = str(case.get("item_code") or "").strip()
+            supplier = str(completed_delivery.get("supplier") or "").strip()
+            if not item_code or not supplier:
+                raise ValueError(
+                    "완료된 협력사 평가에서 Item 코드 또는 Supplier를 확인할 수 없습니다."
+                )
+            ensure_item_supplier(item_code, supplier)
         except Exception:
             task_repository.release_claimed_task(
                 task_id, claimed_version=int(claimed["version"])

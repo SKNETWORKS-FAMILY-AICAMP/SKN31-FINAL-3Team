@@ -93,7 +93,8 @@ def test_submission_persists_server_scores_and_completes_workflow(basis, has_pri
         patch.object(workflow_service.task_repository, "get_task", return_value=task),
         patch.object(workflow_service.case_repository, "get_case", return_value=case),
         patch("backend_logic2.repositories.deliveries.get_delivery_by_case", return_value=delivery),
-        patch("backend_logic2.repositories.deliveries.complete_scorecard") as save,
+        patch("backend_logic2.repositories.deliveries.complete_scorecard", return_value=delivery) as save,
+        patch("backend_logic2.integrations.erp_client.ensure_item_supplier") as link_supplier,
         patch.object(workflow_service.task_repository, "claim_task", return_value={"version": 2}),
         patch.object(workflow_service.task_repository, "complete_claimed_task") as complete,
         patch.object(workflow_service, "_delete_case_notifications_safely"),
@@ -107,6 +108,7 @@ def test_submission_persists_server_scores_and_completes_workflow(basis, has_pri
     else:
         assert "price" not in save.call_args.args[1]
         assert save.call_args.args[1]["calculation"]["excluded_fields"] == ["price"]
+    link_supplier.assert_called_once_with("ITEM-1", "A")
     complete.assert_called_once()
     assert transition.call_args.kwargs["status"] == "COMPLETED"
 

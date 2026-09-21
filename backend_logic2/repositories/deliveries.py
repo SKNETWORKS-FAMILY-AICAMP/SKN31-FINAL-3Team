@@ -349,6 +349,22 @@ def complete_scorecard(case_id: str, scorecard: dict[str, Any]) -> dict[str, Any
             """,
             {"case_id": case_id, "scorecard": Jsonb(scorecard)},
         ).fetchone()
+        if row is None:
+            # ERPNext Item 연결만 실패한 경우에는 Scorecard가 먼저 저장되어
+            # 작업이 재시도될 수 있다. 동일한 평가 결과는 멱등 성공으로
+            # 취급해 후속 ERP 동기화를 다시 실행할 수 있게 한다.
+            completed = connection.execute(
+                """
+                SELECT *
+                FROM procurement.purchase_order_delivery
+                WHERE case_id = %(case_id)s
+                  AND delivery_status = 'FULL'
+                  AND scorecard_status = 'COMPLETED'
+                """,
+                {"case_id": case_id},
+            ).fetchone()
+            if completed is not None and (completed.get("scorecard") or {}) == scorecard:
+                row = completed
     if row is None:
         raise ValueError("전체 입고가 확인된 평가 대기 건만 Scorecard를 제출할 수 있습니다.")
     return dict(row)
