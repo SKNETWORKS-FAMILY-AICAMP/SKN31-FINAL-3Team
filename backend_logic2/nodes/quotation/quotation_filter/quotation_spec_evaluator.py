@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 from openai import OpenAI
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 import requests
 
 from .quotation_models import QuotationReview, RFQRequirements
@@ -48,7 +48,17 @@ class QuotationSpecAssessment(BaseModel):
     confidence: float | None = Field(default=None, ge=0, le=1, exclude=True)
     score: float = Field(ge=0, le=100)
     reason: str
-    items: list[SpecItemAssessment]
+    items: list[SpecItemAssessment] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def derive_score_from_items(self) -> "QuotationSpecAssessment":
+        """Do not trust model arithmetic when item scores are authoritative."""
+
+        self.score = round(
+            sum(item.score for item in self.items) / len(self.items),
+            2,
+        )
+        return self
 
 
 class QuotationSpecAssessmentBatch(BaseModel):
@@ -90,7 +100,8 @@ RFQ의 specifications와 각 Supplier Quotation의 specifications 및 특약/비
 - score는 (충족한 필수 규격 수 / 전체 필수 규격 수) × 100을 기본으로 하되 부분 충족은
   해당 항목에 부분점수를 줄 수 있습니다. 일부 필수 규격이 불일치해도 나머지 충족 항목의
   점수를 반드시 보존하며, 완전히 다른 제품이거나 근거가 거의 없을 때만 0점을 줍니다.
-- quotation에 품목이 하나뿐이면 quotation score와 item score는 반드시 같아야 합니다.
+- quotation score는 items의 score 산술평균이며 소수점 둘째 자리까지 계산합니다.
+  quotation에 품목이 하나뿐이면 quotation score와 item score는 반드시 같아야 합니다.
 - reason은 프론트 화면에 그대로 표시할 수 있도록 충족한 핵심 규격과 감점한 규격을
   수치·단위와 함께 2~4문장으로 명확하게 설명합니다. reason의 감점 내용과 score가
   모순되어서는 안 됩니다.
