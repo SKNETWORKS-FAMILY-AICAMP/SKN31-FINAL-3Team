@@ -33,17 +33,34 @@ from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations imp
 )
 
 
-ERP_DOMAIN = os.environ.get("SITE_URL")
+ERP_DOMAIN = (
+    os.environ.get("ERP_DOMAIN")
+    or os.environ.get("SITE_URL")
+    or ""
+).strip().rstrip("/")
 if not ERP_DOMAIN:
     raise RuntimeError(
-        "필수 환경 변수 ERP_DOMAIN이 .env 파일에 설정되지 않았습니다. "
-        "(공급사에게 발송되는 PO 포털 링크의 기준 도메인이므로, 배포 환경마다 반드시 직접 지정해야 합니다.)"
+        "필수 환경 변수 ERP_DOMAIN 또는 SITE_URL이 .env 파일에 설정되지 않았습니다. "
+        "(공급사에게 발송되는 PO 포털 링크의 기준 도메인입니다.)"
     )
 
 ERP_PORTAL_PATH_TEMPLATE = os.getenv(
     "ERP_PORTAL_PATH_TEMPLATE",
-    "/orders/{po_name}",
+    "/purchase-orders/{po_name}",
 )
+
+
+def build_po_portal_link(
+    po_name: str,
+    *,
+    domain: str | None = None,
+    path_template: str | None = None,
+) -> str:
+    """Build the supplier-facing ERPNext Purchase Order portal URL."""
+    base_url = (domain or ERP_DOMAIN).strip().rstrip("/")
+    template = path_template or ERP_PORTAL_PATH_TEMPLATE
+    portal_path = template.format(po_name=po_name).strip()
+    return f"{base_url}/{portal_path.lstrip('/')}"
 
 
 def create_and_send_po(
@@ -425,12 +442,7 @@ def create_and_send_po(
     # 11. 이메일 발송
     # ---------------------------------------------------------
 
-    portal_link = (
-        ERP_DOMAIN
-        + ERP_PORTAL_PATH_TEMPLATE.format(
-            po_name=po_name
-        )
-    )
+    portal_link = build_po_portal_link(po_name)
 
     subject = f"발주서(PO) 안내 - {po_name}"
 
@@ -648,7 +660,7 @@ def create_and_send_direct_po(
             "email_sent": False,
         }
 
-    portal_link = ERP_DOMAIN + ERP_PORTAL_PATH_TEMPLATE.format(po_name=po_name)
+    portal_link = build_po_portal_link(po_name)
     references = ", ".join(sorted({
         str(item.get("reference_po"))
         for item in direct_purchase_items.values()
