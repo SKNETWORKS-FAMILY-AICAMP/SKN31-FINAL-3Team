@@ -18,14 +18,74 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import requests
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 RUNPOD_API_BASE_URL = "https://api.runpod.ai/v2"
 TERMINAL_FAILURE_STATUSES = {"CANCELLED", "FAILED", "TIMED_OUT"}
+# "extraction"(기본값)이 아닌 값을 job input의 task로 보내면 워커
+# (quotation_pipeline.py, 이미 배포됨)가 자기 자신의 엄격한
+# schemas.py::validate_extraction()을 건너뛰고 모델이 낸 dict를 그대로
+# 돌려준다(handler.py: task = payload.get("task") or "extraction"). 그
+# 검증은 이 파일의 _validate_extraction_locally()가 백엔드에서 대신 한다.
+# 워커 Docker 이미지를 리빌드/재배포하지 않고도 스키마를 완화하기 위한 우회다.
+LENIENT_EXTRACTION_TASK = "document_text_lenient"
 
 
 class RunPodQuotationParserError(RuntimeError):
     """A safe-to-log error raised by the RunPod transport/response adapter."""
+
+
+class _LenientQuotationItem(BaseModel):
+    """RunPod worker schemas.py::QuotationItem과 값 형태는 동일하되,
+
+    모델이 값을 모르는 필드의 키 자체를 통째로 생략해도(예: 규격이 진짜
+    없는 품목의 specifications) 검증이 실패하지 않도록 모든 선택 필드에
+    `= None`/기본값을 둔다.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_code: str | None = None
+    item_name: str | None = None
+    description: str | None = None
+    quantity: float | int | None = None
+    unit: str | None = None
+    unit_price: float | int | None = None
+    amount: float | int | None = None
+    expected_delivery_date: str | None = None
+    lead_time_days: int | None = None
+    specifications: dict[str, Any] = Field(default_factory=dict)
+    raw_description: str | None = None
+
+
+class _LenientQuotationExtraction(BaseModel):
+    """RunPod worker schemas.py::QuotationExtraction과 값 형태는 동일하되,
+
+    모델이 값을 모르는 필드의 키를 통째로 생략해도(예: 특약사항이 없어
+    notes 키 자체가 빠진 경우) 검증이 실패하지 않도록 모든 선택 필드에
+    `= None`을 둔다. items는 견적의 핵심 데이터라 계속 필수로 둔다.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    quotation_id: str | None = None
+    supplier_name: str | None = None
+    business_registration_no: str | None = None
+    quotation_date: str | None = None
+    valid_until: str | None = None
+    currency: str | None = None
+    subtotal: float | int | None = None
+    tax_amount: float | int | None = None
+    total_amount: float | int | None = None
+    items: list[_LenientQuotationItem]
+    notes: str | None = None
+
+
+def _validate_extraction_locally(value: dict[str, Any]) -> dict[str, Any]:
+    """RunPod 워커의 strict validate_extraction() 대신 백엔드에서 직접 검증한다."""
+
+    return _LenientQuotationExtraction.model_validate(value).model_dump(mode="json")
 
 
 def _positive_float(name: str, default: str) -> float:
@@ -340,6 +400,12 @@ class RunPodQuotationParser:
                 "RunPod 완료 응답에 견적 extraction이 없습니다."
             )
         extraction = dict(extraction)
+        try:
+            extraction = _validate_extraction_locally(extraction)
+        except ValidationError as exc:
+            raise RunPodQuotationParserError(
+                f"RunPod 추출 결과가 예상 스키마와 일치하지 않습니다: {exc}"
+            ) from exc
         from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
             _normalize_currency,
         )
@@ -460,6 +526,10 @@ class RunPodQuotationParser:
             "prompt_version": self.config.prompt_version,
             "prompt_sha256": prompt_sha256,
             "pipeline_version": self.config.pipeline_version,
+            # 워커의 strict validate_extraction()을 건너뛰게 하고, 검증은
+            # 아래 _completed_output()의 _validate_extraction_locally()가
+            # 대신한다 (LENIENT_EXTRACTION_TASK 주석 참고).
+            "task": LENIENT_EXTRACTION_TASK,
             "documents": documents,
             "document_text": document_text,
             "requires_ocr": requires_ocr,
