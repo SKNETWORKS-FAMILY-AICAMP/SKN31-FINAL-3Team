@@ -315,24 +315,57 @@ def _docx_to_text(source: str | Path | bytes, filename: str | None = None) -> tu
 
 
 def _pdf_to_source(data: bytes, filename: str) -> tuple[str, list[VisionInput], list[str]]:
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:  # pragma: no cover - 설치 환경 오류
-        raise RuntimeError("PDF 추출에는 pypdf가 필요합니다.") from exc
+    # 2026-09-22: pymupdf4llm으로 교체. pypdf는 한글 음절 사이에 스페이스가
+    # 끼어드는 문제가 있고, PDF는 DOCX(_tables_to_text)와 달리 별도 표
+    # 추출기가 없어 표 구조가 완전히 평문화되는 문제가 있었다. 실제 RunPod
+    # 견적 추출 파이프라인으로 비교 검증함
+    # (tests/manual_pdf_extraction_comparison.py,
+    #  tests/manual_runpod_quotation_extraction_test.py). 원래 코드는 참고용으로
+    # 남겨둔다.
+    #
+    # try:
+    #     from pypdf import PdfReader
+    # except ImportError as exc:  # pragma: no cover - 설치 환경 오류
+    #     raise RuntimeError("PDF 추출에는 pypdf가 필요합니다.") from exc
+    #
+    # reader = PdfReader(io.BytesIO(data))
+    # pages = [(page.extract_text() or "").strip() for page in reader.pages]
+    # flat_text = "\n\n".join(f"[page {idx}]\n{page}" for idx, page in enumerate(pages, 1) if page)
+    # if not flat_text.strip():
+    #     evidence = [
+    #         f"PDF {len(reader.pages)}페이지에서 텍스트 0자 추출",
+    #         "디지털 텍스트가 없어 페이지를 이미지로 변환해 로컬 비전 모델 사용",
+    #     ]
+    #     return "[스캔 PDF]", _render_scanned_pdf(data, filename), evidence
+    #
+    # return flat_text, [], [
+    #     f"PDF {len(reader.pages)}페이지에서 디지털 텍스트 {len(flat_text)}자 로컬 추출",
+    #     "pypdf 텍스트 레이어 직접 판독(OCR 미사용)",
+    # ]
 
-    reader = PdfReader(io.BytesIO(data))
-    pages = [(page.extract_text() or "").strip() for page in reader.pages]
-    flat_text = "\n\n".join(f"[page {idx}]\n{page}" for idx, page in enumerate(pages, 1) if page)
-    if not flat_text.strip():
+    try:
+        import fitz
+        import pymupdf4llm
+    except ImportError as exc:  # pragma: no cover - 설치 환경 오류
+        raise RuntimeError("PDF 추출에는 pymupdf4llm(및 PyMuPDF)이 필요합니다.") from exc
+
+    document = fitz.open(stream=data, filetype="pdf")
+    try:
+        page_count = document.page_count
+        markdown_text = (pymupdf4llm.to_markdown(document) or "").strip()
+    finally:
+        document.close()
+
+    if not markdown_text:
         evidence = [
-            f"PDF {len(reader.pages)}페이지에서 텍스트 0자 추출",
+            f"PDF {page_count}페이지에서 텍스트 0자 추출",
             "디지털 텍스트가 없어 페이지를 이미지로 변환해 로컬 비전 모델 사용",
         ]
         return "[스캔 PDF]", _render_scanned_pdf(data, filename), evidence
 
-    return flat_text, [], [
-        f"PDF {len(reader.pages)}페이지에서 디지털 텍스트 {len(flat_text)}자 로컬 추출",
-        "pypdf 텍스트 레이어 직접 판독(OCR 미사용)",
+    return markdown_text, [], [
+        f"PDF {page_count}페이지에서 디지털 텍스트 {len(markdown_text)}자 로컬 추출(pymupdf4llm)",
+        "pymupdf4llm 마크다운 변환 직접 판독(OCR 미사용)",
     ]
 
 

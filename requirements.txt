@@ -8,6 +8,7 @@ jinja2
 python-dotenv
 python-docx
 pypdf
+pymupdf4llm
 PyMuPDF
 Pillow
 pandas
