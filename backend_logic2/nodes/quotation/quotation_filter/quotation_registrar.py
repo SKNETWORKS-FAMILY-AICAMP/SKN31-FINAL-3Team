@@ -64,26 +64,29 @@ def _notes_to_terms(notes: str | None) -> str | None:
     ).replace("\n", "<br>")
 
 
-def submit_finalized_quotations(rfq_name: str, ranking: list[dict[str, Any]]) -> list[str]:
+def submit_finalized_quotations(ranking: list[dict[str, Any]]) -> list[str]:
     """최종 순위에 포함된 RFQ 견적을 제출해 이후 수정을 막는다."""
-    quotation_names = {
-        str(row.get("name") or row.get("quotation_id") or "").strip()
+    rows_by_name = {
+        str(row.get("name") or row.get("quotation_id") or "").strip(): row
         for row in ranking
         if str(row.get("name") or row.get("quotation_id") or "").strip()
     }
-    if not quotation_names:
+    if not rows_by_name:
         raise ValueError("확정할 Supplier Quotation 문서명이 없습니다.")
 
     submitted: list[str] = []
-    for quotation_name in sorted(quotation_names):
+    for quotation_name in sorted(rows_by_name):
+        expected_rfq = str(rows_by_name[quotation_name].get("rfq_name") or "").strip()
+        if not expected_rfq:
+            raise ValueError(f"견적의 RFQ 차수 정보가 없습니다: {quotation_name}")
         quotation = erp_get_one("Supplier Quotation", quotation_name)
         if not quotation:
             raise ValueError(f"Supplier Quotation을 찾을 수 없습니다: {quotation_name}")
         if not any(
-            item.get("request_for_quotation") == rfq_name
+            item.get("request_for_quotation") == expected_rfq
             for item in quotation.get("items") or []
         ):
-            raise ValueError(f"{quotation_name}은(는) RFQ {rfq_name}에 연결된 견적이 아닙니다.")
+            raise ValueError(f"{quotation_name}은(는) RFQ {expected_rfq}에 연결된 견적이 아닙니다.")
         docstatus = int(quotation.get("docstatus") or 0)
         if docstatus == 0:
             erp_submit("Supplier Quotation", quotation_name)

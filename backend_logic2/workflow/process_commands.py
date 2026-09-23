@@ -64,7 +64,10 @@ class PurchaseProcessState(TypedDict, total=False):
     rfq_rounds: list[dict[str, Any]]
     quotation_ranking: list[dict[str, Any]]
     requested_supplier: str
+    requested_quotation: str
     selected_supplier: str
+    selected_quotation: str
+    selected_rfq_name: str
     pr_id: str
     pr_status: str
     pr_rejection_reason: str
@@ -122,6 +125,45 @@ def _archive_current_rfq_round(state: PurchaseProcessState) -> list[dict[str, An
             "closed_at": datetime.now().isoformat(),
         })
     return rounds_history
+
+
+def _rfq_round_names(state: PurchaseProcessState) -> list[str]:
+    """지난 차수부터 현재 차수까지 RFQ 이름을 순서대로 반환한다."""
+    names: list[str] = []
+
+    for entry in state.get("rfq_rounds") or []:
+        if not isinstance(entry, dict):
+            continue
+        rfq_name = str(entry.get("rfq_name") or "").strip()
+        if rfq_name and rfq_name not in names:
+            names.append(rfq_name)
+
+    current_rfq = str(state.get("rfq_name") or "").strip()
+    if current_rfq and current_rfq not in names:
+        names.append(current_rfq)
+
+    return names
+
+
+def _rfq_round_map(state: PurchaseProcessState) -> dict[str, int]:
+    """RFQ 이름별 차수를 반환한다."""
+    result: dict[str, int] = {}
+
+    for index, entry in enumerate(state.get("rfq_rounds") or [], start=1):
+        if not isinstance(entry, dict):
+            continue
+
+        rfq_name = str(entry.get("rfq_name") or "").strip()
+        if not rfq_name:
+            continue
+
+        result[rfq_name] = int(entry.get("round") or index)
+
+    current_rfq = str(state.get("rfq_name") or "").strip()
+    if current_rfq:
+        result[current_rfq] = len(state.get("rfq_rounds") or []) + 1
+
+    return result
 
 
 def route_entrypoint_command(state: PurchaseProcessState) -> Command:
@@ -682,7 +724,7 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         "message": "제출된 견적을 확인하시겠습니까? "
                     "(check: 지금 조회만 하고 계속 대기 / later: 그냥 대기 / "
                     "finalize: 지금까지 견적으로 최종선정 단계로 진행 / "
-                    "rebid: 지금까지 들어온 견적을 버리고 새 RFQ로 재비딩)",
+                    "rebid: 현재 견적을 후보로 유지한 채 새 RFQ 차수 진행)",
         "allowed": ["check", "later", "finalize", "rebid"],
     })
     choice = _decision_value(answer)
@@ -714,7 +756,6 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             update={
                 "rfq_rounds": _archive_current_rfq_round(state),
                 "rfq_name": "",
-                "quotation_ranking": [],
                 "requested_supplier": "",
                 "selected_suppliers": [],
                 "supplier_registration_results": [],
@@ -727,20 +768,24 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
 
     # check와 finalize 둘 다 일단 지금 시점 견적을 조회함
     from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import (
-        evaluate_quotations,
+        evaluate_quotations_for_rfqs,
         print_evaluation,
     )
     from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
         submit_finalized_quotations,
     )
 
-    result = evaluate_quotations(state["rfq_name"])
+    result = evaluate_quotations_for_rfqs(
+        _rfq_round_names(state),
+        current_rfq_name=state["rfq_name"],
+        round_by_rfq=_rfq_round_map(state),
+    )
     print_evaluation(result)
 
     if result.get("error") or result.get("message") or not result.get("ranking"):
         return Command(
             update={
-                "quotation_ranking": [],
+                "quotation_ranking": state.get("quotation_ranking") or [],
                 "status": "awaiting_quotation_check",
                 "error": result.get("message") or result.get("error") or "제출된 견적이 없습니다. 나중에 다시 확인하세요.",
             },
@@ -756,9 +801,14 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
 
     # 포털 견적은 Draft로 생성된다. 사용자가 명시적으로 최종 선정을
     # 시작할 때만 순위에 포함된 견적을 Submit하여 이후 변경을 막는다.
-    submit_finalized_quotations(state["rfq_name"], result["ranking"])
+    submit_finalized_quotations(result["ranking"])
     requested_supplier = (
         str(answer.get("supplier") or "").strip()
+        if isinstance(answer, dict)
+        else ""
+    )
+    requested_quotation = (
+        str(answer.get("quotation_id") or "").strip()
         if isinstance(answer, dict)
         else ""
     )
@@ -766,6 +816,7 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         update={
             "quotation_ranking": result["ranking"],
             "requested_supplier": requested_supplier,
+            "requested_quotation": requested_quotation,
             "status": "awaiting_final_selection",
             "error": "",
         },
@@ -782,6 +833,7 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
     """
     ranking = state.get("quotation_ranking", [])
     supplier = str(state.get("requested_supplier") or "").strip()
+    quotation_id = str(state.get("requested_quotation") or "").strip()
     if not supplier:
         answer = interrupt({
             "type": "final_selection",
@@ -789,6 +841,11 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
             "ranking": ranking,
         })
         supplier = answer.get("supplier") if isinstance(answer, dict) else str(answer or "").strip()
+        quotation_id = (
+            str(answer.get("quotation_id") or "").strip()
+            if isinstance(answer, dict)
+            else ""
+        )
     valid_suppliers = {r.get("supplier") for r in ranking}
     if supplier not in valid_suppliers:
         return Command(
@@ -796,10 +853,31 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
             goto="final_selection",
         )
 
+    selected_row = next((
+        row
+        for row in ranking
+        if (
+            quotation_id
+            and str(row.get("quotation_id") or row.get("name") or "").strip()
+            == quotation_id
+            and str(row.get("supplier") or "").strip() == supplier
+        )
+    ), None)
+    if selected_row is None:
+        selected_row = next((
+            row for row in ranking
+            if str(row.get("supplier") or "").strip() == supplier
+        ), {})
+
     return Command(
         update={
             "selected_supplier": supplier,
+            "selected_quotation": str(
+                selected_row.get("quotation_id") or selected_row.get("name") or ""
+            ).strip(),
+            "selected_rfq_name": str(selected_row.get("rfq_name") or state.get("rfq_name") or "").strip(),
             "requested_supplier": "",
+            "requested_quotation": "",
             "supplier_document_review": {},
             "supplier_documents_approved": False,
             "supplier_onboarding_note": "",
@@ -884,6 +962,8 @@ def await_order_start_command(state: PurchaseProcessState) -> Command:
         "type": "order_start",
         "mr_name": state["mr_name"],
         "rfq_name": state.get("rfq_name"),
+        "selected_rfq_name": state.get("selected_rfq_name"),
+        "selected_quotation": state.get("selected_quotation"),
         "selected_supplier": state.get("selected_supplier"),
         "instructions": "선정 결과를 확인한 뒤 발주 진행을 눌러 PO 관리 화면으로 이동하세요.",
     })
@@ -970,7 +1050,7 @@ def create_pr_command(state: PurchaseProcessState) -> Command:
         raise RuntimeError(f"공급사 '{supplier_id}'에 등록된 이메일이 없습니다.")
 
     ranking = state.get("quotation_ranking") or []
-    quotation_name = next((
+    quotation_name = str(state.get("selected_quotation") or "").strip() or next((
         str(row.get("name") or "").strip()
         for row in ranking
         if str(row.get("supplier") or "").strip() == supplier_id
@@ -978,7 +1058,8 @@ def create_pr_command(state: PurchaseProcessState) -> Command:
     pr = create_and_send_pr(
         case_id=state["case_id"], mr_name=state["mr_name"],
         supplier_id=supplier_id, supplier_email=supplier_email,
-        rfq_name=state.get("rfq_name"), supplier_quotation=quotation_name or None,
+        rfq_name=state.get("selected_rfq_name") or state.get("rfq_name"),
+        supplier_quotation=quotation_name or None,
         purchase_mode="direct" if state.get("direct_purchase") else "quotation",
         direct_purchase_items=state.get("direct_purchase_items") or {},
         expires_in_hours=72,
@@ -1051,8 +1132,17 @@ def handle_pr_rejection_command(state: PurchaseProcessState) -> Command:
         valid = {str(row.get("supplier") or "").strip() for row in remaining}
         if supplier not in valid:
             return Command(update={"status": "supplier_pr_rejected", "error": "차순위 공급사를 선택해 주세요."}, goto="handle_pr_rejection")
+        selected_row = next(
+            (row for row in remaining if str(row.get("supplier") or "").strip() == supplier),
+            {},
+        )
         return Command(
-            update={"selected_supplier": supplier, "pr_id": "", "pr_status": "", "pr_supplier_email": "", "status": "awaiting_pr_request", "error": ""},
+            update={
+                "selected_supplier": supplier,
+                "selected_quotation": str(selected_row.get("quotation_id") or selected_row.get("name") or "").strip(),
+                "selected_rfq_name": str(selected_row.get("rfq_name") or state.get("rfq_name") or "").strip(),
+                "pr_id": "", "pr_status": "", "pr_supplier_email": "", "status": "awaiting_pr_request", "error": "",
+            },
             goto="request_pr",
         )
     if decision == "rebid":
@@ -1069,7 +1159,8 @@ def handle_pr_rejection_command(state: PurchaseProcessState) -> Command:
         return Command(
             update={
                 "rfq_rounds": _archive_current_rfq_round(state),
-                "selected_supplier": "", "pr_id": "", "pr_status": "", "pr_supplier_email": "",
+                "selected_supplier": "", "selected_quotation": "", "selected_rfq_name": "",
+                "pr_id": "", "pr_status": "", "pr_supplier_email": "",
                 "rfq_name": "", "quotation_ranking": [], "requested_supplier": "",
                 "selected_suppliers": [], "supplier_registration_results": [], "quotation_deadline": "",
                 "status": "awaiting_supplier_approval", "error": "",
@@ -1137,7 +1228,7 @@ def create_po_command(state: PurchaseProcessState) -> Command:
         )
 
     direct_purchase = bool(state.get("direct_purchase"))
-    rfq_name = state.get("rfq_name")
+    rfq_name = state.get("selected_rfq_name") or state.get("rfq_name")
     supplier = state.get("selected_supplier")
     email_policy = get_email_delivery_policy()
     send_email = email_policy != "block_all"

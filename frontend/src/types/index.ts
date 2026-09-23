@@ -58,6 +58,9 @@ export interface MaterialRequest {
 }
 
 export interface SupplierQuotation {
+  quotationId?: string;
+  rfqName?: string;
+  rfqRound?: number;
   supplierId: string;
   supplierName: string;
   quoteUnitPrice: number;

@@ -477,7 +477,7 @@ export const VendorSelectionView: React.FC<VendorSelectionViewProps> = ({
                   .sort((a, b) => a.aiRank - b.aiRank)
                   .map((q) => (
                     <div 
-                      key={q.supplierId} 
+                      key={q.quotationId ?? `${q.supplierId}-${q.rfqRound ?? 1}`}
                       className={`vendor-rank-item ${q.aiRank === 1 ? 'top-rank' : ''}`}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
@@ -487,6 +487,9 @@ export const VendorSelectionView: React.FC<VendorSelectionViewProps> = ({
                         <div>
                           <div style={{ fontSize: '15px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span>{q.supplierName}</span>
+                            <span className="badge badge-blue">
+                              {q.rfqRound ?? 1}차
+                            </span>
                             {q.aiRank === 1 && (
                               <span className="ai-recommend-badge">
                                 <Sparkles size={11} /> AI 1위 최적 추천

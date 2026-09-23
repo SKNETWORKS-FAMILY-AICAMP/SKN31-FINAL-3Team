@@ -24,7 +24,12 @@ try:
         dump_json,
         load_json,
     )
-    from .get_supplier_quotations import get_quotations_for_rfq, get_reviewable_quotations
+    from .get_supplier_quotations import (
+        get_quotations_for_rfq,
+        get_quotations_for_rfqs,
+        get_reviewable_quotations,
+        get_reviewable_quotations_for_rfqs,
+    )
     from .quotation_reviewer import load_rfq_requirements, match_requirement, review_quotation
 except ImportError:
     from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
@@ -39,7 +44,9 @@ except ImportError:
     )
     from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
         get_quotations_for_rfq,
+        get_quotations_for_rfqs,
         get_reviewable_quotations,
+        get_reviewable_quotations_for_rfqs,
     )
     from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import (
         load_rfq_requirements,
@@ -608,6 +615,8 @@ def evaluate_quotations(
     *,
     top_k: int = 3,
     spec_evaluator: QuotationSpecEvaluator | None = None,
+    _rfq_names: list[str] | None = None,
+    _round_by_rfq: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Validate ERP quotations and combine numeric metrics with semantic spec fit."""
     try:
@@ -615,7 +624,12 @@ def evaluate_quotations(
     except Exception as exc:
         return {"error": f"RFQ를 찾거나 읽을 수 없습니다: {rfq_name} ({exc})"}
 
-    quotations = _attach_supplier_scorecards(get_quotations_for_rfq(rfq_name))
+    rfq_names = list(dict.fromkeys(_rfq_names or [rfq_name]))
+    quotations = _attach_supplier_scorecards(
+        get_quotations_for_rfqs(rfq_names)
+        if _rfq_names is not None
+        else get_quotations_for_rfq(rfq_name)
+    )
     if not quotations:
         return {
             "requirements": rfq.model_dump(mode="json"),
@@ -624,7 +638,11 @@ def evaluate_quotations(
             "message": "제출된 견적이 아직 없습니다.",
         }
 
-    reviewable = get_reviewable_quotations(rfq_name)
+    reviewable = (
+        get_reviewable_quotations_for_rfqs(rfq_names)
+        if _rfq_names is not None
+        else get_reviewable_quotations(rfq_name)
+    )
     reviews = [review_quotation(quotation, rfq) for quotation in reviewable]
     scorecards = {
         str(row.get("supplier") or ""): row["supplier_scorecard"]
@@ -730,7 +748,7 @@ def evaluate_quotations(
             reviews,
             rfq,
             spec_assessments,
-            top_k=top_k,
+            top_k=max(1, len(reviews)) if _rfq_names is not None else top_k,
             supplier_scorecards=scorecards,
             numeric_weight=numeric_weight,
             specification_weight=specification_weight,
@@ -745,12 +763,25 @@ def evaluate_quotations(
             "error": str(exc),
         }
     reviews_by_id = {review.quotation_id: review for review in reviews}
+    quotation_rounds = {
+        str(row.get("name") or "").strip(): {
+            "rfq_name": str(row.get("rfq_name") or rfq_name).strip(),
+            "rfq_round": (_round_by_rfq or {}).get(
+                str(row.get("rfq_name") or rfq_name).strip(),
+                1,
+            ),
+        }
+        for row in quotations
+    }
     ranking: list[dict[str, Any]] = []
     for ranked in result.recommended:
         review = reviews_by_id[ranked.quotation_id]
+        round_meta = quotation_rounds.get(ranked.quotation_id, {})
         ranking.append({
             "name": ranked.quotation_id,
             "quotation_id": ranked.quotation_id,
+            "rfq_name": round_meta.get("rfq_name", rfq_name),
+            "rfq_round": round_meta.get("rfq_round", 1),
             "supplier": ranked.supplier_id or ranked.supplier_name,
             "supplier_name": ranked.supplier_name,
             "rank": ranked.rank,
@@ -789,6 +820,29 @@ def evaluate_quotations(
             "specification_weight": specification_weight,
         },
     }
+
+
+def evaluate_quotations_for_rfqs(
+    rfq_names: list[str],
+    *,
+    current_rfq_name: str,
+    round_by_rfq: dict[str, int] | None = None,
+    spec_evaluator: QuotationSpecEvaluator | None = None,
+) -> dict[str, Any]:
+    """Evaluate all archived and current RFQ quotations as one candidate pool."""
+    normalized = list(dict.fromkeys(
+        str(name or "").strip()
+        for name in rfq_names
+        if str(name or "").strip()
+    ))
+    if not normalized:
+        return {"quotations": [], "ranking": [], "message": "평가할 RFQ가 없습니다."}
+    return evaluate_quotations(
+        current_rfq_name,
+        spec_evaluator=spec_evaluator,
+        _rfq_names=normalized,
+        _round_by_rfq=round_by_rfq,
+    )
 
 
 def print_evaluation(result: dict[str, Any]) -> None:

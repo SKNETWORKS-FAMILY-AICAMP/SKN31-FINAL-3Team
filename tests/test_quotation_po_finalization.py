@@ -66,7 +66,7 @@ class QuotationAndPurchaseOrderFinalizationTests(unittest.TestCase):
 
     @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_registrar.submit_finalized_quotations")
     @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_ranker.print_evaluation")
-    @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_ranker.evaluate_quotations")
+    @patch("backend_logic2.nodes.quotation.quotation_filter.quotation_ranker.evaluate_quotations_for_rfqs")
     @patch("backend_logic2.workflow.process_commands.interrupt")
     def test_finalize_submits_ranked_quotes_before_supplier_selection(
         self,
@@ -75,13 +75,19 @@ class QuotationAndPurchaseOrderFinalizationTests(unittest.TestCase):
         _print_evaluation,
         submit_finalized,
     ):
-        ranking = [{"name": "SUP-QTN-0001", "supplier": "공급사 A", "rank": 1}]
+        ranking = [{
+            "name": "SUP-QTN-0001",
+            "supplier": "공급사 A",
+            "rank": 1,
+            "rfq_name": "PUR-RFQ-0001",
+            "rfq_round": 1,
+        }]
         interrupt.return_value = {"decision": "finalize", "supplier": "공급사 A"}
         evaluate.return_value = {"quotations": [{}], "ranking": ranking}
 
         command = check_quotations_command({"rfq_name": "PUR-RFQ-0001"})
 
-        submit_finalized.assert_called_once_with("PUR-RFQ-0001", ranking)
+        submit_finalized.assert_called_once_with(ranking)
         self.assertEqual(command.goto, "final_selection")
         self.assertEqual(command.update["requested_supplier"], "공급사 A")
 
@@ -94,10 +100,11 @@ class QuotationAndPurchaseOrderFinalizationTests(unittest.TestCase):
             "items": [{"request_for_quotation": "PUR-RFQ-0001"}],
         }
 
-        result = submit_finalized_quotations(
-            "PUR-RFQ-0001",
-            [{"name": "SUP-QTN-0001", "supplier": "공급사 A"}],
-        )
+        result = submit_finalized_quotations([{
+            "name": "SUP-QTN-0001",
+            "supplier": "공급사 A",
+            "rfq_name": "PUR-RFQ-0001",
+        }])
 
         self.assertEqual(result, ["SUP-QTN-0001"])
         submit.assert_called_once_with("Supplier Quotation", "SUP-QTN-0001")

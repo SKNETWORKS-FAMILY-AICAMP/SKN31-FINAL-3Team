@@ -199,10 +199,16 @@ def task_input_schema(payload: dict[str, Any]) -> dict[str, Any]:
                 {"label": "회신 새로 확인", "value": "check"},
                 {"label": "나중에 확인", "value": "later"},
                 {"label": "최종 선정 진행", "value": "finalize"},
+                {"label": "재비딩", "value": "rebid"},
+                {"label": "재비딩", "value": "rebid"},
             ],
         }
     if task_type == "final_selection":
-        return {"type": "supplier_ranking_selection", "field": "supplier"}
+        return {
+            "type": "supplier_ranking_selection",
+            "field": "supplier",
+            "quotation_field": "quotation_id",
+        }
     if task_type == "supplier_document_review":
         return {
             "type": "supplier_document_review",

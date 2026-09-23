@@ -258,6 +258,7 @@ def get_quotations_for_rfq(
         )
         quotations.append({
             "name": detail.get("name"),
+            "rfq_name": rfq_name,
             "supplier": detail.get("supplier"),
             "supplier_name": detail.get("supplier_name") or detail.get("supplier"),
             "docstatus": detail.get("docstatus"),
@@ -277,6 +278,32 @@ def get_quotations_for_rfq(
             "lead_time_days": first_item.get("lead_time_days"),
             "items": items,
         })
+    return quotations
+
+
+def get_quotations_for_rfqs(
+    rfq_names: list[str],
+    *,
+    get_many: GetMany | None = None,
+    get_one: GetOne | None = None,
+) -> list[dict[str, Any]]:
+    """Return de-duplicated quotation documents from multiple RFQ rounds."""
+    quotations: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rfq_name in rfq_names:
+        normalized = str(rfq_name or "").strip()
+        if not normalized:
+            continue
+        for quotation in get_quotations_for_rfq(
+            normalized,
+            get_many=get_many,
+            get_one=get_one,
+        ):
+            quotation_id = str(quotation.get("name") or "").strip()
+            if not quotation_id or quotation_id in seen:
+                continue
+            seen.add(quotation_id)
+            quotations.append({**quotation, "rfq_name": normalized})
     return quotations
 
 
@@ -356,6 +383,32 @@ def get_reviewable_quotations(
             get_one=get_one,
         )
     ]
+
+
+def get_reviewable_quotations_for_rfqs(
+    rfq_names: list[str],
+    *,
+    get_many: GetMany | None = None,
+    get_one: GetOne | None = None,
+) -> list[Quotation]:
+    """Build de-duplicated review models from every bidding round."""
+    quotations: list[Quotation] = []
+    seen: set[str] = set()
+    for rfq_name in rfq_names:
+        normalized = str(rfq_name or "").strip()
+        if not normalized:
+            continue
+        for quotation in get_reviewable_quotations(
+            normalized,
+            get_many=get_many,
+            get_one=get_one,
+        ):
+            quotation_id = str(quotation.quotation_id or "").strip()
+            if not quotation_id or quotation_id in seen:
+                continue
+            seen.add(quotation_id)
+            quotations.append(quotation)
+    return quotations
 
 
 def print_quotations_summary(rfq_name: str, quotations: list[dict[str, Any]]) -> None:
