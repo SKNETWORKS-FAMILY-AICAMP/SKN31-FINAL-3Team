@@ -119,7 +119,7 @@ def _archive_current_rfq_round(state: PurchaseProcessState) -> list[dict[str, An
     rfq_name = str(state.get("rfq_name") or "").strip()
     if rfq_name:
         rounds_history.append({
-            "round": len(rounds_history) + 1,
+            "round": len(rounds_history),
             "rfq_name": rfq_name,
             "deadline": state.get("quotation_deadline") or "",
             "closed_at": datetime.now().isoformat(),
@@ -149,7 +149,7 @@ def _rfq_round_map(state: PurchaseProcessState) -> dict[str, int]:
     """RFQ 이름별 차수를 반환한다."""
     result: dict[str, int] = {}
 
-    for index, entry in enumerate(state.get("rfq_rounds") or [], start=1):
+    for index, entry in enumerate(state.get("rfq_rounds") or [], start=0):
         if not isinstance(entry, dict):
             continue
 
@@ -157,11 +157,11 @@ def _rfq_round_map(state: PurchaseProcessState) -> dict[str, int]:
         if not rfq_name:
             continue
 
-        result[rfq_name] = int(entry.get("round") or index)
+        result[rfq_name] = int(entry.get("round") if entry.get("round") is not None else index)
 
     current_rfq = str(state.get("rfq_name") or "").strip()
     if current_rfq:
-        result[current_rfq] = len(state.get("rfq_rounds") or []) + 1
+        result[current_rfq] = len(state.get("rfq_rounds") or [])
 
     return result
 
@@ -868,6 +868,27 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
             row for row in ranking
             if str(row.get("supplier") or "").strip() == supplier
         ), {})
+
+    # 협력사가 견적에 설정한 유효기간(valid_till)이 지난 견적은 최종
+    # 선정에서 제외한다. 이전 차수 견적도 후보 풀에 남아있는 채로 선택
+    # 가능해졌기 때문에(요구사항: 이전 차수 최종선정 허용), 오래된 견적이
+    # 만료됐는데도 그대로 발주로 이어지는 걸 여기서 막아야 한다.
+    valid_till_raw = str(selected_row.get("valid_till") or "").strip()
+    if valid_till_raw:
+        try:
+            valid_till_date = date.fromisoformat(valid_till_raw[:10])
+        except ValueError:
+            valid_till_date = None
+        if valid_till_date is not None and valid_till_date < date.today():
+            return Command(
+                update={
+                    "status": "awaiting_final_selection",
+                    "requested_supplier": "",
+                    "requested_quotation": "",
+                    "error": "선택한 견적은 유효기간이 지났습니다. 다른 견적을 선택하거나 재비딩해 주세요.",
+                },
+                goto="final_selection",
+            )
 
     return Command(
         update={

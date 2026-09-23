@@ -606,6 +606,7 @@ def _enrich_ranking_with_prices(
             "lead_time_days": first_item.get("lead_time_days") if first_item else None,
             "transaction_date": quotation.get("transaction_date") or ranked.get("transaction_date"),
             "supplier_scorecard": quotation.get("supplier_scorecard") or ranked.get("supplier_scorecard"),
+            "valid_till": ranked.get("valid_till") or quotation.get("valid_till"),
         })
     return enriched
 
@@ -768,8 +769,9 @@ def evaluate_quotations(
             "rfq_name": str(row.get("rfq_name") or rfq_name).strip(),
             "rfq_round": (_round_by_rfq or {}).get(
                 str(row.get("rfq_name") or rfq_name).strip(),
-                1,
+                0,
             ),
+            "valid_till": row.get("valid_till"),
         }
         for row in quotations
     }
@@ -781,7 +783,8 @@ def evaluate_quotations(
             "name": ranked.quotation_id,
             "quotation_id": ranked.quotation_id,
             "rfq_name": round_meta.get("rfq_name", rfq_name),
-            "rfq_round": round_meta.get("rfq_round", 1),
+            "rfq_round": round_meta.get("rfq_round", 0),
+            "valid_till": round_meta.get("valid_till"),
             "supplier": ranked.supplier_id or ranked.supplier_name,
             "supplier_name": ranked.supplier_name,
             "rank": ranked.rank,
