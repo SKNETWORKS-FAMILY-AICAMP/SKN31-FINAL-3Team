@@ -253,17 +253,22 @@ def register_quotation_email_event(
             "projection": projection,
         }
     except Exception as exc:
-        event_repository.fail_event(str(event["event_id"]), str(exc))
+        # 재시도하지 않는다: 검증 스키마 버그처럼 "몇 번을 다시 시도해도 똑같이
+        # 실패하는" 원인이면 무한 재시도는 같은 에러만 반복해서 쌓을 뿐이다.
+        # DISCARDED로 남겨 begin_event()가 다시 claim하지 않게 하고, 에러
+        # 내용은 last_error에 그대로 남겨 나중에 확인할 수 있게 한다.
+        event_repository.discard_event(str(event["event_id"]), str(exc))
         raise
     if failures:
         # register_supplier_quotation()이 실패해도 위 for 루프는 예외를 던지지
-        # 않고 failures에만 담아 여기까지 정상적으로 내려온다. 그런데 그동안은
-        # 이 경우에도 complete_event()를 불러서 dedupe_key가 PROCESSED로
-        # 영구 고정돼버렸다 - SQ가 실제로는 안 만들어졌는데도 그 이메일/첨부
-        # 조합은 두 번 다시 재시도되지 않는(항상 "duplicate") 버그였다.
-        # FAILED로 남겨야 begin_event()의 재시도 분기(status='FAILED')가
-        # 다음 재시도(재조정 폴링 또는 재전송된 웹훅) 때 다시 claim해준다.
-        event_repository.fail_event(
+        # 않고 failures에만 담아 여기까지 정상적으로 내려온다. 예전엔 이 경우에도
+        # complete_event()를 불러서 dedupe_key가 PROCESSED로 영구 고정돼버렸다 -
+        # SQ가 실제로는 안 만들어졌는데도 그 이메일/첨부 조합은 두 번 다시
+        # 재시도되지 않는(항상 "duplicate") 버그였다. 그렇다고 무한 재시도(FAILED)로
+        # 두면, 원인이 정말 일시적인 게 아니라 코드 버그일 때 같은 실패가 폴링
+        # 주기마다 영원히 반복된다. 그래서 한 번 실패하면 DISCARDED로 종결하고
+        # (재시도 없음), 원인은 last_error에 남겨서 필요하면 수동으로 확인한다.
+        event_repository.discard_event(
             str(event["event_id"]),
             f"일부 첨부 등록 실패: {failures}",
         )

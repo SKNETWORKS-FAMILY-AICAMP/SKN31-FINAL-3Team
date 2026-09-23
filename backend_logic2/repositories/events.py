@@ -84,3 +84,29 @@ def fail_event(event_id: str, error: str) -> None:
             """,
             {"event_id": event_id, "error": error[:4000]},
         )
+
+
+def discard_event(event_id: str, error: str) -> None:
+    """Mark an event as terminally failed without letting it be retried.
+
+    ``fail_event`` sets status='FAILED', which ``begin_event`` reclaims and
+    retries on the next poll/webhook delivery. That is the right behavior
+    for a transient failure (a flaky network call, ERPNext momentarily
+    unavailable, and so on). It is the wrong behavior for a failure that
+    will happen again every single retry no matter how many times we try
+    (a bad attachment, a bug in our own validation) - that just spams the
+    same error forever. Use this instead when the caller has decided not
+    to retry; the event is still recorded with its error for visibility,
+    it just never gets reclaimed by begin_event()'s ``status = 'FAILED'``
+    check.
+    """
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE procurement.integration_event
+            SET status = 'DISCARDED', retry_count = retry_count + 1,
+                last_error = %(error)s, processed_at = now()
+            WHERE event_id = %(event_id)s
+            """,
+            {"event_id": event_id, "error": error[:4000]},
+        )
