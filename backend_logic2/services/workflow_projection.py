@@ -200,7 +200,6 @@ def task_input_schema(payload: dict[str, Any]) -> dict[str, Any]:
                 {"label": "나중에 확인", "value": "later"},
                 {"label": "최종 선정 진행", "value": "finalize"},
                 {"label": "재비딩", "value": "rebid"},
-                {"label": "재비딩", "value": "rebid"},
             ],
         }
     if task_type == "final_selection":
