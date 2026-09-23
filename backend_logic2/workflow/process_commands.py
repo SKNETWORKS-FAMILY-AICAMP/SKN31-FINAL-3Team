@@ -146,7 +146,15 @@ def _rfq_round_names(state: PurchaseProcessState) -> list[str]:
 
 
 def _rfq_round_map(state: PurchaseProcessState) -> dict[str, int]:
-    """RFQ 이름별 차수를 반환한다."""
+    """RFQ 이름별 차수를 반환한다.
+
+    ⚠️ entry에 저장된 "round" 필드 값은 신뢰하지 않는다. 0-based 번호 매기기
+    규칙으로 바뀌기 전 체크포인트에는 옛 값(1부터 시작)이 그대로 남아있을 수
+    있어서, 그 값을 그대로 쓰면 새로 archive되는 라운드와 번호가 겹친다(실제로
+    두 라운드가 전부 "1차"로 겹쳐 보이는 버그로 나타났다). rfq_rounds는 재비딩이
+    일어난 순서대로 이력이 쌓이는 배열이므로, 배열 안 위치(index)가 항상 진짜
+    차수다.
+    """
     result: dict[str, int] = {}
 
     for index, entry in enumerate(state.get("rfq_rounds") or [], start=0):
@@ -157,7 +165,7 @@ def _rfq_round_map(state: PurchaseProcessState) -> dict[str, int]:
         if not rfq_name:
             continue
 
-        result[rfq_name] = int(entry.get("round") if entry.get("round") is not None else index)
+        result[rfq_name] = index
 
     current_rfq = str(state.get("rfq_name") or "").strip()
     if current_rfq:
