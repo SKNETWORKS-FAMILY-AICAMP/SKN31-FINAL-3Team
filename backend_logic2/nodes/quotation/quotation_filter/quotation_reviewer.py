@@ -325,6 +325,7 @@ def review_quotation(
     rfq_data: RFQRequirements | dict[str, Any],
     *,
     today: date | None = None,
+    known_rfq_names: set[str] | None = None,
 ) -> QuotationReview:
     """한 견적을 검토한다. 모든 실패 결과에는 ``rejection_evidence``가 남는다."""
     raw = quotation_data.model_dump() if isinstance(quotation_data, Quotation) else quotation_data
@@ -356,7 +357,22 @@ def review_quotation(
     item_results: list[ItemCompliance] = []
     today = today or date.today()
 
-    if quotation.rfq_name != rfq.rfq_name:
+    # ⚠️ 여러 라운드(재비딩 이전 RFQ까지)를 한 번에 평가하는 호출
+    # (evaluate_quotations_for_rfqs)은 견적마다 실제로 제출됐던 RFQ가
+    # 서로 다르지만, RFQRequirements(rfq)는 "지금 라운드" 것 하나만 로드해서
+    # 모든 견적을 그걸로 검토한다. known_rfq_names 없이 quotation.rfq_name과
+    # rfq.rfq_name을 그냥 비교하면, 지난 라운드에 제출된 견적은 전부
+    # "RFQ_MISMATCH"로 걸려서 순위/최종선정에서 통째로 제외돼버렸다(실제
+    # 버그로 나타남 - 지난 라운드 견적은 AI 분석을 몇 번을 다시 돌려도
+    # 절대 평가되지도, 선택 가능해지지도 않았다). 여러 라운드를 함께 검토
+    # 하는 호출은 호출부에서 known_rfq_names로 "이번에 같이 평가 중인 RFQ
+    # 전체 집합"을 넘겨주므로, 그 안에 있으면 통과시킨다.
+    rfq_mismatch = (
+        quotation.rfq_name not in known_rfq_names
+        if known_rfq_names is not None
+        else quotation.rfq_name != rfq.rfq_name
+    )
+    if rfq_mismatch:
         issues.append(_issue("RFQ_MISMATCH", IssueSeverity.ERROR, "rfq_name", "견적의 RFQ가 검토 대상과 다릅니다.", f"견적={quotation.rfq_name}, 대상={rfq.rfq_name}"))
     if quotation.business_registration_no and not _valid_business_number(quotation.business_registration_no):
         issues.append(_issue("INVALID_BUSINESS_NUMBER", IssueSeverity.ERROR, "business_registration_no", "사업자등록번호 형식 또는 체크섬이 올바르지 않습니다.", quotation.business_registration_no))

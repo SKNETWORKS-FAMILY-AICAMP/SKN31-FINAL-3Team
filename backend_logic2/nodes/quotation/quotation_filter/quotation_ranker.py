@@ -644,7 +644,15 @@ def evaluate_quotations(
         if _rfq_names is not None
         else get_reviewable_quotations(rfq_name)
     )
-    reviews = [review_quotation(quotation, rfq) for quotation in reviewable]
+    # known_rfq_names=rfq_names: 단일 라운드 평가에서는 rfq_names가
+    # [rfq_name] 하나뿐이라 기존과 동일하게 동작하고, 여러 라운드를 함께
+    # 평가할 때는(_rfq_names로 여러 개 넘어온 경우) 그 라운드들의 RFQ
+    # 이름을 전부 알려줘서 지난 라운드 견적이 RFQ_MISMATCH로 잘못
+    # 제외되지 않게 한다.
+    reviews = [
+        review_quotation(quotation, rfq, known_rfq_names=set(rfq_names))
+        for quotation in reviewable
+    ]
     scorecards = {
         str(row.get("supplier") or ""): row["supplier_scorecard"]
         for row in quotations
