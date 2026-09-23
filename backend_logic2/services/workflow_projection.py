@@ -32,6 +32,7 @@ STATUS_TO_STAGE = {
     "awaiting_supplier_pr_response": "PR_RESPONSE_WAITING",
     "supplier_pr_rejected": "PR_REJECTED",
     "creating_po": "PO_CREATION",
+    "po_creation_failed": "PO_CREATION_FAILED",
     "po_sent": "DELIVERY",
     "human_review": "HUMAN_REVIEW",
 }
@@ -47,6 +48,7 @@ INTERRUPT_STATUSES = {
     "awaiting_pr_request",
     "awaiting_supplier_pr_response",
     "supplier_pr_rejected",
+    "po_creation_failed",
 }
 
 
@@ -151,6 +153,12 @@ def task_presentation(payload: dict[str, Any]) -> dict[str, Any]:
             "공급사가 수주를 거절했습니다.",
             "거절 사유를 확인하고 차순위 공급사 또는 재비딩을 선택합니다.",
         ),
+        "po_creation_failed": (
+            "BUYER",
+            "BIDDINGFLOW",
+            "PO 생성이 실패했습니다",
+            "ERPNext에서 원인을 확인하고 고친 뒤 재시도하거나, 필요하면 반려해주세요.",
+        ),
     }
     audience, channel, title, description = presentations.get(
         task_type,
@@ -243,6 +251,15 @@ def task_input_schema(payload: dict[str, Any]) -> dict[str, Any]:
                 {"label": "차순위 공급사 선정", "value": "select_next_supplier"},
                 {"label": "재비딩 진행", "value": "rebid"},
                 {"label": "구매 프로세스 종료", "value": "cancel"},
+            ],
+        }
+    if task_type == "po_creation_failed":
+        return {
+            "type": "single_choice",
+            "field": "decision",
+            "options": [
+                {"label": "재시도", "value": "retry"},
+                {"label": "반려", "value": "reject"},
             ],
         }
     if task_type == "supplier_scorecard":

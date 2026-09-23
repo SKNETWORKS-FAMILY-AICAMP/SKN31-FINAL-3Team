@@ -40,6 +40,7 @@ from .process_commands import (
     decide_bidding_choice_command,
     final_selection_command,
     handle_pr_rejection_command,
+    handle_po_creation_failure_command,
     inspect_selected_supplier_documents_command,
     po_approval_command,
     request_pr_command,
@@ -142,6 +143,7 @@ def build_process_graph(*, checkpointer: Any = None):
     graph.add_node("await_supplier_pr_response", _with_status_log("await_supplier_pr_response", await_supplier_pr_response_command))
     graph.add_node("handle_pr_rejection", _with_status_log("handle_pr_rejection", handle_pr_rejection_command))
     graph.add_node("create_po", _with_status_log("create_po", create_po_command))
+    graph.add_node("handle_po_creation_failure", _with_status_log("handle_po_creation_failure", handle_po_creation_failure_command))
     graph.add_edge(START, "route_entrypoint")
     return graph.compile(checkpointer=checkpointer)
 

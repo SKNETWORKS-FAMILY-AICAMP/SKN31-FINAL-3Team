@@ -1118,8 +1118,8 @@ def create_po_command(state: PurchaseProcessState) -> Command:
             pr_repository.record_po_result(pr_id, po_name=None, error=message)
         print(f"  -> PO 생성 중단: {message}")
         return Command(
-            update={"status": "human_review", "error": message},
-            goto=END,
+            update={"status": "po_creation_failed", "error": message},
+            goto="handle_po_creation_failure",
         )
 
     if str(state.get("pr_status") or "").upper() != "ACCEPTED":
@@ -1181,6 +1181,41 @@ def create_po_command(state: PurchaseProcessState) -> Command:
         update={"po_name": po["name"], "status": "po_sent", "error": ""},
         goto=END,
     )
+
+
+def handle_po_creation_failure_command(state: PurchaseProcessState) -> Command:
+    """PO 생성/Submit 실패 시, 담당자가 ERPNext에서 원인을 확인해 고친 뒤
+    재시도하거나 반려할 수 있게 하는 HITL 분기.
+
+    재시도하면 create_po로 다시 들어가는데, create_and_send_po.py가 이미
+    Draft PO 재사용 로직을 갖고 있어서(기존 Draft가 있으면 새로 만들지
+    않고 그걸 그대로 씀) 담당자가 ERPNext에서 Draft를 고친 뒤 재시도해도
+    중복 Draft가 새로 생기지 않는다.
+    """
+    answer = interrupt({
+        "type": "po_creation_failed",
+        "case_id": state.get("case_id"),
+        "mr_name": state["mr_name"],
+        "pr_id": state.get("pr_id"),
+        "error": state.get("error"),
+        "allowed": ["retry", "reject"],
+    })
+    decision = _decision_value(answer)
+    if decision == "retry":
+        return Command(update={"status": "creating_po", "error": ""}, goto="create_po")
+    if decision == "reject":
+        return Command(
+            update={
+                "status": "human_review",
+                "error": state.get("error") or "PO 생성 실패로 담당자 확인이 필요합니다.",
+            },
+            goto=END,
+        )
+    return Command(
+        update={"status": "po_creation_failed", "error": "재시도 또는 반려를 선택해 주세요."},
+        goto="handle_po_creation_failure",
+    )
+
 
 # 서류 조회
 def inspect_selected_supplier_documents_command(

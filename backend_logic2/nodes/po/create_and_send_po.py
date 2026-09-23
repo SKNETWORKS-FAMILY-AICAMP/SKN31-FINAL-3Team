@@ -146,7 +146,20 @@ def create_and_send_po(
         raise RuntimeError(message)
 
     # ---------------------------------------------------------
-    # 3. 기존 PO 중복 생성 방지
+    # 3. 기존 PO 확인 - 있으면 새로 안 만들고 재사용/성공 처리
+    #
+    # Submit 실패 후 담당자가 ERPNext에서 원인(초과발주 한도 등)을 고치고
+    # "재시도"를 누르면 이 함수가 처음부터 다시 실행된다. 예전처럼
+    # "이미 PO가 있으면 무조건 중단"이면 재시도 자체가 항상 막혀서 의미가
+    # 없으므로, 상태별로 나눈다:
+    #   - 이미 Submit(docstatus=1)된 PO가 있음 -> 이전 시도든 담당자가
+    #     ERPNext에서 직접 했든 이미 끝난 것 -> 성공으로 취급, 재발송 없이
+    #     그대로 반환
+    #   - Draft(docstatus=0)가 정확히 1건 -> 그 Draft를 그대로 재사용해서
+    #     4~7단계(납기 확인/품목 구성/Draft 생성)를 건너뛰고 바로 Submit만
+    #     다시 시도
+    #   - Draft가 여러 건 -> 애매하니 사람이 ERPNext에서 직접 정리하게 중단
+    #   - 아무것도 없음 -> 원래대로 4~7단계부터 새로 생성
     # ---------------------------------------------------------
 
     try:
@@ -161,7 +174,7 @@ def create_and_send_po(
                 ],
                 ["docstatus", "!=", 2],
             ],
-            fields=["name"],
+            fields=["name", "docstatus"],
             limit=100,
         )
 
@@ -169,166 +182,193 @@ def create_and_send_po(
         print(f"[경고] 기존 PO 중복 여부 확인 실패: {e}")
         existing_pos = []
 
+    po_name: str | None = None
+
     if existing_pos:
-        po_names = sorted(
+        submitted_pos = sorted(
             {
-                row["name"]
+                str(row["name"])
                 for row in existing_pos
-                if row.get("name")
+                if row.get("name") and int(row.get("docstatus") or 0) == 1
             }
         )
-        message = (
-            f"Supplier Quotation '{quotation_name}'에 대해 이미 PO가 존재합니다: "
-            f"{po_names}. 중복 발주 방지를 위해 PO 생성을 중단합니다."
+        draft_pos = sorted(
+            {
+                str(row["name"])
+                for row in existing_pos
+                if row.get("name") and int(row.get("docstatus") or 0) == 0
+            }
         )
-        print(f"[오류] {message}")
-        raise RuntimeError(message)
 
-    # ---------------------------------------------------------
-    # 4. 납기일 확인
-    #
-    # get_supplier_quotations에서는 Supplier Quotation Item의
-    # expected_delivery_date를 사용함.
-    # ---------------------------------------------------------
+        if submitted_pos:
+            po_name = submitted_pos[0]
+            print(f"   -> 이미 Submit된 PO 발견, 재사용: {po_name}")
+            return {
+                "name": po_name,
+                "supplier_quotation": quotation_name,
+                "status": "already_submitted",
+                "email_sent": False,
+            }
 
-    missing_delivery_items = [
-        item.get("item_code")
-        for item in supplier_items
-        if not item.get("expected_delivery_date")
-    ]
-
-    if missing_delivery_items:
-        message = (
-            f"아래 견적 품목에 expected_delivery_date가 없습니다: {missing_delivery_items}. "
-            "Supplier Quotation의 납기정보를 먼저 확인해주세요."
-        )
-        print(f"[오류] {message}")
-        raise RuntimeError(message)
-
-    # ---------------------------------------------------------
-    # 5. Purchase Order Item 구성
-    #
-    # ⚠️ 납기일이 과거인 케이스(견적 제출 후 시간이 많이 지나 확인이
-    # 늦어진 경우 등)는 지금 단계에서는 다루지 않음 - 예전엔 여기서
-    # input()으로 사람한테 y/n을 물어봤는데, 이건 LangGraph interrupt()
-    # 기반 HITL이 아니라 그냥 터미널 blocking이라 재개(resume)가 안 먹히는
-    # 문제가 있었음. 지금은 이 edge case를 그냥 제외 - 과거 납기일이어도
-    # 그대로 진행하고, 필요하면 나중에 interrupt() 패턴으로 다시 추가.
-    # ---------------------------------------------------------
-
-    today = date.today().isoformat()
-
-    # Supplier Quotation portal rows do not consistently retain the original
-    # Material Request links. Recover them through the RFQ child rows, then use
-    # the workflow MR as a guarded fallback. A PO is never submitted without
-    # both the MR header and child-row references.
-    rfq = erp_get_one("Request for Quotation", rfq_name) or {}
-    rfq_items = rfq.get("items") or []
-    rfq_items_by_name = {
-        str(item.get("name")): item for item in rfq_items if item.get("name")
-    }
-    material_request = erp_get_one("Material Request", mr_name) if mr_name else None
-    mr_items = (material_request or {}).get("items") or []
-
-    def source_links(item: dict) -> tuple[str | None, str | None]:
-        linked_rfq_item = rfq_items_by_name.get(str(item.get("request_for_quotation_item")))
-        if linked_rfq_item is None:
-            linked_rfq_item = next(
-                (
-                    row for row in rfq_items
-                    if row.get("item_code") == item.get("item_code")
-                ),
-                {},
-            )
-        linked_mr = item.get("material_request") or linked_rfq_item.get("material_request") or mr_name
-        linked_mr_item = (
-            item.get("material_request_item")
-            or linked_rfq_item.get("material_request_item")
-        )
-        if not linked_mr_item and linked_mr:
-            linked_mr_item = next(
-                (
-                    row.get("name") for row in mr_items
-                    if row.get("item_code") == item.get("item_code")
-                ),
-                None,
-            )
-        return linked_mr, linked_mr_item
-
-    po_items = []
-
-    for item in supplier_items:
-
-        linked_mr, linked_mr_item = source_links(item)
-        if not linked_mr or not linked_mr_item:
+        if len(draft_pos) > 1:
             message = (
-                f"{item.get('item_code')} 품목의 Material Request 연결을 "
-                "확인할 수 없어 PO 생성을 중단합니다."
+                f"Supplier Quotation '{quotation_name}'에 대해 이미 Draft PO가 "
+                f"여러 건 존재합니다: {draft_pos}. 담당자가 ERPNext에서 직접 확인해 "
+                "정리한 뒤 다시 시도해주세요."
             )
             print(f"[오류] {message}")
             raise RuntimeError(message)
 
-        po_item = {
-            "item_code": item["item_code"],
-            "qty": item["qty"],
-            "rate": item["rate"],
-            "schedule_date": item["expected_delivery_date"],
-            "supplier_quotation": quotation_name,
-            "material_request": linked_mr,
-            "material_request_item": linked_mr_item,
+        if draft_pos:
+            po_name = draft_pos[0]
+            print(f"   -> 기존 Draft PO 재사용: {po_name}")
+
+    if po_name is None:
+        # ---------------------------------------------------------
+        # 4. 납기일 확인
+        #
+        # get_supplier_quotations에서는 Supplier Quotation Item의
+        # expected_delivery_date를 사용함.
+        # ---------------------------------------------------------
+
+        missing_delivery_items = [
+            item.get("item_code")
+            for item in supplier_items
+            if not item.get("expected_delivery_date")
+        ]
+
+        if missing_delivery_items:
+            message = (
+                f"아래 견적 품목에 expected_delivery_date가 없습니다: {missing_delivery_items}. "
+                "Supplier Quotation의 납기정보를 먼저 확인해주세요."
+            )
+            print(f"[오류] {message}")
+            raise RuntimeError(message)
+
+        # ---------------------------------------------------------
+        # 5. Purchase Order Item 구성
+        #
+        # ⚠️ 납기일이 과거인 케이스(견적 제출 후 시간이 많이 지나 확인이
+        # 늦어진 경우 등)는 지금 단계에서는 다루지 않음 - 예전엔 여기서
+        # input()으로 사람한테 y/n을 물어봤는데, 이건 LangGraph interrupt()
+        # 기반 HITL이 아니라 그냥 터미널 blocking이라 재개(resume)가 안 먹히는
+        # 문제가 있었음. 지금은 이 edge case를 그냥 제외 - 과거 납기일이어도
+        # 그대로 진행하고, 필요하면 나중에 interrupt() 패턴으로 다시 추가.
+        # ---------------------------------------------------------
+
+        today = date.today().isoformat()
+
+        # Supplier Quotation portal rows do not consistently retain the original
+        # Material Request links. Recover them through the RFQ child rows, then use
+        # the workflow MR as a guarded fallback. A PO is never submitted without
+        # both the MR header and child-row references.
+        rfq = erp_get_one("Request for Quotation", rfq_name) or {}
+        rfq_items = rfq.get("items") or []
+        rfq_items_by_name = {
+            str(item.get("name")): item for item in rfq_items if item.get("name")
+        }
+        material_request = erp_get_one("Material Request", mr_name) if mr_name else None
+        mr_items = (material_request or {}).get("items") or []
+
+        def source_links(item: dict) -> tuple[str | None, str | None]:
+            linked_rfq_item = rfq_items_by_name.get(str(item.get("request_for_quotation_item")))
+            if linked_rfq_item is None:
+                linked_rfq_item = next(
+                    (
+                        row for row in rfq_items
+                        if row.get("item_code") == item.get("item_code")
+                    ),
+                    {},
+                )
+            linked_mr = item.get("material_request") or linked_rfq_item.get("material_request") or mr_name
+            linked_mr_item = (
+                item.get("material_request_item")
+                or linked_rfq_item.get("material_request_item")
+            )
+            if not linked_mr_item and linked_mr:
+                linked_mr_item = next(
+                    (
+                        row.get("name") for row in mr_items
+                        if row.get("item_code") == item.get("item_code")
+                    ),
+                    None,
+                )
+            return linked_mr, linked_mr_item
+
+        po_items = []
+
+        for item in supplier_items:
+
+            linked_mr, linked_mr_item = source_links(item)
+            if not linked_mr or not linked_mr_item:
+                message = (
+                    f"{item.get('item_code')} 품목의 Material Request 연결을 "
+                    "확인할 수 없어 PO 생성을 중단합니다."
+                )
+                print(f"[오류] {message}")
+                raise RuntimeError(message)
+
+            po_item = {
+                "item_code": item["item_code"],
+                "qty": item["qty"],
+                "rate": item["rate"],
+                "schedule_date": item["expected_delivery_date"],
+                "supplier_quotation": quotation_name,
+                "material_request": linked_mr,
+                "material_request_item": linked_mr_item,
+            }
+
+            # SQ에서 UOM이 존재할 때만 전달
+            if item.get("uom"):
+                po_item["uom"] = item["uom"]
+
+            # Supplier Quotation Item의 child row name이 있다면
+            # supplier_quotation_item까지 연결
+            if item.get("name"):
+                po_item["supplier_quotation_item"] = item["name"]
+
+            po_items.append(po_item)
+
+        # ---------------------------------------------------------
+        # 6. PO Payload
+        # ---------------------------------------------------------
+
+        po_payload = {
+            "supplier": supplier_id,
+            "transaction_date": today,
+            "items": po_items,
+
+            # PO 대표 Required By 날짜
+            "schedule_date": min(
+                item["schedule_date"]
+                for item in po_items
+            ),
         }
 
-        # SQ에서 UOM이 존재할 때만 전달
-        if item.get("uom"):
-            po_item["uom"] = item["uom"]
+        # ---------------------------------------------------------
+        # 7. PO Draft 생성
+        # ---------------------------------------------------------
 
-        # Supplier Quotation Item의 child row name이 있다면
-        # supplier_quotation_item까지 연결
-        if item.get("name"):
-            po_item["supplier_quotation_item"] = item["name"]
+        try:
+            print("\n1. ERP에 Purchase Order Draft 생성...")
 
-        po_items.append(po_item)
+            new_po = erp_post(
+                "Purchase Order",
+                po_payload,
+            )
 
-    # ---------------------------------------------------------
-    # 6. PO Payload
-    # ---------------------------------------------------------
+            po_name = new_po.get("name")
 
-    po_payload = {
-        "supplier": supplier_id,
-        "transaction_date": today,
-        "items": po_items,
+            print(f"   -> 생성 완료: {po_name}")
 
-        # PO 대표 Required By 날짜
-        "schedule_date": min(
-            item["schedule_date"]
-            for item in po_items
-        ),
-    }
-
-    # ---------------------------------------------------------
-    # 7. PO Draft 생성
-    # ---------------------------------------------------------
-
-    try:
-        print("\n1. ERP에 Purchase Order Draft 생성...")
-
-        new_po = erp_post(
-            "Purchase Order",
-            po_payload,
-        )
-
-        po_name = new_po.get("name")
-
-        print(f"   -> 생성 완료: {po_name}")
-
-    except ERPNextAPIError as e:
-        message = f"PO Draft 생성 실패: {e}"
-        print(f"[에러] {message}")
-        raise RuntimeError(message) from e
+        except ERPNextAPIError as e:
+            message = f"PO Draft 생성 실패: {e}"
+            print(f"[에러] {message}")
+            raise RuntimeError(message) from e
 
     # ERPNext가 전달한 링크 필드를 실제로 보존했는지 Submit 전에 검증한다.
     # 링크가 누락된 Draft는 법적 효력이 생기기 전 멈춰 사람이 확인할 수 있다.
-    created_po = erp_get_one("Purchase Order", po_name) or new_po
+    created_po = erp_get_one("Purchase Order", po_name) or {}
     unlinked_items = [
         item.get("item_code")
         for item in created_po.get("items") or []
