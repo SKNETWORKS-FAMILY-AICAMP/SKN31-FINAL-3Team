@@ -9,6 +9,11 @@ $Python = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 $RuntimeDir = Join-Path $ProjectRoot '.runtime'
 $TunnelOut = Join-Path $RuntimeDir 'cloudflared.out.log'
 $TunnelErr = Join-Path $RuntimeDir 'cloudflared.err.log'
+# 백엔드 자체 로그는 backend_logic2/logging_config.py가 .runtime/app.log에
+# 남긴다. 여기 리다이렉트는 그보다 이전 단계(uvicorn 자체 기동 실패 등)의
+# 출력까지 놓치지 않기 위한 보조 안전장치다.
+$BackendOut = Join-Path $RuntimeDir 'webhook_gateway.out.log'
+$BackendErr = Join-Path $RuntimeDir 'webhook_gateway.err.log'
 $HealthUrl = "http://127.0.0.1:$Port/api/health"
 $StartedBackend = $false
 $BackendProcess = $null
@@ -48,11 +53,15 @@ Set-Content -LiteralPath $TunnelErr -Value '' -Encoding utf8
 try {
     if (-not (Test-BackendHealth)) {
         Write-Host '[1/4] 웹훅 전용 FastAPI 게이트웨이를 시작합니다.' -ForegroundColor Cyan
+        Set-Content -LiteralPath $BackendOut -Value '' -Encoding utf8
+        Set-Content -LiteralPath $BackendErr -Value '' -Encoding utf8
         $BackendProcess = Start-Process `
             -FilePath $Python `
             -ArgumentList @('-m', 'uvicorn', 'webhook_gateway:app', '--host', '127.0.0.1', '--port', "$Port", '--timeout-graceful-shutdown', '3') `
             -WorkingDirectory $ProjectRoot `
             -WindowStyle Hidden `
+            -RedirectStandardOutput $BackendOut `
+            -RedirectStandardError $BackendErr `
             -PassThru
         $StartedBackend = $true
         for ($Attempt = 0; $Attempt -lt 30 -and -not (Test-BackendHealth); $Attempt++) {

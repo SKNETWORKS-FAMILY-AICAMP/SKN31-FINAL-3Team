@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend_logic2.logging_config import configure_logging
+
+# 콘솔 창이 보이든(server.bat) 숨겨져 있든(webhook_dev.ps1의 hidden 프로세스)
+# 로그가 항상 .runtime/app.log에 남도록, 다른 어떤 import/설정보다 먼저 켠다.
+configure_logging()
 
 # Load secrets before importing ERP and authentication modules.
 ENV_FILE = Path(__file__).resolve().parent / ".env"

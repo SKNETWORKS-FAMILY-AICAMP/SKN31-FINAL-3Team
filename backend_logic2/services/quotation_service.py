@@ -8,10 +8,13 @@ same projection without moving a human approval step automatically.
 
 from __future__ import annotations
 
+import logging
 import re
 from email.utils import getaddresses
 from threading import Lock
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 from backend_logic2.integrations.erp_client import (
     ERPNextAPIError,
@@ -211,6 +214,16 @@ def register_quotation_email_event(
                     )
                 registrations.append(register_supplier_quotation(quotation))
             except Exception as exc:
+                # register_supplier_quotation()이 실패해도 이 함수 자체는 예외를
+                # 던지지 않고 failures에만 담고 계속 진행한다(BackgroundTasks라
+                # 반환값을 아무도 읽지 않으면 실패가 완전히 조용해진다). 그래서
+                # 여기서 직접 로그를 남긴다 - SQ가 안 생기는데 에러가 안 보이는
+                # 경우 이 WARNING 줄을 찾으면 된다.
+                LOGGER.warning(
+                    "SQ registration failed rfq=%s communication=%s file=%s error=%s: %s",
+                    rfq_name, communication_name, filename,
+                    type(exc).__name__, exc,
+                )
                 failures.append({
                     "file_id": file_id,
                     "filename": filename,
@@ -252,6 +265,13 @@ def register_quotation_email_event(
             "failures": failures,
             "projection": projection,
         }
+        # WARNING으로 남기는 이유: 이 프로젝트는 logging.basicConfig()를 별도로
+        # 설정하지 않아서 기본 로거 레벨이 WARNING이다. INFO로 남기면 추가
+        # 설정 없이는 콘솔에 아예 안 찍힌다.
+        LOGGER.warning(
+            "quotation email processed rfq=%s communication=%s status=%s registrations=%s failures=%d",
+            rfq_name, communication_name, result["status"], registrations, len(failures),
+        )
     except Exception as exc:
         event_repository.fail_event(str(event["event_id"]), str(exc))
         raise

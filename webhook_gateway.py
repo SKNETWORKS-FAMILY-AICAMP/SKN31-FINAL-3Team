@@ -10,6 +10,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from backend_logic2.logging_config import configure_logging
+
+# 이 프로세스는 webhook_dev.ps1이 -WindowStyle Hidden으로 띄워서 콘솔이 아예
+# 없다. 로그가 어딘가에 파일로 남지 않으면 완전히 사라지므로, 다른 무엇보다
+# 먼저 설정한다(main.py와 동일한 .runtime/app.log를 공유).
+configure_logging()
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
