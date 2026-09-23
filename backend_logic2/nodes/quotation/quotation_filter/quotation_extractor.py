@@ -853,7 +853,13 @@ def _normalize_generated_quotation(
             except Exception:
                 pass
         description = raw_item.get("description")
-        specifications = raw_item.get("specifications") if isinstance(raw_item.get("specifications"), dict) else {}
+        # _normalize_finetuned_quotation()과 동일한 이유로 null 값 규격 키를
+        # 제거한다 - _ParsedItem.specifications가 None을 허용하지 않는다.
+        raw_specifications = raw_item.get("specifications")
+        specifications = (
+            {key: value for key, value in raw_specifications.items() if value is not None}
+            if isinstance(raw_specifications, dict) else {}
+        )
         raw_description = raw_item.get("raw_description")
         item_name = raw_item.get("item_name")
         if not item_name or item_name == original_item_code:
@@ -957,6 +963,17 @@ def _normalize_finetuned_quotation(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(raw_item, dict):
             continue
         specifications = raw_item.get("specifications")
+        # 모델이 "이 규격은 문서에 없다"는 뜻으로 값을 null로 채워서 내는 경우가
+        # 흔하다(예: {"material": null, "안전기준": "KOSHA인증"}). 근데
+        # _ParsedItem/QuotationItem.specifications는 dict[str, str|int|float]로
+        # None을 허용하지 않아서, 그런 항목이 하나라도 있으면
+        # "SQ registration failed ... 9 validation errors for _ParsedQuotation"
+        # 처럼 통째로 검증 실패했다. null은 "값 없음"이니 키 자체를 빼는 게
+        # 맞고, 그래야 이 모델의 타입과도 맞는다.
+        specifications = (
+            {key: value for key, value in specifications.items() if value is not None}
+            if isinstance(specifications, dict) else {}
+        )
         items.append({
             "item_code": raw_item.get("item_code"),
             "item_name": raw_item.get("item_name"),
@@ -969,7 +986,7 @@ def _normalize_finetuned_quotation(payload: dict[str, Any]) -> dict[str, Any]:
                 raw_item.get("expected_delivery_date", raw_item.get("delivery_date"))
             ),
             "lead_time_days": raw_item.get("lead_time_days"),
-            "specifications": specifications if isinstance(specifications, dict) else {},
+            "specifications": specifications,
             "raw_description": raw_item.get("raw_description"),
         })
     subtotal = _normalize_decimal(payload.get("subtotal"))
