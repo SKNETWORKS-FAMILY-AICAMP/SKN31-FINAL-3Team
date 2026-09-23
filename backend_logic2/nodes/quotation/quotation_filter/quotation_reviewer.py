@@ -261,7 +261,19 @@ def _valid_business_number(value: str) -> bool:
 
 
 def match_requirement(quotation_item: Any, requirements: RFQRequirements) -> RFQItemRequirement | None:
-    """견적 품목을 RFQ의 단일 품목과 연결한다."""
+    """견적 품목을 RFQ의 단일 품목과 연결한다.
+
+    RFQ/MR은 비즈니스 규칙상 품목이 항상 1개뿐이다. 공급사는 견적서에
+    자기 회사 내부 품목코드/명칭을 쓰는 경우가 흔해서(예: RFQ 품목명은
+    "화학보호복"인데 견적서엔 "화학보호복4형식(분무차단형,스프레이)"),
+    코드/이름 유사도로 매칭을 시도하면 실제로는 같은 품목인데도
+    RFQ_ITEM_NOT_FOUND로 튕겨서 견적 전체가 순위 계산에서 빠지는 문제가
+    있었다. 품목이 하나뿐이면 코드/이름이 얼마나 다르게 적혀있든 그냥 그
+    품목으로 확정한다. 품목이 여러 개인 RFQ가 생기면 아래 코드/이름 기반
+    매칭으로 넘어간다.
+    """
+    if len(requirements.items) == 1:
+        return requirements.items[0]
     if quotation_item.item_code:
         for required in requirements.items:
             if required.item_code and required.item_code == quotation_item.item_code:

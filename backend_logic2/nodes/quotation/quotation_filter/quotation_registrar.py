@@ -27,7 +27,15 @@ BACKEND_ROOT = Path(__file__).resolve().parents[4]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.append(str(BACKEND_ROOT))
 
-from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_get, erp_get_one, erp_post, erp_submit  # noqa: E402
+from backend_logic2.integrations.erp_client import (  # noqa: E402
+    ERPNextAPIError,
+    erp_cancel,
+    erp_discard_draft,
+    erp_get,
+    erp_get_one,
+    erp_post,
+    erp_submit,
+)
 
 
 GetOne = Callable[[str, str], dict[str, Any] | None]
@@ -436,6 +444,57 @@ def _document_references_rfq(document: dict[str, Any], rfq_name: str) -> bool:
     )
 
 
+def _retire_other_active_quotations(
+    rfq_name: str,
+    supplier: str,
+    keep_name: str,
+    *,
+    get_many: GetMany,
+    get_one: GetOne,
+) -> None:
+    """이 RFQ에 이 공급사가 예전에 등록한 다른 활성 견적을 폐기한다.
+
+    공급사가 재회신하면(가격 정정 등) 같은 RFQ에 견적이 하나 더 등록될 수
+    있는데, 예전 견적을 그대로 두면 비교 화면에 같은 공급사가 두 줄로
+    나타나 담당자가 정정 전 값을 실수로 고를 위험이 있다. RFQ/MR은 품목이
+    항상 1개뿐이므로 공급사당 활성 견적도 항상 1건이어야 한다 - 방금
+    확정된 견적(``keep_name``) 외에 남아있는 활성 견적은 여기서 정리한다.
+
+    호출 순서가 중요하다: 새 견적이 실제로 만들어지거나 이미 존재함이
+    확인된 *뒤에만* 불러야 한다. 순서를 바꿔 미리 지워버리면 새 견적
+    등록이 중간에 실패했을 때 그 공급사의 활성 견적이 하나도 안 남는
+    사고가 난다. 이건 부가적인 정리 작업이라 ERPNext 호출이 실패해도
+    예외를 삼켜서 호출부의 성공 결과(새 견적 등록)에 영향을 주지 않는다.
+    """
+    try:
+        candidates = get_many(
+            "Supplier Quotation",
+            filters=[["Supplier Quotation Item", "request_for_quotation", "=", rfq_name]],
+            fields=["name", "supplier", "docstatus"],
+            limit=500,
+        ) or []
+        seen: set[str] = set()
+        for candidate in candidates:
+            name = str(candidate.get("name") or "")
+            if not name or name == keep_name or name in seen:
+                continue
+            seen.add(name)
+            if candidate.get("supplier") != supplier:
+                continue
+            docstatus = int(candidate.get("docstatus") or 0)
+            if docstatus == 2:
+                continue
+            detail = get_one("Supplier Quotation", name) or {}
+            if not _document_references_rfq(detail, rfq_name):
+                continue
+            if docstatus == 0:
+                erp_discard_draft("Supplier Quotation", name)
+            elif docstatus == 1:
+                erp_cancel("Supplier Quotation", name)
+    except ERPNextAPIError:
+        pass
+
+
 def register_supplier_quotation(
     quotation_data: Quotation | dict[str, Any],
     *,
@@ -488,6 +547,13 @@ def register_supplier_quotation(
                 f"외부 견적번호 '{quotation.quotation_id}'가 ERPNext 문서 {summary['name']}에 이미 있지만 금액이 다릅니다."
             )
         if same_external_number or same_values:
+            _retire_other_active_quotations(
+                quotation.rfq_name,
+                payload["supplier"],
+                str(summary["name"]),
+                get_many=get_many,
+                get_one=get_one,
+            )
             return {
                 "status": "already_exists",
                 "name": summary["name"],
@@ -506,6 +572,13 @@ def register_supplier_quotation(
         }
 
     created = post_one("Supplier Quotation", payload)
+    _retire_other_active_quotations(
+        quotation.rfq_name,
+        payload["supplier"],
+        str(created.get("name") or ""),
+        get_many=get_many,
+        get_one=get_one,
+    )
     return {
         "status": "created",
         "name": created.get("name"),
