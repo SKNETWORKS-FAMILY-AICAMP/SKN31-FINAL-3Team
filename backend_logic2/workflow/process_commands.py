@@ -791,11 +791,29 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
     print_evaluation(result)
 
     if result.get("error") or result.get("message") or not result.get("ranking"):
+        # ⚠️ "제출된 견적이 없습니다"라는 기본 문구만 보여주면, 실제로는 견적이
+        # 있는데 AI 규격 평가(RunPod)가 그 견적들을 전부 제외해서 순위가
+        # 비어버린 경우와 구분이 안 된다 - 원인 파악을 위해 매번 서버 로그를
+        # 뒤져야 했다. evaluate_quotations_for_rfqs가 반환하는 excluded(왜
+        # 제외됐는지 견적별 evidence)를 에러 문구에 그대로 붙여서, 다음에
+        # 이 에러가 뜨면 화면에서 바로 원인을 볼 수 있게 한다.
+        excluded_rows = result.get("excluded") or []
+        excluded_summary = "; ".join(
+            f"{row.get('supplier_name') or row.get('quotation_id') or '알 수 없음'}: "
+            f"{', '.join(str(item) for item in (row.get('evidence') or [])) or '평가 결과 없음'}"
+            for row in excluded_rows[:5]
+            if isinstance(row, dict)
+        )
+        fallback_message = (
+            result.get("message") or result.get("error") or "제출된 견적이 없습니다. 나중에 다시 확인하세요."
+        )
+        if excluded_summary:
+            fallback_message = f"{fallback_message} (제외된 견적: {excluded_summary})"
         return Command(
             update={
                 "quotation_ranking": state.get("quotation_ranking") or [],
                 "status": "awaiting_quotation_check",
-                "error": result.get("message") or result.get("error") or "제출된 견적이 없습니다. 나중에 다시 확인하세요.",
+                "error": fallback_message,
             },
             goto="check_quotations",
         )
