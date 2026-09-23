@@ -1087,18 +1087,18 @@ def create_po_command(state: PurchaseProcessState) -> Command:
     실제 로직은 nodes/po/create_and_send_po.py(RFQ에 달린 Supplier Quotation
     재조회 -> 선정 공급사 견적 특정 -> 중복PO 방지 -> 납기일 확인 -> PO
     생성+Submit -> 포털링크 이메일 발송까지 이미 완성돼있던 독립 스크립트)에
-    그대로 위임함. 그 함수는 원래 CLI 스크립트라 실패 시 sys.exit(1)로
-    프로세스를 통째로 죽이는데, 그래프 노드 안에서 그러면 체크포인트/로깅이
-    중간에 끊기니까 여기서 SystemExit을 잡아서 정상적인 human_review
-    Command로 바꿔줌.
+    그대로 위임함. 그 함수는 이제 실패하면 (ERPNext의 실제 에러 메시지를 실은)
+    예외를 던지는데, 그래프 노드 안에서 그걸 그대로 흘려보내면 체크포인트가
+    끊기고 케이스가 이전 단계에 조용히 멈춘 것처럼 보인다. 그래서 여기서
+    모든 실패를 잡아 human_review Command로 바꾸고, ERPNext가 실제로 보여준
+    에러 문자열을 state["error"]에 그대로 실어서 프론트(MRListView의
+    workflowError)에 그대로 노출한다 - "처리 확인 필요" 뱃지 + 실제 원인
+    문구가 클릭 없이 바로 보이게.
 
     이메일 발송은 공통 정책을 따른다. true는 차단하고, custom_only는 PO
     생성 함수까지 진입한 뒤 공통 메일 게이트에서 정확한 주소 화이트리스트를
     다시 확인하며, false만 제한 없이 발송한다.
     """
-    if str(state.get("pr_status") or "").upper() != "ACCEPTED":
-        raise RuntimeError("공급사가 PR을 수락하지 않아 PO를 생성할 수 없습니다.")
-
     from backend_logic2.integrations.erp_client import get_email_delivery_policy
     from backend_logic2.nodes.po.create_and_send_po import (
         create_and_send_direct_po,
@@ -1110,12 +1110,27 @@ def create_po_command(state: PurchaseProcessState) -> Command:
         is_existing_registered_supplier,
     )
 
+    pr_id = str(state.get("pr_id") or "").strip()
+
+    def _fail(message: str) -> Command:
+        message = message or "PO 생성 중 알 수 없는 오류가 발생했습니다."
+        if pr_id:
+            pr_repository.record_po_result(pr_id, po_name=None, error=message)
+        print(f"  -> PO 생성 중단: {message}")
+        return Command(
+            update={"status": "human_review", "error": message},
+            goto=END,
+        )
+
+    if str(state.get("pr_status") or "").upper() != "ACCEPTED":
+        return _fail("공급사가 PR을 수락하지 않아 PO를 생성할 수 없습니다.")
+
     supplier_id = str(state.get("selected_supplier") or "").strip()
 
     supplier_doc = erp_get_one("Supplier", supplier_id)
 
     if not is_existing_registered_supplier(supplier_doc):
-        raise RuntimeError(
+        return _fail(
             f"신규 업체 '{supplier_id}'의 제출서류 확인 및 "
             "정식 거래처 등록이 완료되지 않아 "
             "PO를 생성할 수 없습니다."
@@ -1126,7 +1141,6 @@ def create_po_command(state: PurchaseProcessState) -> Command:
     supplier = state.get("selected_supplier")
     email_policy = get_email_delivery_policy()
     send_email = email_policy != "block_all"
-    pr_id = str(state.get("pr_id") or "").strip()
 
     print(
         f"\n[PO 생성] '{state['mr_name']}' "
@@ -1152,31 +1166,11 @@ def create_po_command(state: PurchaseProcessState) -> Command:
                 mr_name=state["mr_name"],
                 send_email=send_email,
             )
-    except SystemExit as exc:
-        if pr_id:
-            pr_repository.record_po_result(
-                pr_id,
-                po_name=None,
-                error=str(exc) or "PO 생성이 중단되었습니다.",
-            )
-        print("  -> PO 생성/발송 중단됨 (사유는 위 콘솔 출력 참고)")
-        raise RuntimeError(
-            "PO 생성 또는 발송이 중단되었습니다. 서버 로그를 확인해 주세요."
-        ) from exc
     except Exception as exc:
-        if pr_id:
-            pr_repository.record_po_result(pr_id, po_name=None, error=str(exc))
-        raise
+        return _fail(str(exc))
 
     if not po or not po.get("name"):
-        if pr_id:
-            pr_repository.record_po_result(
-                pr_id,
-                po_name=None,
-                error="ERPNext가 PO 번호를 반환하지 않았습니다.",
-            )
-        print("  -> PO 생성 실패")
-        raise RuntimeError("PO 생성에 실패했습니다.")
+        return _fail("ERPNext가 PO 번호를 반환하지 않았습니다.")
 
     if pr_id:
         pr_repository.record_po_result(pr_id, po_name=str(po["name"]))

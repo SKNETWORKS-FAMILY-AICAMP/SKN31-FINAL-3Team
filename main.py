@@ -86,6 +86,27 @@ def _purchase_document_poll_interval_seconds() -> float:
     return max(5.0, configured)
 
 
+def _purchase_document_fallback_interval_seconds() -> float:
+    """Interval used when webhooks are the primary ingest path.
+
+    Purchase-document reconciliation used to run only once at startup in
+    webhook mode (see health check's ``purchase_document_reconciliation_active``
+    turning false shortly after boot), so a webhook that died mid-flight
+    (e.g. an ERPNext Webhook silently pointed at a dead tunnel) stayed
+    unrecovered until the next deploy/restart. This keeps the same
+    reconcile function running continuously as a safety net, just far less
+    often than the tight interval used by true polling mode - it only
+    needs to catch what webhooks missed, not replace them.
+    """
+    try:
+        configured = float(
+            os.getenv("PURCHASE_DOCUMENT_RECONCILE_FALLBACK_INTERVAL_SECONDS", "1800")
+        )
+    except ValueError:
+        configured = 1800.0
+    return max(300.0, configured)
+
+
 def _quotation_poll_interval_seconds() -> float:
     try:
         configured = float(os.getenv("QUOTATION_POLL_INTERVAL_SECONDS", "10"))
@@ -171,14 +192,18 @@ async def _poll_substitute_decisions() -> None:
         await asyncio.sleep(interval)
 
 
-async def _poll_purchase_documents(*, continuous: bool) -> None:
+async def _poll_purchase_documents(*, continuous: bool, interval: float) -> None:
     """Reconcile receipt, invoice, and payment documents missed by webhooks.
 
-    Webhook mode still performs one pass at startup, covering events that
-    happened while this API was offline. Polling mode continues periodically.
+    Always runs continuously now (see ``_purchase_document_fallback_interval_seconds``)
+    so a webhook outage that happens mid-flight, not just one that happened
+    before this API booted, gets caught automatically instead of waiting for
+    someone to notice and call the reconcile endpoint by hand. Polling mode
+    uses the tight interval since reconciliation is its only ingest path
+    there; webhook mode uses the slower fallback interval since webhooks are
+    still doing the real work most of the time.
     """
 
-    interval = _purchase_document_poll_interval_seconds()
     while True:
         try:
             await asyncio.to_thread(receipt_service.reconcile_purchase_documents)
@@ -272,8 +297,13 @@ async def lifespan(app: FastAPI):
             name="erpnext-substitute-decision-poller",
         )
         app.state.substitute_polling_task = substitute_task
+    purchase_document_interval = (
+        _purchase_document_poll_interval_seconds()
+        if ingest_mode == "polling"
+        else _purchase_document_fallback_interval_seconds()
+    )
     purchase_document_task = asyncio.create_task(
-        _poll_purchase_documents(continuous=ingest_mode == "polling"),
+        _poll_purchase_documents(continuous=True, interval=purchase_document_interval),
         name="erpnext-purchase-document-reconciler",
     )
     app.state.purchase_document_polling_task = purchase_document_task

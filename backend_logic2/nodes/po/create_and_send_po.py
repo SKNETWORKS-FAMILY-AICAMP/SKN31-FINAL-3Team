@@ -89,12 +89,14 @@ def create_and_send_po(
         quotations = get_quotations_for_rfq(rfq_name)
 
     except ERPNextAPIError as e:
-        print(f"[에러] Supplier Quotation 조회 실패: {e}")
-        sys.exit(1)
+        message = f"Supplier Quotation 조회 실패: {e}"
+        print(f"[에러] {message}")
+        raise RuntimeError(message) from e
 
     if not quotations:
-        print(f"[오류] RFQ '{rfq_name}'에 제출된 Supplier Quotation이 없습니다.")
-        sys.exit(1)
+        message = f"RFQ '{rfq_name}'에 제출된 Supplier Quotation이 없습니다."
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     # ---------------------------------------------------------
     # 2. 선정된 Supplier의 견적서 찾기
@@ -107,19 +109,20 @@ def create_and_send_po(
     ]
 
     if not supplier_quotations:
-        print(
-            f"[오류] 공급사 '{supplier_id}'가 "
-            f"RFQ '{rfq_name}'에 제출한 견적이 없습니다."
-        )
-        sys.exit(1)
+        message = f"공급사 '{supplier_id}'가 RFQ '{rfq_name}'에 제출한 견적이 없습니다."
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     # 같은 공급사가 동일 RFQ에 여러 견적을 제출한 경우
     # 임의로 하나를 선택하면 안 됨.
     if len(supplier_quotations) > 1:
-        print(
-            f"[오류] 공급사 '{supplier_id}'의 Supplier Quotation이 "
-            f"{len(supplier_quotations)}건 존재합니다."
+        names = ", ".join(str(q.get("name")) for q in supplier_quotations)
+        message = (
+            f"공급사 '{supplier_id}'의 Supplier Quotation이 "
+            f"{len(supplier_quotations)}건 존재합니다 ({names}). "
+            "어떤 견적서를 기준으로 PO를 만들지 명확히 선택해야 합니다."
         )
+        print(f"[오류] {message}")
 
         for q in supplier_quotations:
             print(
@@ -128,8 +131,7 @@ def create_and_send_po(
                 f"총액: {q.get('grand_total')} {q.get('currency')})"
             )
 
-        print("어떤 견적서를 기준으로 PO를 만들지 명확히 선택해야 합니다.")
-        sys.exit(1)
+        raise RuntimeError(message)
 
     quotation = supplier_quotations[0]
 
@@ -139,11 +141,9 @@ def create_and_send_po(
     print(f"사용 Supplier Quotation: {quotation_name}")
 
     if not supplier_items:
-        print(
-            f"[오류] Supplier Quotation '{quotation_name}'에 "
-            f"품목이 존재하지 않습니다."
-        )
-        sys.exit(1)
+        message = f"Supplier Quotation '{quotation_name}'에 품목이 존재하지 않습니다."
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     # ---------------------------------------------------------
     # 3. 기존 PO 중복 생성 방지
@@ -177,14 +177,12 @@ def create_and_send_po(
                 if row.get("name")
             }
         )
-
-        print(
-            f"[오류] Supplier Quotation '{quotation_name}'에 대해 "
-            f"이미 PO가 존재합니다: {po_names}"
+        message = (
+            f"Supplier Quotation '{quotation_name}'에 대해 이미 PO가 존재합니다: "
+            f"{po_names}. 중복 발주 방지를 위해 PO 생성을 중단합니다."
         )
-
-        print("중복 발주 방지를 위해 PO 생성을 중단합니다.")
-        sys.exit(1)
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     # ---------------------------------------------------------
     # 4. 납기일 확인
@@ -200,16 +198,12 @@ def create_and_send_po(
     ]
 
     if missing_delivery_items:
-        print(
-            "[오류] 아래 견적 품목에 "
-            "expected_delivery_date가 없습니다."
+        message = (
+            f"아래 견적 품목에 expected_delivery_date가 없습니다: {missing_delivery_items}. "
+            "Supplier Quotation의 납기정보를 먼저 확인해주세요."
         )
-
-        for item_code in missing_delivery_items:
-            print(f"  - {item_code}")
-
-        print("Supplier Quotation의 납기정보를 먼저 확인해주세요.")
-        sys.exit(1)
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     # ---------------------------------------------------------
     # 5. Purchase Order Item 구성
@@ -267,11 +261,12 @@ def create_and_send_po(
 
         linked_mr, linked_mr_item = source_links(item)
         if not linked_mr or not linked_mr_item:
-            print(
-                f"[오류] {item.get('item_code')} 품목의 Material Request 연결을 "
+            message = (
+                f"{item.get('item_code')} 품목의 Material Request 연결을 "
                 "확인할 수 없어 PO 생성을 중단합니다."
             )
-            sys.exit(1)
+            print(f"[오류] {message}")
+            raise RuntimeError(message)
 
         po_item = {
             "item_code": item["item_code"],
@@ -327,8 +322,9 @@ def create_and_send_po(
         print(f"   -> 생성 완료: {po_name}")
 
     except ERPNextAPIError as e:
-        print(f"[에러] PO Draft 생성 실패: {e}")
-        sys.exit(1)
+        message = f"PO Draft 생성 실패: {e}"
+        print(f"[에러] {message}")
+        raise RuntimeError(message) from e
 
     # ERPNext가 전달한 링크 필드를 실제로 보존했는지 Submit 전에 검증한다.
     # 링크가 누락된 Draft는 법적 효력이 생기기 전 멈춰 사람이 확인할 수 있다.
@@ -339,12 +335,13 @@ def create_and_send_po(
         if not item.get("material_request") or not item.get("material_request_item")
     ]
     if unlinked_items or not (created_po.get("items") or []):
-        print(
-            f"[오류] PO '{po_name}'의 MR 연결 검증에 실패했습니다: "
-            f"{unlinked_items or ['품목 없음']}"
+        message = (
+            f"PO '{po_name}'의 MR 연결 검증에 실패했습니다: "
+            f"{unlinked_items or ['품목 없음']}. "
+            "연결되지 않은 Draft는 Submit하지 않았습니다. ERPNext에서 확인해주세요."
         )
-        print("연결되지 않은 Draft는 Submit하지 않습니다. ERPNext에서 확인해주세요.")
-        sys.exit(1)
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     # ---------------------------------------------------------
     # 8. PO Submit
@@ -361,20 +358,14 @@ def create_and_send_po(
         print("   -> Submit 완료")
 
     except ERPNextAPIError as e:
-
-        print("=============================================")
-        print(
-            f"⚠️ PO '{po_name}'는 Draft로 생성되었지만 "
-            f"Submit에 실패했습니다."
-        )
-        print(f"원인: {e}")
-        print(
-            "ERP에서 해당 PO를 직접 확인해주세요. "
-            "스크립트를 재실행하면 중복 Draft가 생길 수 있습니다."
+        message = (
+            f"PO '{po_name}'는 Draft로 생성되었지만 Submit에 실패했습니다: {e}. "
+            "ERPNext에서 해당 PO를 직접 확인해주세요. 재시도하면 중복 Draft가 생길 수 있습니다."
         )
         print("=============================================")
-
-        sys.exit(1)
+        print(f"⚠️ {message}")
+        print("=============================================")
+        raise RuntimeError(message) from e
 
     # ---------------------------------------------------------
     # 9. 이메일 발송 여부
@@ -533,11 +524,13 @@ def create_and_send_direct_po(
 
     material_request = erp_get_one("Material Request", mr_name)
     if not material_request:
-        print(f"[오류] Material Request를 찾을 수 없습니다: {mr_name}")
-        sys.exit(1)
+        message = f"Material Request를 찾을 수 없습니다: {mr_name}"
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
     if int(material_request.get("docstatus") or 0) != 1:
-        print(f"[오류] Submit된 Material Request만 직접 구매할 수 있습니다: {mr_name}")
-        sys.exit(1)
+        message = f"Submit된 Material Request만 직접 구매할 수 있습니다: {mr_name}"
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     try:
         existing_pos = erp_get(
@@ -550,12 +543,14 @@ def create_and_send_direct_po(
             limit=100,
         )
     except Exception as exc:
-        print(f"[오류] MR 기준 중복 PO 확인에 실패했습니다: {exc}")
-        sys.exit(1)
+        message = f"MR 기준 중복 PO 확인에 실패했습니다: {exc}"
+        print(f"[오류] {message}")
+        raise RuntimeError(message) from exc
     if existing_pos:
         names = sorted({row.get("name") for row in existing_pos if row.get("name")})
-        print(f"[오류] MR '{mr_name}'에 이미 PO가 존재합니다: {names}")
-        sys.exit(1)
+        message = f"MR '{mr_name}'에 이미 PO가 존재합니다: {names}"
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     today = date.today().isoformat()
     po_items = []
@@ -568,11 +563,12 @@ def create_and_send_direct_po(
         except (TypeError, ValueError):
             rate = 0
         if basis_supplier != supplier_id or rate <= 0:
-            print(
-                f"[오류] {item_code}의 최근 거래 협력사·확정단가를 검증할 수 없습니다. "
+            message = (
+                f"{item_code}의 최근 거래 협력사·확정단가를 검증할 수 없습니다. "
                 f"supplier={basis_supplier or '-'}, rate={rate}"
             )
-            sys.exit(1)
+            print(f"[오류] {message}")
+            raise RuntimeError(message)
         schedule_date = str(
             item.get("schedule_date")
             or material_request.get("schedule_date")
@@ -593,13 +589,15 @@ def create_and_send_direct_po(
         if item.get("warehouse"):
             po_item["warehouse"] = item["warehouse"]
         if not po_item["material_request_item"]:
-            print(f"[오류] {item_code}의 Material Request Item 링크가 없습니다.")
-            sys.exit(1)
+            message = f"{item_code}의 Material Request Item 링크가 없습니다."
+            print(f"[오류] {message}")
+            raise RuntimeError(message)
         po_items.append(po_item)
 
     if not po_items:
-        print(f"[오류] MR '{mr_name}'에 구매할 품목이 없습니다.")
-        sys.exit(1)
+        message = f"MR '{mr_name}'에 구매할 품목이 없습니다."
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     payload = {
         "supplier": supplier_id,
@@ -611,11 +609,13 @@ def create_and_send_direct_po(
         new_po = erp_post("Purchase Order", payload)
         po_name = new_po.get("name")
     except ERPNextAPIError as exc:
-        print(f"[오류] 직접구매 PO Draft 생성 실패: {exc}")
-        sys.exit(1)
+        message = f"직접구매 PO Draft 생성 실패: {exc}"
+        print(f"[오류] {message}")
+        raise RuntimeError(message) from exc
     if not po_name:
-        print("[오류] ERPNext가 생성된 PO 이름을 반환하지 않았습니다.")
-        sys.exit(1)
+        message = "ERPNext가 생성된 PO 이름을 반환하지 않았습니다."
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     created_po = erp_get_one("Purchase Order", po_name) or new_po
     created_items = created_po.get("items") or []
@@ -623,14 +623,16 @@ def create_and_send_direct_po(
         not item.get("material_request") or not item.get("material_request_item")
         for item in created_items
     ):
-        print(f"[오류] 직접구매 PO '{po_name}'의 MR 연결 검증에 실패했습니다.")
-        sys.exit(1)
+        message = f"직접구매 PO '{po_name}'의 MR 연결 검증에 실패했습니다."
+        print(f"[오류] {message}")
+        raise RuntimeError(message)
 
     try:
         erp_submit("Purchase Order", po_name)
     except ERPNextAPIError as exc:
-        print(f"[오류] 직접구매 PO '{po_name}' Submit 실패: {exc}")
-        sys.exit(1)
+        message = f"직접구매 PO '{po_name}' Submit 실패: {exc}"
+        print(f"[오류] {message}")
+        raise RuntimeError(message) from exc
 
     if not send_email:
         return {
