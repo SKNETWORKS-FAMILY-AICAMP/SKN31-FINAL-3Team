@@ -414,6 +414,7 @@ def run_automation_scan(case_id: str, current_user: CurrentUser):
     reasons = {
         "advanced": "조건을 통과해 다음 단계로 넘어갔습니다.",
         "blocked": "조건에 걸려 멈췄습니다. 판정 내용을 확인하세요.",
+        "waiting": "규격 평가처럼 곧 끝날 일을 기다리는 중입니다. 잠시 뒤 다시 판정합니다.",
         "recorded": "판정만 기록했습니다(기록 모드).",
         "deadline_extended": "회신이 없어 마감을 자동으로 연장했습니다.",
         "held": "담당자가 자동 진행을 보류해 둔 건입니다.",
