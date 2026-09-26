@@ -444,6 +444,42 @@ def update_quotation_snapshot(
     return dict(current), False
 
 
+def record_automation_scan(
+    result: dict[str, Any],
+    *,
+    interval_seconds: int | None = None,
+    ran_by: str | None = None,
+) -> None:
+    """스캔이 돌았다는 사실을 한 줄로 남긴다(서버 로그를 못 보는 사람용)."""
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO procurement.automation_heartbeat
+                (singleton, last_run_at, interval_seconds, ran_by, result)
+            VALUES (true, now(), %(interval)s, %(ran_by)s, %(result)s)
+            ON CONFLICT (singleton) DO UPDATE
+            SET last_run_at = now(),
+                interval_seconds = EXCLUDED.interval_seconds,
+                ran_by = EXCLUDED.ran_by,
+                result = EXCLUDED.result
+            """,
+            {
+                "interval": interval_seconds,
+                "ran_by": ran_by,
+                "result": Jsonb(_json_value(result)),
+            },
+        )
+
+
+def get_automation_heartbeat() -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM procurement.automation_heartbeat WHERE singleton = true"
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def set_automation_hold(
     case_id: str,
     *,

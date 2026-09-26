@@ -13,6 +13,15 @@ from typing import Any
 from procurement_db import get_connection
 
 
+def _tables(connection) -> set[str]:
+    return {
+        dict(row)["table_name"]
+        for row in connection.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema='procurement'"
+        ).fetchall()
+    }
+
+
 def _scalar(connection, sql: str, params: dict[str, Any] | None = None):
     row = connection.execute(sql, params or {}).fetchone()
     return None if row is None else list(row.values())[0] if hasattr(row, "values") else row[0]
@@ -37,7 +46,29 @@ def main() -> int:
         for name in ("live_quotation_ranking", "automation_hold", "auto_progress_signature", "auto_deadline_extended_at"):
             print(f"  {name}: {'있음' if name in columns else '❌ 없음 - 마이그레이션 미적용'}")
 
-        print("\n=== 2. 회사 정책 자동 진행 설정 ===")
+        print("\n=== 2. 스캔이 돌고 있나 ===")
+        beat = connection.execute(
+            "SELECT * FROM procurement.automation_heartbeat WHERE singleton = true"
+        ).fetchone() if "automation_heartbeat" in _tables(connection) else None
+        if beat is None:
+            print("  ❌ 아직 한 번도 안 돌았습니다.")
+            print("     - 서버에 최신 코드가 배포됐는지 확인하세요(스캔 루프가 그 안에 있습니다).")
+            print("     - 배포 직후라면 첫 실행까지 최대 10분 걸립니다.")
+        else:
+            beat = dict(beat)
+            from datetime import datetime, timezone
+
+            last = beat["last_run_at"]
+            interval = int(beat.get("interval_seconds") or 600)
+            elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+            remaining = max(0, interval - elapsed)
+            print(f"  마지막 실행: {last:%Y-%m-%d %H:%M:%S} UTC ({elapsed / 60:.1f}분 전, {beat.get('ran_by')})")
+            print(f"  주기: {interval // 60}분 · 다음 실행까지 약 {remaining / 60:.1f}분")
+            if elapsed > interval * 2.5:
+                print("  ⚠️ 주기보다 한참 지났습니다. API가 재시작됐거나 스캔이 꺼져 있을 수 있습니다.")
+            print(f"  마지막 결과: {beat.get('result')}")
+
+        print("\n=== 3. 회사 정책 자동 진행 설정 ===")
         policy = connection.execute(
             """
             SELECT v.policy FROM procurement.company_policy_head h
@@ -75,7 +106,7 @@ def main() -> int:
             case = dict(row)
             case_id = str(case["case_id"])
             snapshot = case.get("quotation_snapshot") or {}
-            print(f"\n=== 3. {case['mr_name']} ===")
+            print(f"\n=== 4. {case['mr_name']} ===")
             print(f"  단계: {case['stage']} / 상태: {case['status']}")
             print(f"  마감: {case['quotation_deadline_at']}")
             print(f"  회신: {snapshot.get('responded_count')}/{snapshot.get('recipient_count')}"

@@ -273,7 +273,12 @@ def trigger_on_full_response(case_id: str) -> str:
         return "failed"
 
 
-def run_due_auto_progress(now: datetime | None = None) -> dict[str, int]:
+def run_due_auto_progress(
+    now: datetime | None = None,
+    *,
+    interval_seconds: int | None = None,
+    ran_by: str | None = None,
+) -> dict[str, int]:
     """마감이 지난 케이스를 찾아 자동 진행을 시도한다.
 
     한 번에 하나씩 순서대로 처리한다 - 워크플로 체크포인트가 SQLite 파일
@@ -308,4 +313,11 @@ def run_due_auto_progress(now: datetime | None = None) -> dict[str, int]:
                 counts[outcome] += 1
             else:
                 counts["skipped"] += 1
+
+        try:
+            case_repository.record_automation_scan(
+                counts, interval_seconds=interval_seconds, ran_by=ran_by
+            )
+        except Exception:  # noqa: BLE001 - 기록 실패가 스캔을 실패시키면 안 된다
+            LOGGER.warning("스캔 실행 기록에 실패했습니다.", exc_info=True)
     return counts

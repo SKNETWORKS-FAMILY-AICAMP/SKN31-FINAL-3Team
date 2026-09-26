@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from functools import partial
 
 from backend_logic2.services.auto_progress_runner import run_due_auto_progress
 
@@ -49,7 +50,13 @@ async def auto_progress_loop() -> None:
     while True:
         try:
             await asyncio.sleep(interval)
-            counts = await asyncio.to_thread(run_due_auto_progress)
+            counts = await asyncio.to_thread(
+                partial(
+                    run_due_auto_progress,
+                    interval_seconds=int(interval),
+                    ran_by="api-scheduler",
+                )
+            )
             if any(counts[key] for key in ("advanced", "blocked", "deadline_extended", "failed")):
                 LOGGER.info("자동 진행 스캔: %s", counts)
         except asyncio.CancelledError:
