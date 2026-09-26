@@ -357,6 +357,55 @@ def get_case_quotation_validation(
     }
 
 
+class AutomationHoldRequest(BaseModel):
+    hold: bool
+    reason: str | None = None
+
+
+@router.post("/cases/{case_id}/automation-hold")
+def set_automation_hold(
+    case_id: str,
+    body: AutomationHoldRequest,
+    current_user: CurrentUser,
+):
+    """자동 진행을 잠시 멈추거나 다시 풉니다.
+
+    그래프 state가 아니라 케이스 테이블에 두는 이유는, 워크플로가 멈춰
+    있는 동안에도 보류를 걸 수 있어야 하기 때문입니다(state에 두면 보류를
+    걸려고 워크플로를 깨워야 하는 모순이 생깁니다).
+    """
+    _require_case_access(case_id, current_user)
+    try:
+        case = case_repository.set_automation_hold(
+            case_id,
+            hold=body.hold,
+            reason=(body.reason or "").strip() or None,
+            actor=_user_id(current_user),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="구매 작업을 찾을 수 없습니다.") from exc
+    return {
+        "case_id": case["case_id"],
+        "automation_hold": case["automation_hold"],
+        "automation_hold_reason": case.get("automation_hold_reason"),
+        "automation_hold_by": case.get("automation_hold_by"),
+        "automation_hold_at": case.get("automation_hold_at"),
+    }
+
+
+@router.get("/cases/{case_id}/timeline")
+def get_case_timeline(case_id: str, current_user: CurrentUser):
+    """이 건에 무슨 일이 언제 있었는지 - 단계 전환·사람 응답·AI 판단을 합친 이력."""
+    _require_case_access(case_id, current_user)
+    from backend_logic2.repositories import case_timeline
+
+    try:
+        items = case_timeline.list_case_timeline(case_id)
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="이력 저장소에 연결할 수 없습니다.") from exc
+    return {"items": items, "count": len(items)}
+
+
 @router.get("/cases/{case_id}/quotation-deadline/history")
 def get_quotation_deadline_history(case_id: str, current_user: CurrentUser):
     """견적 마감일 연장 이력(오래된 순).

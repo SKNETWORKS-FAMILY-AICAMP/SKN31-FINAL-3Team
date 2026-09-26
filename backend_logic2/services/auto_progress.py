@@ -69,6 +69,32 @@ class AutoDecision:
         }
 
 
+def record_decision(case_id: str | None, node: str, decision: "AutoDecision") -> None:
+    """자동 진행 판정을 AI 판단 로그에 남긴다.
+
+    자동으로 진행했든 멈췄든 "왜 그랬는지"가 남아야, 나중에 문제가 생겼을
+    때 설명할 수 있고 섀도 모드의 일치율도 집계할 수 있다.
+    """
+    if not case_id:
+        return
+    try:
+        from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
+
+        blocked = [row["code"] for row in decision.blockers]
+        detail = decision.summary()
+        if decision.evidence:
+            facts = ", ".join(
+                f"{key}={value}" for key, value in decision.evidence.items() if value is not None
+            )
+            if facts:
+                detail = f"{detail} [{facts}]"
+        if blocked:
+            detail = f"{detail} (걸린 조건: {', '.join(blocked)})"
+        log_ai_decision(str(case_id), node, f"[{decision.mode}] {detail}")
+    except Exception:  # noqa: BLE001 - 기록 실패가 진행을 막으면 안 된다
+        pass
+
+
 def _check(code: str, label: str, detail: str, *, status: str) -> dict[str, Any]:
     return {"code": code, "label": label, "detail": detail, "status": status}
 

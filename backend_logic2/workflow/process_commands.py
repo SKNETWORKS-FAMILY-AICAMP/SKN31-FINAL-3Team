@@ -610,6 +610,7 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
     # 수를 채우면 사람 확인 없이 그대로 보낸다. 신규 협력사가 한 곳이라도
     # 섞이면 여기서 멈춘다(거래한 적 없는 곳을 자동으로 입찰에 넣는 건
     # 성격이 다른 결정이다).
+    from backend_logic2.services import auto_progress as auto_progress_module
     from backend_logic2.services.auto_progress import evaluate_rfq_dispatch
 
     existing_names = {
@@ -635,6 +636,7 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
             })
             auto.allowed = False
 
+    auto_progress_module.record_decision(state.get("case_id"), "auto_rfq_dispatch", auto)
     if auto_answer is not None:
         print(f"[RFQ 대상 자동 확정] {len(candidates)}곳 · 마감 {auto_answer['quotation_deadline']}")
         answer = auto_answer
@@ -954,6 +956,7 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         # 마감 스캔 잡 또는 전원 회신 웹훅이 부른 경로. 조건을 통과하면
         # 사람 없이 1순위로 확정하고, 하나라도 걸리면 그 자리에 멈춘 채
         # 판정 결과를 남겨 화면이 "무엇이 걸렸는지"를 보여주게 한다.
+        from backend_logic2.services import auto_progress as auto_progress_module
         from backend_logic2.services.auto_progress import evaluate_final_selection
 
         trigger = str(answer.get("trigger") or "deadline") if isinstance(answer, dict) else "deadline"
@@ -978,6 +981,7 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             },
             "auto_progress": decision.as_payload(),
         }
+        auto_progress_module.record_decision(state.get("case_id"), "auto_final_selection", decision)
         print(f"[자동 선정 판정] {decision.summary()}")
         if not decision.should_proceed:
             return Command(
