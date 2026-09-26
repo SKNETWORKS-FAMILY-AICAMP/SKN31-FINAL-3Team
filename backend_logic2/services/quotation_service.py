@@ -555,9 +555,50 @@ def validate_case_quotations(case: dict[str, Any]) -> list[dict[str, Any]]:
     quotations = get_reviewable_quotations_for_rfqs(rfq_names)
     known = set(rfq_names)
 
+    reviews = [
+        review_quotation(quotation, rfq, known_rfq_names=known)
+        for quotation in quotations
+    ]
+
+    # 규격 평가(RunPod) 결과가 캐시에 있는지까지 확인한다. 결정적 검증을
+    # 통과했는데도 순위에 없는 견적은 대부분 "AI 규격 평가 결과가 없음"
+    # (ranker의 assessment is None) 이 이유인데, 그걸 모르면 화면에서
+    # 영원히 '평가중'으로만 보인다.
+    spec_evaluated: dict[str, bool] = {}
+    evaluator_available = True
+    evaluation_source: str | None = None
+    try:
+        from backend_logic2.nodes.quotation.quotation_filter.quotation_spec_evaluator import (
+            build_quotation_spec_evaluator,
+            specification_evaluation_fingerprint,
+        )
+        from backend_logic2.repositories.quotation_specification_cache import load_matching
+
+        evaluator = build_quotation_spec_evaluator()
+        evaluation_source = evaluator.model_name
+        fingerprints = {
+            review.quotation_id: specification_evaluation_fingerprint(
+                rfq, review.quotation, evaluator
+            )
+            for review in reviews
+            if review.quotation is not None
+        }
+        # 캐시는 RFQ 단위로 저장되므로 라운드별로 나눠 조회한다.
+        cached: dict[str, Any] = {}
+        for name in rfq_names:
+            try:
+                cached.update(load_matching(name, fingerprints, evaluator.model_name))
+            except Exception:  # noqa: BLE001 - 캐시 조회 실패가 검증 조회를 막지 않는다
+                LOGGER.warning("규격 평가 캐시 조회 실패: rfq=%s", name)
+        spec_evaluated = {
+            quotation_id: quotation_id in cached for quotation_id in fingerprints
+        }
+    except Exception:  # noqa: BLE001 - 평가기 설정이 없으면 '확인 불가'로 돌려준다
+        evaluator_available = False
+        LOGGER.warning("규격 평가기를 만들 수 없어 평가 여부를 확인하지 못했습니다.", exc_info=True)
+
     items: list[dict[str, Any]] = []
-    for quotation in quotations:
-        review = review_quotation(quotation, rfq, known_rfq_names=known)
+    for review in reviews:
         rankable, evidence = _is_structurally_rankable(review)
         items.append(
             {
@@ -575,6 +616,11 @@ def validate_case_quotations(case: dict[str, Any]) -> list[dict[str, Any]]:
                     if issue.severity == IssueSeverity.ERROR
                 ],
                 "evidence": evidence,
+                # None이면 평가기 설정이 없어 확인 자체를 못 한 경우다.
+                "spec_evaluated": (
+                    spec_evaluated.get(review.quotation_id) if evaluator_available else None
+                ),
+                "evaluation_source": evaluation_source,
             }
         )
     return items
