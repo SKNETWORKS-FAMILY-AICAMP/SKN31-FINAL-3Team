@@ -589,6 +589,81 @@ def transition_case(
     return dict(row)
 
 
+# 견적 마감일 연장 이력용 표식. procurement_case.quotation_deadline_at은
+# 연장할 때마다 덮어써서 "언제 언제로 바꿨는지"가 남지 않으므로, 이미
+# 있는 workflow_status_history 테이블에 이 to_status로 한 줄씩 남긴다
+# (reason에 "<이전 마감일> -> <새 마감일>" ISO 문자열). 별도 테이블/
+# 마이그레이션 없이 이력을 보관하려는 의도이며, 워크플로 상태 전이와
+# 섞이지 않도록 to_status 값으로 구분한다.
+QUOTATION_DEADLINE_EXTENDED_STATUS = "QUOTATION_DEADLINE_EXTENDED"
+_DEADLINE_HISTORY_SEPARATOR = " -> "
+
+
+def log_quotation_deadline_change(
+    case_id: str,
+    *,
+    previous_deadline: datetime | str | None,
+    new_deadline: datetime | str,
+    stage: str | None,
+    changed_by: str | None,
+) -> None:
+    """마감일 연장 한 건을 이력으로 남긴다."""
+
+    def _iso(value: datetime | str | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+
+    reason = f"{_iso(previous_deadline)}{_DEADLINE_HISTORY_SEPARATOR}{_iso(new_deadline)}"
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO procurement.workflow_status_history (
+                case_id, from_status, to_status, stage, reason, triggered_by
+            ) VALUES (
+                %(case_id)s, NULL, %(to_status)s, %(stage)s, %(reason)s, %(triggered_by)s
+            )
+            """,
+            {
+                "case_id": case_id,
+                "to_status": QUOTATION_DEADLINE_EXTENDED_STATUS,
+                "stage": stage,
+                "reason": reason,
+                "triggered_by": changed_by,
+            },
+        )
+
+
+def list_quotation_deadline_changes(case_id: str) -> list[dict[str, Any]]:
+    """마감일 연장 이력을 오래된 순으로 돌려준다."""
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT reason, triggered_by, changed_at
+            FROM procurement.workflow_status_history
+            WHERE case_id = %(case_id)s AND to_status = %(to_status)s
+            ORDER BY changed_at ASC
+            """,
+            {"case_id": case_id, "to_status": QUOTATION_DEADLINE_EXTENDED_STATUS},
+        ).fetchall()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        reason = str(dict(row).get("reason") or "")
+        previous_at, _, new_at = reason.partition(_DEADLINE_HISTORY_SEPARATOR)
+        items.append(
+            {
+                "previous_deadline_at": previous_at.strip() or None,
+                "deadline_at": new_at.strip() or None,
+                "changed_by": dict(row).get("triggered_by"),
+                "changed_at": dict(row).get("changed_at"),
+            }
+        )
+    return items
+
+
 def update_quotation_deadline(case_id: str, deadline_at: datetime | str | None) -> dict[str, Any]:
     """deadline_at=None이면 마감일을 지운다(NULL) - 재비딩처럼 기존 RFQ/견적을
     버리고 새로 마감일을 정할 때까지 옛 마감일이 남아있지 않도록 하기 위함."""

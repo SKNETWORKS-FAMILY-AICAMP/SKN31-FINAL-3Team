@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from threading import RLock
 from typing import Any
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ from .workflow_projection import (
     task_presentation,
 )
 
+logger = logging.getLogger(__name__)
 
 _GRAPH_LOCK = RLock()
 
@@ -1321,6 +1323,19 @@ def extend_quotation_deadline(
     if current_deadline and parsed <= current_deadline:
         raise ValueError("새 견적 마감일은 기존 마감일보다 늦어야 합니다.")
     updated = case_repository.update_quotation_deadline(case_id, deadline_at)
+    # 마감일 컬럼은 덮어써지므로 "언제 → 언제로 연장했는지"를 별도 이력으로
+    # 남긴다(협력사 선정 상세 패널의 '연장 이력'에서 그대로 보여준다).
+    # 이력 저장이 실패해도 연장 자체는 이미 성공한 상태이므로 막지 않는다.
+    try:
+        case_repository.log_quotation_deadline_change(
+            case_id,
+            previous_deadline=current_deadline,
+            new_deadline=deadline_at,
+            stage=case.get("stage"),
+            changed_by=changed_by,
+        )
+    except Exception:  # noqa: BLE001 - 이력 기록 실패가 연장을 되돌리면 안 된다
+        logger.exception("견적 마감일 연장 이력 기록에 실패했습니다: case_id=%s", case_id)
     from backend_logic2.repositories.notifications import create_notification
 
     _delete_case_notifications_safely(case_id)

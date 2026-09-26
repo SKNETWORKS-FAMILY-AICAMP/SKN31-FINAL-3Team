@@ -324,6 +324,20 @@ def extend_quotation_deadline(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.get("/cases/{case_id}/quotation-deadline/history")
+def get_quotation_deadline_history(case_id: str, current_user: CurrentUser):
+    """견적 마감일 연장 이력(오래된 순).
+
+    procurement_case.quotation_deadline_at은 연장할 때마다 덮어써지기
+    때문에, 연장 시점마다 workflow_status_history에 남겨둔 기록을 읽어
+    "언제 → 언제로 늘렸는지"를 협력사 선정 상세 패널에 보여주기 위한
+    엔드포인트다. 케이스 목록 조회에 매번 조인을 걸지 않으려고 상세를
+    펼칠 때만 따로 불러온다(차수별 견적 조회와 같은 방식)."""
+    _require_case_access(case_id, current_user)
+    items = case_repository.list_quotation_deadline_changes(case_id)
+    return {"items": items, "count": len(items)}
+
+
 @router.get("/tasks")
 def get_tasks(
     current_user: CurrentUser,
