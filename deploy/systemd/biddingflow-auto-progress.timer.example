@@ -1,0 +1,11 @@
+[Unit]
+Description=Run BiddingFlow automatic progress scan every 10 minutes
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+RandomizedDelaySec=30
+Unit=biddingflow-auto-progress.service
+
+[Install]
+WantedBy=timers.target

@@ -444,6 +444,60 @@ def update_quotation_snapshot(
     return dict(current), False
 
 
+def set_automation_hold(
+    case_id: str,
+    *,
+    hold: bool,
+    reason: str | None = None,
+    actor: str | None = None,
+) -> dict[str, Any]:
+    """자동 진행 보류를 걸거나 푼다. version은 올리지 않는다."""
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            UPDATE procurement.procurement_case
+            SET automation_hold = %(hold)s,
+                automation_hold_reason = CASE WHEN %(hold)s THEN %(reason)s ELSE NULL END,
+                automation_hold_by = CASE WHEN %(hold)s THEN %(actor)s ELSE NULL END,
+                automation_hold_at = CASE WHEN %(hold)s THEN now() ELSE NULL END
+            WHERE case_id = %(case_id)s
+            RETURNING *
+            """,
+            {"case_id": case_id, "hold": hold, "reason": reason, "actor": actor},
+        ).fetchone()
+    if row is None:
+        raise LookupError(case_id)
+    return dict(row)
+
+
+def mark_auto_progress_attempt(case_id: str, signature: str | None) -> None:
+    """자동 진행을 시도한 상황의 지문을 남긴다(같은 상황 반복 평가 방지)."""
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE procurement.procurement_case
+            SET auto_progress_signature = %(signature)s,
+                auto_progress_at = now()
+            WHERE case_id = %(case_id)s
+            """,
+            {"case_id": case_id, "signature": signature},
+        )
+
+
+def mark_auto_deadline_extended(case_id: str) -> None:
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE procurement.procurement_case
+            SET auto_deadline_extended_at = now()
+            WHERE case_id = %(case_id)s
+            """,
+            {"case_id": case_id},
+        )
+
+
 def save_live_quotation_ranking(case_id: str, payload: dict[str, Any]) -> bool:
     """실시간 견적 순위를 저장한다. version은 올리지 않는다(그래프 쓰기와 충돌 방지)."""
 

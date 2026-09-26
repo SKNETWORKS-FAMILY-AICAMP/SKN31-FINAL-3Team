@@ -29,6 +29,7 @@ from backend_logic2.nodes.item.item_spec_validation import (
     ItemSpecificationPolicyError,
     get_or_create_group_requirements,
 )
+from backend_logic2.services import auto_progress_runner
 from backend_logic2.services import quotation_service
 from procurement_db.config import require_database_url
 from backend_logic2.integrations.assignment_config import (
@@ -799,6 +800,13 @@ def supplier_quotation_webhook(
                 quotation_service.refresh_live_ranking,
                 str(projection["case_id"]),
                 str(projection["rfq_name"]),
+            )
+            # 전원이 회신했으면 마감을 기다릴 이유가 없다. 순위를 갱신한
+            # 직후에 이어서 자동 진행을 판정한다(배경 작업은 등록 순서대로
+            # 실행된다).
+            background_tasks.add_task(
+                auto_progress_runner.trigger_on_full_response,
+                str(projection["case_id"]),
             )
     return {"accepted": True, "duplicate": not created, "items": projections}
 
