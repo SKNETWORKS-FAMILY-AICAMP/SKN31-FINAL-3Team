@@ -737,11 +737,17 @@ def purchase_receipt_webhook(
 
 @webhook_router.post("/supplier-quotation")
 def supplier_quotation_webhook(
+    background_tasks: BackgroundTasks,
     payload: dict[str, Any] = Body(...),
     x_erpnext_webhook_secret: Optional[str] = Header(default=None),
     x_erpnext_event_id: Optional[str] = Header(default=None),
 ):
-    """Refresh quote response rate and wake the frontend without auto-finalizing."""
+    """Refresh quote response rate and wake the frontend without auto-finalizing.
+
+    견적이 하나 도착할 때마다 그 RFQ의 규격 평가(RunPod)를 백그라운드로
+    미리 돌려 캐시에 넣어둔다. 최종 선정 자체는 여전히 사람이 시작하지만,
+    그 시점에는 캐시 히트로 바로 순위가 나오므로 "분석 중..."을 몇 분씩
+    기다리지 않는다. 이미 평가된 견적은 지문 캐시로 건너뛴다."""
 
     _require_webhook_secret(x_erpnext_webhook_secret)
     try:
@@ -753,6 +759,15 @@ def supplier_quotation_webhook(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (ERPNextAPIError, psycopg.Error) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if created:
+        for projection in projections:
+            if not projection.get("matched") or not projection.get("case_id"):
+                continue
+            background_tasks.add_task(
+                quotation_service.prewarm_specification_analysis,
+                str(projection["case_id"]),
+                str(projection["rfq_name"]),
+            )
     return {"accepted": True, "duplicate": not created, "items": projections}
 
 

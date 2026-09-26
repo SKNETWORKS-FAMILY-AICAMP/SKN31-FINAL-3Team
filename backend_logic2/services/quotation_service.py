@@ -8,6 +8,7 @@ same projection without moving a human approval step automatically.
 
 from __future__ import annotations
 
+import logging
 import re
 from email.utils import getaddresses
 from threading import Lock
@@ -37,6 +38,8 @@ from backend_logic2.repositories import events as event_repository
 from backend_logic2.repositories import notifications as notification_repository
 from backend_logic2.workflow.process_commands import to_checkpoint_data
 
+
+LOGGER = logging.getLogger(__name__)
 
 _EMAIL_EXTRACTION_LOCK = Lock()
 
@@ -489,6 +492,51 @@ def register_supplier_quotation_event(
         raise
     event_repository.complete_event(str(event["event_id"]))
     return projections, True
+
+
+# 견적 회신이 도착할 때마다 규격 평가(RunPod)를 미리 돌려두는 단계.
+# 예전에는 사람이 '회신 새로 확인'(= check_quotations 재개)을 누르는 순간에야
+# 모든 견적의 규격 평가가 한꺼번에 시작돼서, 회신이 많으면 그 자리에서 몇
+# 분을 기다려야 했다. evaluate_quotations()는 quotation_specification_cache에
+# 지문(fingerprint)으로 캐시를 남기고 캐시가 맞는 견적은 건너뛰므로, 도착
+# 시점에 미리 한 번 돌려두면 나중 분석은 캐시 히트로 즉시 끝난다.
+#
+# 여기서는 순위 결과를 쓰지 않는다 - 목적은 캐시를 채워두는 것뿐이고,
+# LangGraph 상태/대기 작업/케이스 상태는 건드리지 않는다(사람이 최종
+# 선정을 시작하는 시점은 그대로 유지). 실패해도 웹훅 처리는 이미 끝난
+# 뒤이므로 로깅만 하고 삼킨다.
+_PREWARM_STAGES = {"QUOTATION_COLLECTION", "SUPPLIER_SELECTION"}
+
+
+def prewarm_specification_analysis(case_id: str, rfq_name: str) -> None:
+    """도착한 견적의 규격 평가를 미리 계산해 캐시에 넣어둔다(결과는 버린다)."""
+    try:
+        case = case_repository.get_case(case_id)
+        if case is None:
+            return
+        stage = str(case.get("stage") or "")
+        if stage not in _PREWARM_STAGES:
+            return
+        from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import (
+            evaluate_quotations,
+        )
+
+        result = evaluate_quotations(rfq_name)
+        error = result.get("error") if isinstance(result, dict) else None
+        if error:
+            LOGGER.info(
+                "견적 규격 평가 미리 실행이 완료되지 않았습니다(다음 분석에서 재시도): "
+                "case_id=%s rfq=%s error=%s",
+                case_id,
+                rfq_name,
+                error,
+            )
+    except Exception:  # noqa: BLE001 - 미리 실행 실패가 웹훅 처리를 되돌리면 안 된다
+        LOGGER.exception(
+            "견적 규격 평가 미리 실행에 실패했습니다: case_id=%s rfq=%s",
+            case_id,
+            rfq_name,
+        )
 
 
 def reconcile_supplier_quotations(*, notify: bool = True) -> dict[str, int]:

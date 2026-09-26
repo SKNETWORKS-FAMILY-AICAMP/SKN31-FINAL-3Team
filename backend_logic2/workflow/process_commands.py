@@ -21,7 +21,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, TypedDict
@@ -122,7 +122,11 @@ def _archive_current_rfq_round(state: PurchaseProcessState) -> list[dict[str, An
             "round": len(rounds_history),
             "rfq_name": rfq_name,
             "deadline": state.get("quotation_deadline") or "",
-            "closed_at": datetime.now().isoformat(),
+            # ⚠️ datetime.now()는 시간대 정보가 없는(naive) 문자열을 만든다.
+            # 서버가 UTC로 돌기 때문에 프론트가 그 문자열을 로컬(KST)로
+            # 해석해서 종료 시각이 9시간 어긋나 보였다(12:50 -> 03:50).
+            # 시간대를 붙여서 저장한다.
+            "closed_at": datetime.now(timezone.utc).isoformat(),
         })
     return rounds_history
 
