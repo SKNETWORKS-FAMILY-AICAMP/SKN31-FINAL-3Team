@@ -812,9 +812,9 @@ def refresh_live_ranking(
     이미 평가된 견적은 RunPod을 다시 부르지 않는다. 그래프는 건드리지
     않는다 - 최종 선정(견적 Submit)은 여전히 사람이 시작한다.
 
-    notify_reason: "deadline"(마감 도달) / "all_responded"(전원 회신)이면
-    같은 RFQ 차수에 대해 한 번만 담당자에게 알림을 보낸다. 웹훅 경로에서는
-    None으로 호출되며, 전원 회신 여부는 여기서 직접 판단한다.
+    전원 회신이면 같은 RFQ 차수에 대해 한 번만 담당자에게 알림을 보낸다.
+    (마감 경과는 화면이 마감 시각으로 직접 판단하므로 따로 알리지 않는다.)
+    notify_reason으로 알림 사유를 강제로 지정할 수도 있다.
     """
     try:
         with _live_ranking_lock(str(case_id)):
@@ -904,41 +904,6 @@ def _refresh_live_ranking_locked(
 def prewarm_specification_analysis(case_id: str, rfq_name: str) -> None:
     """호환용 - 예전 이름. 이제는 실시간 순위까지 함께 계산해 저장한다."""
     refresh_live_ranking(case_id, rfq_name)
-
-
-def refresh_due_live_rankings() -> dict[str, int]:
-    """견적 마감 시각이 지난 케이스의 순위를 확정 계산하고 담당자에게 알린다.
-
-    그래프를 최종 선정으로 자동으로 넘기지는 않는다(견적 Submit과 재비딩
-    가능 여부가 걸려 있어 사람이 시작해야 한다). 차수별로 한 번만 알린다.
-    """
-    from datetime import datetime, timezone
-
-    counts = {"checked": 0, "refreshed": 0, "failed": 0}
-    now = datetime.now(timezone.utc)
-    for case in case_repository.list_cases_for_quotation_reconciliation():
-        if str(case.get("stage") or "") != "QUOTATION_COLLECTION":
-            continue
-        deadline = case.get("quotation_deadline_at")
-        if not isinstance(deadline, datetime):
-            continue
-        if deadline.tzinfo is None:
-            deadline = deadline.replace(tzinfo=timezone.utc)
-        if deadline > now:
-            continue
-        counts["checked"] += 1
-        values = _workflow_values(case)
-        current_rfq = str(values.get("rfq_name") or "").strip()
-        previous = case.get("live_quotation_ranking") or {}
-        notices = previous.get("notices") if isinstance(previous, dict) else None
-        if isinstance(notices, dict) and notices.get("deadline") == current_rfq:
-            continue
-        payload = refresh_live_ranking(str(case["case_id"]), current_rfq, notify_reason="deadline")
-        if payload is None:
-            counts["failed"] += 1
-        else:
-            counts["refreshed"] += 1
-    return counts
 
 
 def reconcile_supplier_quotations(*, notify: bool = True) -> dict[str, int]:

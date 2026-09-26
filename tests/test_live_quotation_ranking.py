@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from backend_logic2.policies.schema import CompanyPolicy
@@ -132,26 +130,3 @@ def test_refresh_skips_closed_stages_and_never_raises(harness, monkeypatch) -> N
         boom,
     )
     assert quotation_service.refresh_live_ranking("CASE-1") is None
-
-
-def test_deadline_job_only_handles_passed_and_unnotified_cases(harness, monkeypatch) -> None:
-    now = datetime.now(timezone.utc)
-    passed = _case(case_id="CASE-1", quotation_deadline_at=now - timedelta(hours=1))
-    future = _case(case_id="CASE-2", quotation_deadline_at=now + timedelta(hours=1))
-    notified = _case(
-        case_id="CASE-3",
-        quotation_deadline_at=now - timedelta(hours=1),
-        live_quotation_ranking={"notices": {"deadline": "RFQ-2"}},
-    )
-    monkeypatch.setattr(
-        quotation_service.case_repository,
-        "list_cases_for_quotation_reconciliation",
-        lambda: [passed, future, notified],
-    )
-    harness["case"] = passed
-
-    counts = quotation_service.refresh_due_live_rankings()
-
-    assert counts == {"checked": 2, "refreshed": 1, "failed": 0}
-    assert len(harness["notices"]) == 1
-    assert harness["notices"][0]["payload"]["reason"] == "deadline"
