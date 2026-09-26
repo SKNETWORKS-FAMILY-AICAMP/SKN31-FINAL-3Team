@@ -20,7 +20,9 @@ from backend_logic2.services.auto_progress_runner import run_due_auto_progress
 LOGGER = logging.getLogger(__name__)
 
 _DEFAULT_INTERVAL_SECONDS = 600.0
-_MINIMUM_INTERVAL_SECONDS = 60.0
+# 테스트할 때 몇 초로 줄여 쓸 수 있게 하한을 낮게 둔다. 운영 기본값은
+# 600초이고, 짧게 두면 그만큼 DB 조회가 잦아진다.
+_MINIMUM_INTERVAL_SECONDS = 5.0
 
 
 def scheduler_enabled() -> bool:
@@ -46,9 +48,9 @@ async def auto_progress_loop() -> None:
     """마감이 지난 케이스를 주기적으로 깨운다."""
     interval = interval_seconds()
     LOGGER.info("자동 진행 스캔 루프를 시작합니다 (%.0f초 주기)", interval)
-    # 앱이 막 뜬 직후에는 다른 기동 작업과 겹치지 않게 한 주기 쉬고 시작한다.
     while True:
         try:
+            # 기동 직후 다른 초기화와 겹치지 않게 한 주기 쉬고 시작한다.
             await asyncio.sleep(interval)
             counts = await asyncio.to_thread(
                 partial(
