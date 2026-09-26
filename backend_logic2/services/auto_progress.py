@@ -44,6 +44,16 @@ class AutoDecision:
         return [row for row in self.checks if row.get("status") == "blocked"]
 
     @property
+    def retryable(self) -> bool:
+        """스스로 풀릴 수 있는 이유로만 멈췄는가.
+
+        사람이 판단해야 하는 이유가 하나라도 섞여 있으면 다시 봐도 결론이
+        같으니 retryable이 아니다. 걸린 게 없으면(통과) 애초에 해당 없음.
+        """
+        blockers = self.blockers
+        return bool(blockers) and all(bool(row.get("retryable")) for row in blockers)
+
+    @property
     def should_proceed(self) -> bool:
         """실제로 사람 없이 진행해도 되는가."""
         return self.allowed and self.enabled and self.mode == "on"
@@ -71,6 +81,7 @@ class AutoDecision:
             "node": self.node,
             "checks": self.checks,
             "evidence": self.evidence,
+            "retryable": self.retryable,
             "summary": self.summary(),
         }
 
@@ -101,16 +112,28 @@ def record_decision(case_id: str | None, node: str, decision: "AutoDecision") ->
         pass
 
 
-def _check(code: str, label: str, detail: str, *, status: str) -> dict[str, Any]:
-    return {"code": code, "label": label, "detail": detail, "status": status}
+def _check(
+    code: str, label: str, detail: str, *, status: str, retryable: bool = False
+) -> dict[str, Any]:
+    row: dict[str, Any] = {"code": code, "label": label, "detail": detail, "status": status}
+    if retryable:
+        row["retryable"] = True
+    return row
 
 
 def _passed(code: str, label: str, detail: str) -> dict[str, Any]:
     return _check(code, label, detail, status="passed")
 
 
-def _blocked(code: str, label: str, detail: str) -> dict[str, Any]:
-    return _check(code, label, detail, status="blocked")
+def _blocked(code: str, label: str, detail: str, *, retryable: bool = False) -> dict[str, Any]:
+    """사람을 부를 이유.
+
+    retryable=True는 "몇 분 뒤 저절로 풀릴 수 있는 이유"라는 뜻이다.
+    규격 평가가 아직 돌고 있는 것처럼, 사람이 할 일이 없는데 아직 안 끝난
+    것뿐인 경우가 여기에 해당한다. 스캔은 이럴 때 사람을 부르지 않고
+    잠시 뒤 다시 본다.
+    """
+    return _check(code, label, detail, status="blocked", retryable=retryable)
 
 
 def _unknown(code: str, label: str, detail: str) -> dict[str, Any]:
@@ -294,10 +317,14 @@ def evaluate_final_selection(
     if spec_status == "completed":
         checks.append(_passed("SPEC_EVALUATION", "규격 평가 완료", f"{spec.get('model') or 'AI'} 평가 완료"))
     elif spec_status:
+        # 마감 직전에 견적이 들어오면 규격 평가(RunPod)가 몇 분 더 걸릴 수
+        # 있다. 사람이 할 일은 없고 아직 안 끝난 것뿐이라, 바로 부르지 않고
+        # 잠시 뒤 다시 보게 한다.
         checks.append(_blocked(
             "SPEC_EVALUATION",
             "규격 평가 완료",
             f"규격 평가가 끝나지 않았습니다 (미평가 {len(spec.get('unevaluated') or [])}건)",
+            retryable=True,
         ))
     else:
         checks.append(_unknown("SPEC_EVALUATION", "규격 평가 완료", "규격 평가 상태를 확인할 수 없습니다"))

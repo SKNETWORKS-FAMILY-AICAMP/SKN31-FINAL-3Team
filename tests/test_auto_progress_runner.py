@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -47,6 +47,10 @@ def harness(monkeypatch):
         "notices": [],
         "extended": [],
         "after": None,
+        # ⚠️ 납기요청일은 케이스 테이블에 없는 값이다. 예전 테스트가 케이스
+        # dict에 required_by를 꽂아 넣어서, 실제로는 한 번도 읽히지 않던
+        # 검사를 통과한 것처럼 보이게 만들었다. 실제 경로대로 조회를 막는다.
+        "required_by": None,
     }
 
     @contextmanager
@@ -57,6 +61,7 @@ def harness(monkeypatch):
     # 기본은 "이 인스턴스가 진행 상황을 갖고 있다" - 없는 경우는 전용 테스트에서.
     monkeypatch.setattr(runner, "has_local_checkpoint", lambda case: True)
     monkeypatch.setattr(runner, "_policy_for", lambda case: state["policy"])
+    monkeypatch.setattr(runner, "_required_by", lambda mr_name: state["required_by"])
     monkeypatch.setattr(
         runner.task_repository,
         "list_tasks",
@@ -146,17 +151,14 @@ def test_automation_off_does_nothing(harness) -> None:
 
 
 def test_silence_extends_the_deadline_once_when_there_is_lead_time(harness) -> None:
-    case = _case(
-        quotation_snapshot={"recipient_count": 4, "responded_count": 0},
-        required_by=datetime.now(timezone.utc) + timedelta(days=30),
-    )
+    harness["required_by"] = date.today() + timedelta(days=30)
+    case = _case(quotation_snapshot={"recipient_count": 4, "responded_count": 0})
     assert runner.process_case(case) == "deadline_extended"
     assert harness["resumed"] == []
 
     # 한 번 연장한 건은 다시 연장하지 않고 자동 선정 판정으로 넘어간다.
     already = _case(
         quotation_snapshot={"recipient_count": 4, "responded_count": 0},
-        required_by=datetime.now(timezone.utc) + timedelta(days=30),
         auto_deadline_extended_at=datetime.now(timezone.utc),
     )
     harness["after"] = _case(stage="SUPPLIER_SELECTION")
@@ -164,14 +166,87 @@ def test_silence_extends_the_deadline_once_when_there_is_lead_time(harness) -> N
 
 
 def test_a_tight_due_date_is_not_extended(harness) -> None:
-    case = _case(
-        quotation_snapshot={"recipient_count": 4, "responded_count": 0},
-        required_by=datetime.now(timezone.utc) + timedelta(days=4),
-    )
+    harness["required_by"] = date.today() + timedelta(days=4)
+    case = _case(quotation_snapshot={"recipient_count": 4, "responded_count": 0})
     harness["after"] = _case(stage="SUPPLIER_SELECTION")
     # 납기 여유가 없으면 연장하지 않고 바로 판정으로 간다.
     assert runner.process_case(case) == "advanced"
     assert harness["extended"] == []
+
+
+def test_an_unknown_due_date_is_never_extended(harness) -> None:
+    """납기를 모르면 연장하지 않는다.
+
+    연장만 반복하다 납기를 놓치는 게 가장 나쁜 결말이라, 여유를 확인할 수
+    없으면 통과가 아니라 정지다.
+    """
+    harness["required_by"] = None
+    case = _case(quotation_snapshot={"recipient_count": 4, "responded_count": 0})
+    harness["after"] = _case(stage="SUPPLIER_SELECTION")
+
+    assert runner.process_case(case) == "advanced"
+    assert harness["extended"] == []
+
+
+def _blocked_snapshot(*checks):
+    return {"values": {"rfq_name": "PUR-RFQ-1", "auto_progress": {
+        "allowed": False,
+        "retryable": all(row.get("retryable") for row in checks),
+        "checks": list(checks),
+    }}}
+
+
+_SPEC_RUNNING = {
+    "code": "SPEC_EVALUATION", "label": "규격 평가 완료",
+    "detail": "규격 평가가 끝나지 않았습니다 (미평가 2건)",
+    "status": "blocked", "retryable": True,
+}
+
+
+def test_a_spec_evaluation_still_running_is_retried_not_escalated(harness) -> None:
+    """마감 직전에 견적이 들어와 규격 평가가 몇 분 더 걸리는 경우.
+
+    사람이 할 일은 없고 아직 안 끝난 것뿐이라, 부르지 않고 다시 본다.
+    지문을 비워둬야 다음 스캔이 같은 건을 또 본다.
+    """
+    # 마감이 방금 지난 건. _FIXED_DEADLINE은 이미 한참 전이라 쓸 수 없다.
+    fresh = _case(
+        quotation_deadline_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        workflow_snapshot=_blocked_snapshot(_SPEC_RUNNING),
+    )
+    harness["after"] = fresh
+
+    assert runner.process_case(fresh) == "waiting"
+    assert harness["notices"] == []
+    assert harness["signatures"] == [None]
+
+
+def test_a_stuck_spec_evaluation_eventually_calls_a_person(harness) -> None:
+    """저절로 풀릴 이유여도 무한정 기다리진 않는다. 그건 지연이 아니라 고장이다."""
+    stale = _case(
+        quotation_deadline_at=datetime.now(timezone.utc) - timedelta(hours=6),
+        workflow_snapshot=_blocked_snapshot(_SPEC_RUNNING),
+    )
+    harness["after"] = stale
+
+    assert runner.process_case(stale) == "blocked"
+    assert len(harness["notices"]) == 1
+
+
+def test_a_human_blocker_mixed_in_is_never_retried(harness) -> None:
+    """사람이 판단할 이유가 섞여 있으면 다시 봐도 결론이 같다."""
+    human = {
+        "code": "AMOUNT_LIMIT", "label": "자동 선정 금액 한도",
+        "detail": "금액이 한도를 넘습니다", "status": "blocked",
+    }
+    fresh = _case(
+        quotation_deadline_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        workflow_snapshot=_blocked_snapshot(_SPEC_RUNNING, human),
+    )
+    harness["after"] = fresh
+
+    assert runner.process_case(fresh) == "blocked"
+    assert len(harness["notices"]) == 1
 
 
 def test_a_failed_resume_does_not_stop_the_rest(harness, monkeypatch) -> None:

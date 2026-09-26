@@ -231,3 +231,33 @@ def test_a_top_quotation_without_a_supplier_name_stops_the_flow(automation_on) -
 
     assert decision.allowed is False
     assert "TOP_SUPPLIER_NAME" in {row["code"] for row in decision.blockers}
+
+
+def test_a_running_spec_evaluation_is_marked_as_worth_retrying(automation_on) -> None:
+    """규격 평가가 아직 도는 중인 건 사람이 아니라 시간이 해결한다."""
+    result = _ranking_result()
+    result["specification_evaluation"] = {"status": "running", "unevaluated": ["A", "B"]}
+
+    decision = evaluate_final_selection(result, deadline_passed=True)
+
+    assert decision.allowed is False
+    assert decision.retryable is True
+    assert decision.as_payload()["retryable"] is True
+
+
+def test_a_human_judgement_blocker_is_not_worth_retrying(automation_on) -> None:
+    result = _ranking_result()
+    result["specification_evaluation"] = {"status": "running", "unevaluated": ["A"]}
+    result["ranking"][0]["valid_till"] = "2020-01-01"
+
+    decision = evaluate_final_selection(result, deadline_passed=True)
+
+    assert decision.retryable is False
+
+
+def test_a_passing_decision_is_not_retryable(automation_on) -> None:
+    """걸린 게 없으면 재시도할 것도 없다."""
+    decision = evaluate_final_selection(_ranking_result(), deadline_passed=True)
+
+    assert decision.allowed is True
+    assert decision.retryable is False

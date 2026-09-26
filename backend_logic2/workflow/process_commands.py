@@ -628,6 +628,19 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
     auto = evaluate_rfq_dispatch(
         candidates, pool_decision=state.get("supplier_pool_decision")
     )
+    # ⚠️ 재비딩(2차 이상)은 자동으로 보내지 않는다. 사람이 재비딩을 고른 건
+    # 1차에서 뭔가 잘못됐기 때문인데, 같은 후보 목록에 같은 조건으로 다시
+    # 자동 발송하면 그 잘못을 그대로 반복한다. 협력사와 마감일을 사람이
+    # 직접 정하는 기존 팝업으로 돌아간다.
+    if state.get("rfq_rounds"):
+        auto.checks.append({
+            "code": "REBID_ROUND",
+            "label": "재비딩 차수",
+            "detail": "재비딩은 협력사와 마감일을 담당자가 직접 정합니다.",
+            "status": "blocked",
+        })
+        auto.allowed = False
+
     auto_answer: dict[str, Any] | None = None
     if auto.should_proceed:
         auto_deadline = _default_quotation_deadline(str(state.get("mr_name") or ""))

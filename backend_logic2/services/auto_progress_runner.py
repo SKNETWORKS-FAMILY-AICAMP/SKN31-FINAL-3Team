@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from procurement_db import get_connection
@@ -32,6 +32,10 @@ LOGGER = logging.getLogger(__name__)
 _SCAN_LOCK_KEY = 8_241_007
 _QUOTATION_TASK_TYPES = {"quotation_check", "check_quotations"}
 _AUTO_ANSWERED_BY = "system:auto-progress"
+# 저절로 풀릴 수 있는 이유(규격 평가가 아직 도는 중 등)로 멈췄을 때, 사람을
+# 부르기 전에 얼마나 더 기다려 볼지. 마감 시각 기준이다. 이 시간이 지나도
+# 안 끝났으면 일시적인 지연이 아니라 고장이므로 사람을 부른다.
+_TRANSIENT_RETRY_GRACE = timedelta(minutes=60)
 
 
 @contextmanager
@@ -133,6 +137,40 @@ def _policy_for(case: dict[str, Any]):
     return CompanyPolicy.model_validate(for_case(str(case["case_id"]))["policy"])
 
 
+def _required_by(mr_name: str) -> date | None:
+    """MR의 납기요청일.
+
+    ⚠️ 예전엔 case 행의 required_by / schedule_date를 봤는데 procurement_case
+    테이블에 그런 컬럼이 아예 없어서 항상 None이었다. 그래서 "납기 여유가
+    정책값 이상 남았을 때만 연장한다"는 검사가 한 번도 작동하지 않았고,
+    납기가 코앞이어도 연장이 그대로 나갔다. 납기는 ERPNext에서 읽는다.
+    """
+    from backend_logic2.integrations.erp_client import erp_get_one
+
+    if not mr_name:
+        return None
+    try:
+        material_request = erp_get_one("Material Request", mr_name) or {}
+    except Exception:  # noqa: BLE001 - 조회 실패는 연장 포기 사유일 뿐이다
+        LOGGER.warning("납기요청일 조회 실패: mr_name=%s", mr_name, exc_info=True)
+        return None
+    raw = str(material_request.get("schedule_date") or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def _within_retry_grace(case: dict[str, Any]) -> bool:
+    """아직 더 기다려 볼 만한 시점인가."""
+    deadline = _as_utc(case.get("quotation_deadline_at"))
+    if deadline is None:
+        return False
+    return datetime.now(timezone.utc) <= deadline + _TRANSIENT_RETRY_GRACE
+
+
 def _extend_deadline_for_silence(case: dict[str, Any], policy) -> bool:
     """회신이 한 건도 없을 때 한 번만 자동으로 마감을 미룬다.
 
@@ -153,16 +191,20 @@ def _extend_deadline_for_silence(case: dict[str, Any], policy) -> bool:
     if int(snapshot.get("responded_count") or 0) > 0:
         return False
 
-    required_by = case.get("required_by") or case.get("schedule_date")
+    # 납기를 모르면 연장하지 않는다 - 판단이 애매하면 사람에게 넘긴다.
+    required_by = _required_by(str(case.get("mr_name") or ""))
+    if required_by is None:
+        LOGGER.info(
+            "납기요청일을 알 수 없어 자동 연장을 하지 않습니다: case_id=%s",
+            case.get("case_id"),
+        )
+        return False
     now = datetime.now(timezone.utc)
     new_deadline = now + timedelta(days=days)
-    if isinstance(required_by, datetime):
-        lead_left = (required_by - new_deadline).days
-    elif hasattr(required_by, "isoformat"):  # date
-        lead_left = (datetime.combine(required_by, datetime.min.time(), tzinfo=timezone.utc) - new_deadline).days
-    else:
-        lead_left = None
-    if lead_left is not None and lead_left < int(rules.auto_deadline_extension_min_lead_days):
+    lead_left = (
+        datetime.combine(required_by, datetime.min.time(), tzinfo=timezone.utc) - new_deadline
+    ).days
+    if lead_left < int(rules.auto_deadline_extension_min_lead_days):
         return False
 
     try:
@@ -245,10 +287,17 @@ def process_case(case: dict[str, Any], *, trigger: str = "deadline") -> str:
         case_repository.mark_auto_progress_attempt(case_id, None)
         return "advanced"
 
-    case_repository.mark_auto_progress_attempt(case_id, signature)
     if decision.get("allowed") is False:
+        if decision.get("retryable") and _within_retry_grace(refreshed):
+            # 규격 평가가 아직 도는 중처럼 저절로 풀릴 수 있는 이유다.
+            # 지문을 남기지 않아서 다음 스캔이 같은 건을 다시 본다.
+            case_repository.mark_auto_progress_attempt(case_id, None)
+            LOGGER.info("일시적인 이유로 멈춤 - 잠시 뒤 다시 봅니다: case_id=%s", case_id)
+            return "waiting"
+        case_repository.mark_auto_progress_attempt(case_id, signature)
         _notify_blocked(refreshed, decision)
         return "blocked"
+    case_repository.mark_auto_progress_attempt(case_id, signature)
     return "recorded"
 
 
@@ -287,7 +336,7 @@ def run_due_auto_progress(
     counts = {
         "scanned": 0, "advanced": 0, "blocked": 0, "recorded": 0,
         "deadline_extended": 0, "held": 0, "skipped": 0, "failed": 0,
-        "not_mine": 0,
+        "not_mine": 0, "waiting": 0,
     }
     moment = now or datetime.now(timezone.utc)
 
