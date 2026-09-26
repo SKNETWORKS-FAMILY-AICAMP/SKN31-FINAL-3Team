@@ -192,7 +192,15 @@ def evaluate_rfq_dispatch(
         checks.append(_passed("MISSING_EMAIL", "연락처 확보", "모든 후보의 이메일이 확인됐습니다"))
 
     minimum = int(rules.min_competing_suppliers)
-    if len(named) < minimum:
+    if not named:
+        # 추천 후보 목록이 비어 있는 경우다(담당자가 협력사를 직접 입력해
+        # 보내는 흐름). 자동으로 고를 대상 자체가 없으니 사람이 정해야 한다.
+        checks.append(_blocked(
+            "NO_CANDIDATES",
+            "추천 후보 존재",
+            "추천된 협력사 후보가 없어 담당자가 직접 지정해야 합니다",
+        ))
+    elif len(named) < minimum:
         checks.append(_blocked(
             "MIN_COMPETITION",
             f"후보 {minimum}곳 이상",

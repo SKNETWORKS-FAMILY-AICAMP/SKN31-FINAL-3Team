@@ -977,6 +977,20 @@ def reconcile_supplier_quotations(*, notify: bool = True) -> dict[str, int]:
             _, changed = refresh_case_quotations(case, notify=notify)
             if changed:
                 counts["changed"] += 1
+                # ⚠️ 견적이 웹훅이 아니라 이 주기 동기화로 들어오는 경우가
+                # 있다(웹훅 유실·터널 중단·포털 직접 등록). 그때도 전원
+                # 회신이면 마감을 기다리지 않고 바로 판정해야 한다 - 웹훅
+                # 경로에만 트리거를 달아두면 조용히 아무 일도 안 일어난다.
+                try:
+                    from backend_logic2.services import auto_progress_runner
+
+                    auto_progress_runner.trigger_on_full_response(str(case["case_id"]))
+                except Exception:  # noqa: BLE001 - 동기화를 되돌리면 안 된다
+                    LOGGER.warning(
+                        "전원 회신 자동 진행 트리거 실패: case_id=%s",
+                        case.get("case_id"),
+                        exc_info=True,
+                    )
         except (ERPNextAPIError, LookupError, ValueError):
             counts["failed"] += 1
     return counts

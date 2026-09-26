@@ -191,3 +191,16 @@ def test_each_verdict_says_which_step_it_came_from(automation_on) -> None:
 
     assert rfq.as_payload()["node"] == "auto_rfq_dispatch"
     assert selection.as_payload()["node"] == "auto_final_selection"
+
+
+def test_an_empty_candidate_pool_says_so_plainly(automation_on) -> None:
+    """협력사를 직접 입력해 보내는 흐름에서는 추천 후보가 비어 있다.
+
+    그때 '최소 경쟁 수 미달'로 말하면 실제로 몇 곳에 보냈는지와 어긋나
+    읽는 사람이 혼란스럽다.
+    """
+    decision = evaluate_rfq_dispatch([], existing_supplier_names={"동관컴퍼니"})
+
+    codes = {row["code"] for row in decision.blockers}
+    assert "NO_CANDIDATES" in codes
+    assert "MIN_COMPETITION" not in codes
