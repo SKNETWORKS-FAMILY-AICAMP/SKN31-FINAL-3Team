@@ -334,12 +334,16 @@ def get_case_quotation_validation(case_id: str, current_user: CurrentUser):
     것인지 화면에서 바로 구분할 수 있다."""
     case = _require_case_access(case_id, current_user)
     try:
-        items = quotation_service.validate_case_quotations(case)
+        result = quotation_service.validate_case_quotations(case)
     except ERPNextAPIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except (LookupError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"items": items, "count": len(items)}
+    return {
+        "items": result["items"],
+        "count": len(result["items"]),
+        "intake_failures": result["intake_failures"],
+    }
 
 
 @router.get("/cases/{case_id}/quotation-deadline/history")

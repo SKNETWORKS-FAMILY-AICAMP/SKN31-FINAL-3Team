@@ -70,11 +70,12 @@ def test_quotation_scorecard_enrichment_keeps_unreviewed_supplier_neutral():
             "service": 4.0,
             "communication": 5.0,
             "weighted_score": 4.15,
+            "evaluation_count": 2,
         }
     }
 
     with patch(
-        "backend_logic2.nodes.quotation.quotation_filter.quotation_ranker.get_supplier_latest_scorecards",
+        "backend_logic2.nodes.quotation.quotation_filter.quotation_ranker.get_supplier_scorecard_history",
         return_value=scorecards,
     ):
         enriched = _attach_supplier_scorecards(quotations)

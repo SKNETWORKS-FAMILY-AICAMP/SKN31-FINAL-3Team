@@ -163,13 +163,35 @@ class RankedQuotation(StrictModel):
     specification_reason: str | None = None
     specification_items: list[dict[str, Any]] = Field(default_factory=list)
     evaluation_source: str | None = None
+    # 4항목 점수(0~100). 값이 없어 가중치에서 빠진 항목은 None이다.
+    price_score: float | None = Field(default=None, ge=0, le=100)
+    delivery_score: float | None = Field(default=None, ge=0, le=100)
+    scorecard_score: float | None = Field(default=None, ge=0, le=100)
+    scorecard_count: int = Field(default=0, ge=0)
+    # 페널티 차감 전 가중합과 차감 내역.
+    base_score: float | None = Field(default=None, ge=0, le=100)
+    penalty_points: float = Field(default=0, ge=0)
+    penalties: list[dict[str, Any]] = Field(default_factory=list)
+    # 실제로 적용된(재정규화된) 항목별 가중치 0~1, 빠진 항목과 그 이유.
+    applied_weights: dict[str, float] = Field(default_factory=dict)
+    missing_factors: list[dict[str, str]] = Field(default_factory=list)
+    # 수량 미달·유효기간 만료처럼 선정 전에 사람이 한 번 확인해야 하는 견적.
+    requires_confirmation: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class RankingResult(StrictModel):
     rfq_name: str
     requested_top_k: int
     recommended: list[RankedQuotation] = Field(default_factory=list)
+    # 순위 대상이 아닌 견적. kind = "parse_failed"(견적서를 읽지 못함) 또는
+    # "rfq_mismatch"(다른 RFQ 견적이 섞여 들어옴). 그 외 문제는 전부 제외가
+    # 아니라 페널티로 순위에 남는다.
     excluded: list[dict[str, Any]] = Field(default_factory=list)
+    parse_failed: list[dict[str, Any]] = Field(default_factory=list)
+    # 순위 대상이 된 유효 견적 수. 1이면 단독 응찰이다.
+    competition_count: int = Field(default=0, ge=0)
+    single_bid: bool = False
 
 
 def load_json(path: str | Path) -> Any:

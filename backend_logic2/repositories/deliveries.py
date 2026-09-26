@@ -394,6 +394,76 @@ def calculate_scorecard_weighted_score(
     )
 
 
+SCORECARD_HISTORY_LIMIT = 3
+
+
+def get_supplier_scorecard_history(
+    supplier_names: list[str],
+    *,
+    limit: int = SCORECARD_HISTORY_LIMIT,
+) -> dict[str, dict[str, Any]]:
+    """공급사별 최근 완료 Scorecard 최대 ``limit``건의 평균과 건수를 반환한다.
+
+    견적 순위의 '협력사 평가이력' 항목용이다. 예전에는 가장 최근 1건만
+    봐서 평가 1건짜리 업체와 여러 건 쌓인 업체를 같은 무게로 비교했다.
+    항목별 평균, 가중 평균(weighted_score, 5점 만점), evaluation_count를
+    돌려주며, 평가 이력이 없는 공급사는 결과에 넣지 않는다(순위 쪽에서
+    그 항목을 빼고 가중치를 재정규화해 신규 업체에 불이익을 주지 않는다).
+    """
+
+    names = sorted({str(name).strip() for name in supplier_names if str(name).strip()})
+    if not names or limit < 1:
+        return {}
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT supplier, scorecard
+            FROM (
+                SELECT supplier, scorecard,
+                       ROW_NUMBER() OVER (PARTITION BY supplier ORDER BY updated_at DESC) AS position
+                FROM procurement.purchase_order_delivery
+                WHERE supplier = ANY(%(supplier_names)s::varchar[])
+                  AND scorecard_status = 'COMPLETED'
+                  AND scorecard IS NOT NULL
+            ) ranked
+            WHERE position <= %(limit)s
+            """,
+            {"supplier_names": names, "limit": limit},
+        ).fetchall()
+
+    grouped: dict[str, list[dict[str, float]]] = {}
+    for row in rows:
+        supplier = str(row.get("supplier") or "").strip()
+        scorecard = row.get("scorecard") or {}
+        if not supplier or not isinstance(scorecard, dict):
+            continue
+        valid_scorecard: dict[str, float] = {}
+        for field in SCORECARD_FIELDS:
+            try:
+                value = float(scorecard.get(field))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= value <= 5:
+                valid_scorecard[field] = value
+        weighted_score = calculate_scorecard_weighted_score(valid_scorecard)
+        if weighted_score is None:
+            continue
+        valid_scorecard["weighted_score"] = weighted_score
+        grouped.setdefault(supplier, []).append(valid_scorecard)
+
+    history: dict[str, dict[str, Any]] = {}
+    for supplier, cards in grouped.items():
+        summary: dict[str, Any] = {}
+        for field in (*SCORECARD_FIELDS, "weighted_score"):
+            values = [card[field] for card in cards if field in card]
+            if values:
+                summary[field] = round(sum(values) / len(values), 2)
+        summary["evaluation_count"] = len(cards)
+        history[supplier] = summary
+    return history
+
+
 def get_supplier_latest_scorecards(
     supplier_names: list[str],
 ) -> dict[str, dict[str, Any]]:

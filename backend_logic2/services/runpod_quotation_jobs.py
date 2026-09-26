@@ -148,6 +148,26 @@ def _refresh(job):
         )
 
 
+def _record_final_failure(job_id, exc, *, kind=None):
+    """잡이 최종 실패(FAILED)로 끝났을 때만 화면 안내용으로 기록한다."""
+    from backend_logic2.services import quotation_service
+
+    current = jobs.get_job(job_id)
+    if not current or current['status'] != 'FAILED':
+        return
+    context = current.get('context') or {}
+    quotation_service.record_intake_failure(
+        exc,
+        rfq_name=context.get('rfq_name') or '',
+        supplier_id=context.get('supplier_id'),
+        supplier_name=context.get('supplier_name'),
+        source_filename=context.get('source_filename'),
+        file_id=None,
+        communication_name=context.get('message_id'),
+        kind=kind,
+    )
+
+
 def process_job(job_id):
     job = jobs.get_job(job_id)
     if not job or job['status'] not in {'SUBMITTED', 'READY', 'REGISTERED'}:
@@ -170,6 +190,9 @@ def process_job(job_id):
                 status = response.get('status')
                 if status in TERMINAL_FAILURE_STATUSES:
                     jobs.fail_job(job_id, f'RunPod terminal status: {status}', terminal=True)
+                    _record_final_failure(
+                        job_id, RuntimeError(f'RunPod terminal status: {status}'), kind='extraction',
+                    )
                     return
                 if status != 'COMPLETED':
                     return
@@ -200,6 +223,9 @@ def process_job(job_id):
                         or (isinstance(output_extraction, dict)
                             and not _normalize_currency(output_extraction.get('currency')))):
                     jobs.fail_job(job_id, 'RunPod result identity/schema mismatch', terminal=True)
+                    _record_final_failure(
+                        job_id, ValueError('RunPod result identity/schema mismatch'), kind='parse',
+                    )
                     return
                 # Save before ERP I/O: recovery no longer depends on RunPod retention.
                 jobs.save_result(job_id, output)
@@ -217,6 +243,7 @@ def process_job(job_id):
                 terminal=True,
             )
             LOGGER.warning('RunPod quotation job %s rejected by arithmetic validation', job_id)
+            _record_final_failure(job_id, exc, kind='arithmetic')
         except SupplierQuotationRegistrationError as exc:
             # These are deterministic RFQ mapping, policy, or duplicate conflicts.
             # The messages are application-controlled and contain no provider
@@ -230,6 +257,8 @@ def process_job(job_id):
         except Exception as exc:
             jobs.fail_job(job_id, f'Completion failed: {type(exc).__name__}')
             LOGGER.warning('RunPod quotation job %s deferred (%s)', job_id, type(exc).__name__)
+            # 재시도 한도를 넘겨 FAILED가 된 경우에만 기록된다.
+            _record_final_failure(job_id, exc)
 
 
 def recover_pending():

@@ -69,6 +69,8 @@ class PurchaseProcessState(TypedDict, total=False):
     # 탈락한 견적"을 구분할 수 없어 영원히 '평가 전'처럼 보였다. 항상 저장해
     # 화면에서 사유를 그대로 보여준다.
     quotation_excluded: list[dict[str, Any]]
+    # 유효 견적 수·단독 응찰 여부·규격 AI 평가 상태 등 순위 계산 부가정보.
+    quotation_ranking_meta: dict[str, Any]
     requested_supplier: str
     requested_quotation: str
     selected_supplier: str
@@ -814,12 +816,21 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             for row in excluded_rows[:5]
             if isinstance(row, dict)
         )
-        # ⚠️ 견적이 들어왔는데 전부 검증에서 탈락한 경우에도 "제출된 견적이
-        # 없습니다"라고 떠서, 협력사가 회신을 안 한 것처럼 읽혔다. 제외된
-        # 견적이 있으면 문구 자체를 바꾼다.
-        if excluded_rows:
+        # ⚠️ 견적이 들어왔는데 전부 순위에서 빠진 경우에도 "제출된 견적이
+        # 없습니다"라고 떠서, 협력사가 회신을 안 한 것처럼 읽혔다. 이제 순위에서
+        # 빠지는 건 파싱 실패(견적서를 읽지 못함)와 다른 RFQ 견적뿐이다.
+        parse_failed_rows = [
+            row for row in excluded_rows
+            if isinstance(row, dict) and row.get("kind") == "parse_failed"
+        ]
+        if parse_failed_rows and len(parse_failed_rows) == len(excluded_rows):
             fallback_message = (
-                f"회신된 견적 {len(excluded_rows)}건이 모두 검증에서 제외되어 순위를 만들지 못했습니다."
+                f"회신된 견적 {len(parse_failed_rows)}건을 모두 읽지 못했습니다(파싱 실패). "
+                "견적서 원본 파일을 직접 확인해 주세요."
+            )
+        elif excluded_rows:
+            fallback_message = (
+                f"회신된 견적 {len(excluded_rows)}건이 모두 순위 대상에서 빠졌습니다."
             )
         else:
             fallback_message = (
@@ -831,6 +842,11 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             update={
                 "quotation_ranking": state.get("quotation_ranking") or [],
                 "quotation_excluded": excluded_rows,
+                "quotation_ranking_meta": {
+                    "competition_count": result.get("competition_count", 0),
+                    "single_bid": bool(result.get("single_bid")),
+                    "specification_evaluation": result.get("specification_evaluation") or {},
+                },
                 "status": "awaiting_quotation_check",
                 "error": fallback_message,
             },
@@ -843,6 +859,11 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             update={
                 "quotation_ranking": result["ranking"],
                 "quotation_excluded": result.get("excluded") or [],
+                "quotation_ranking_meta": {
+                    "competition_count": result.get("competition_count", 0),
+                    "single_bid": bool(result.get("single_bid")),
+                    "specification_evaluation": result.get("specification_evaluation") or {},
+                },
                 "status": "awaiting_quotation_check",
                 "error": "",
             },
@@ -866,6 +887,11 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         update={
             "quotation_ranking": result["ranking"],
             "quotation_excluded": result.get("excluded") or [],
+            "quotation_ranking_meta": {
+                "competition_count": result.get("competition_count", 0),
+                "single_bid": bool(result.get("single_bid")),
+                "specification_evaluation": result.get("specification_evaluation") or {},
+            },
             "requested_supplier": requested_supplier,
             "requested_quotation": requested_quotation,
             "status": "awaiting_final_selection",

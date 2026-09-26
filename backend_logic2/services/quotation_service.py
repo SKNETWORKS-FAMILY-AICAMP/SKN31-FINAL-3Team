@@ -116,6 +116,62 @@ def _communication_and_attachments(
     )
 
 
+def classify_intake_failure(exc: BaseException) -> str | None:
+    """견적서 자동 읽기 실패를 화면 안내용 종류로 나눈다.
+
+    - parse: 모델 출력 JSON/스키마를 읽지 못함(ValueError·pydantic 검증 오류)
+    - arithmetic: 읽긴 했지만 금액 계산이 맞지 않아 ERP에 등록할 수 없음
+      (대부분 숫자를 잘못 읽은 경우라 원본 확인이 필요하다)
+    - extraction: RunPod/네트워크 등으로 추출 자체가 끝나지 않음
+    - None: 중복 제출·RFQ 대상 아님 같은 등록 규칙 위반 - 읽기 실패가 아니므로
+      기록하지 않는다.
+    """
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
+        QuotationArithmeticValidationError,
+        SupplierQuotationRegistrationError,
+    )
+
+    if isinstance(exc, QuotationArithmeticValidationError):
+        return "arithmetic"
+    if isinstance(exc, SupplierQuotationRegistrationError):
+        return None
+    if isinstance(exc, ValueError):
+        return "parse"
+    return "extraction"
+
+
+def record_intake_failure(
+    exc: BaseException,
+    *,
+    rfq_name: str,
+    supplier_id: str | None,
+    supplier_name: str | None,
+    source_filename: str | None,
+    file_id: str | None,
+    communication_name: str | None,
+    kind: str | None = None,
+) -> None:
+    """실패 기록은 보조 채널 - 기록이 실패해도 원래 처리를 막지 않는다."""
+    failure_kind = kind or classify_intake_failure(exc)
+    if failure_kind is None:
+        return
+    try:
+        from backend_logic2.repositories import quotation_intake_failures
+
+        quotation_intake_failures.record_failure(
+            rfq_name=rfq_name,
+            failure_kind=failure_kind,
+            supplier_id=supplier_id,
+            supplier_name=supplier_name,
+            source_filename=source_filename,
+            file_id=file_id,
+            communication_name=communication_name,
+            error=f"{type(exc).__name__}: {str(exc)[:300]}",
+        )
+    except Exception:  # noqa: BLE001
+        LOGGER.warning("견적 읽기 실패 기록에 실패했습니다: rfq=%s", rfq_name, exc_info=True)
+
+
 def register_quotation_email_event(
     payload: dict[str, Any],
     *,
@@ -219,6 +275,15 @@ def register_quotation_email_event(
                     "filename": filename,
                     "error": f"{type(exc).__name__}: {exc}",
                 })
+                record_intake_failure(
+                    exc,
+                    rfq_name=rfq_name,
+                    supplier_id=supplier_id,
+                    supplier_name=supplier_name,
+                    source_filename=filename,
+                    file_id=file_id,
+                    communication_name=communication_name,
+                )
 
         if not registrations and not extraction_jobs:
             if failures:
@@ -508,17 +573,16 @@ def register_supplier_quotation_event(
 _PREWARM_STAGES = {"QUOTATION_COLLECTION", "SUPPLIER_SELECTION"}
 
 
-def validate_case_quotations(case: dict[str, Any]) -> list[dict[str, Any]]:
-    """이 케이스의 견적들이 "순위에 들어갈 수 있는 상태인지"를 즉시 판정한다.
+def validate_case_quotations(case: dict[str, Any]) -> dict[str, Any]:
+    """이 케이스 견적들이 순위에서 어떤 대우를 받는지 즉시 판정한다.
 
-    RunPod 규격 평가나 LangGraph 실행 없이, 결정적 검증(수량 충족, 수량x단가
-    = 금액, 공급가액/총액/세액 정합, 유효기간, 사업자번호, RFQ 품목 연결,
-    납기 비교 가능 여부)만 다시 돌려서 견적별 차단 사유를 돌려준다.
-
-    화면에서 "회신은 왔는데 순위에 없는 견적"이 (1) 아직 AI 평가가 안 끝난
-    것인지 (2) 애초에 검증에서 탈락해 아무리 다시 분석해도 안 바뀌는
-    것인지 구분하기 위한 조회용이다 - 예전에는 순위가 통째로 비었을 때만
-    오류 문구에 사유가 붙어서, 일부만 제외된 경우 원인을 알 수 없었다.
+    RunPod 규격 평가나 LangGraph 실행 없이, 결정적 검증을 다시 돌려 견적별로
+    - kind: candidate(순위 대상) / parse_failed(견적서 읽기 실패) / rfq_mismatch
+    - penalties: 수량 미달·만료·금액 불일치 등 총점에서 빠질 페널티
+    - spec_evaluated: AI 규격 평가가 캐시에 있는지
+    를 돌려준다. 또한 이메일 첨부를 아예 읽지 못해 Supplier Quotation이
+    만들어지지 않은 건(intake_failures)도 함께 돌려줘서, 화면에서 그 협력사가
+    '미회신'이 아니라 '견적서 읽기 실패 - 원본 확인'으로 보이게 한다.
     """
     from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
         get_reviewable_quotations_for_rfqs,
@@ -527,11 +591,8 @@ def validate_case_quotations(case: dict[str, Any]) -> list[dict[str, Any]]:
         load_rfq_requirements,
         review_quotation,
     )
-    # 순위 진입 가능 여부 판정은 ranker와 같은 규칙을 써야 화면과 실제
-    # 결과가 어긋나지 않는다(규격 관련 이슈는 AI에 위임되어 차단 사유가
-    # 아니라는 규칙 포함).
     from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import (
-        _is_structurally_rankable,
+        classify_review,
     )
     from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
         IssueSeverity,
@@ -549,21 +610,17 @@ def validate_case_quotations(case: dict[str, Any]) -> list[dict[str, Any]]:
         rfq_names.append(current_rfq)
     rfq_names = list(dict.fromkeys(rfq_names))
     if not rfq_names:
-        return []
+        return {"items": [], "intake_failures": []}
 
     rfq = load_rfq_requirements(current_rfq or rfq_names[-1])
     quotations = get_reviewable_quotations_for_rfqs(rfq_names)
     known = set(rfq_names)
-
     reviews = [
         review_quotation(quotation, rfq, known_rfq_names=known)
         for quotation in quotations
     ]
 
-    # 규격 평가(RunPod) 결과가 캐시에 있는지까지 확인한다. 결정적 검증을
-    # 통과했는데도 순위에 없는 견적은 대부분 "AI 규격 평가 결과가 없음"
-    # (ranker의 assessment is None) 이 이유인데, 그걸 모르면 화면에서
-    # 영원히 '평가중'으로만 보인다.
+    # 규격 평가(RunPod) 결과가 캐시에 있는지 확인한다.
     spec_evaluated: dict[str, bool] = {}
     evaluator_available = True
     evaluation_source: str | None = None
@@ -583,29 +640,38 @@ def validate_case_quotations(case: dict[str, Any]) -> list[dict[str, Any]]:
             for review in reviews
             if review.quotation is not None
         }
-        # 캐시는 RFQ 단위로 저장되므로 라운드별로 나눠 조회한다.
         cached: dict[str, Any] = {}
         for name in rfq_names:
             try:
                 cached.update(load_matching(name, fingerprints, evaluator.model_name))
-            except Exception:  # noqa: BLE001 - 캐시 조회 실패가 검증 조회를 막지 않는다
+            except Exception:  # noqa: BLE001
                 LOGGER.warning("규격 평가 캐시 조회 실패: rfq=%s", name)
         spec_evaluated = {
             quotation_id: quotation_id in cached for quotation_id in fingerprints
         }
-    except Exception:  # noqa: BLE001 - 평가기 설정이 없으면 '확인 불가'로 돌려준다
+    except Exception:  # noqa: BLE001
         evaluator_available = False
         LOGGER.warning("규격 평가기를 만들 수 없어 평가 여부를 확인하지 못했습니다.", exc_info=True)
 
     items: list[dict[str, Any]] = []
+    responded_suppliers: set[str] = set()
     for review in reviews:
-        rankable, evidence = _is_structurally_rankable(review)
+        classified = classify_review(review)
+        if review.quotation is not None:
+            responded_suppliers.add(str(review.quotation.supplier_id or "").strip())
+            responded_suppliers.add(str(review.quotation.supplier_name or "").strip())
         items.append(
             {
                 "quotation_id": review.quotation_id,
                 "supplier_name": review.supplier_name,
                 "status": review.status.value if review.status else None,
-                "rankable": rankable,
+                "kind": classified["kind"],
+                # 하위 호환: 순위 대상이면 true
+                "rankable": classified["kind"] == "candidate",
+                "penalties": classified["penalties"],
+                "penalty_points": float(sum(item["points"] for item in classified["penalties"])),
+                "requires_confirmation": classified["requires_confirmation"],
+                "warnings": classified["warnings"],
                 "blocking_issues": [
                     {
                         "code": issue.code,
@@ -615,15 +681,39 @@ def validate_case_quotations(case: dict[str, Any]) -> list[dict[str, Any]]:
                     for issue in review.issues
                     if issue.severity == IssueSeverity.ERROR
                 ],
-                "evidence": evidence,
-                # None이면 평가기 설정이 없어 확인 자체를 못 한 경우다.
+                "evidence": classified["evidence"],
                 "spec_evaluated": (
                     spec_evaluated.get(review.quotation_id) if evaluator_available else None
                 ),
                 "evaluation_source": evaluation_source,
             }
         )
-    return items
+
+    intake_failures: list[dict[str, Any]] = []
+    try:
+        from backend_logic2.repositories import quotation_intake_failures
+
+        for row in quotation_intake_failures.list_failures(rfq_names):
+            supplier_keys = {
+                str(row.get("supplier_id") or "").strip(),
+                str(row.get("supplier_name") or "").strip(),
+            } - {""}
+            # 같은 협력사가 나중에 제대로 된 견적을 다시 보냈으면 안내하지 않는다.
+            if supplier_keys & responded_suppliers:
+                continue
+            intake_failures.append({
+                "rfq_name": row.get("rfq_name"),
+                "supplier_id": row.get("supplier_id"),
+                "supplier_name": row.get("supplier_name"),
+                "source_filename": row.get("source_filename"),
+                "failure_kind": row.get("failure_kind"),
+                "error": row.get("error"),
+                "received_at": row.get("created_at"),
+            })
+    except Exception:  # noqa: BLE001
+        LOGGER.warning("견적 읽기 실패 기록 조회 실패", exc_info=True)
+
+    return {"items": items, "intake_failures": intake_failures}
 
 
 def prewarm_specification_analysis(case_id: str, rfq_name: str) -> None:

@@ -18,18 +18,39 @@ class PurchasingRules(StrictModel):
     min_competing_suppliers: int = Field(default=3, ge=1, le=20)
     supplier_refresh_years: int = Field(default=3, ge=1, le=20)
     quotation_priority: Literal["price_then_delivery", "delivery_then_price"] = "price_then_delivery"
-    quotation_numeric_score_weight: float = Field(
-        default=60.0, ge=0, le=100, allow_inf_nan=False
-    )
-    quotation_spec_score_weight: float = Field(
-        default=40.0, ge=0, le=100, allow_inf_nan=False
-    )
+    # 견적 종합평가 4항목 가중치(합계 100). 예전의 '가격·납기 60 / 규격 40'
+    # 두 칸은 가격 비율 점수가 이상치 하나에 끌려가고 납기·협력사 평가이력이
+    # 사실상 반영되지 않아 4항목으로 나눴다. 값이 없는 항목(평가이력이 없는
+    # 신규 협력사, 규격 AI 평가 미완료, 회신 1건이라 비교 불가한 가격)은 그
+    # 항목을 빼고 나머지 가중치를 다시 100%로 나눈다(quotation_ranker 참고).
+    quotation_price_weight: float = Field(default=35.0, ge=0, le=100, allow_inf_nan=False)
+    quotation_delivery_weight: float = Field(default=20.0, ge=0, le=100, allow_inf_nan=False)
+    quotation_specification_weight: float = Field(default=30.0, ge=0, le=100, allow_inf_nan=False)
+    quotation_scorecard_weight: float = Field(default=15.0, ge=0, le=100, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_quotation_weights(cls, value):
+        # DB에 저장된 예전 정책 스냅샷(케이스에 고정된 것 포함)은 2항목 키를
+        # 갖고 있다. extra="forbid"라 그대로 두면 로드 자체가 실패하므로
+        # 버리고 새 4항목 기본값을 쓴다 - 2항목을 4항목으로 의미 있게 나눌
+        # 방법이 없다.
+        if isinstance(value, dict):
+            legacy = {"quotation_numeric_score_weight", "quotation_spec_score_weight"}
+            if legacy & set(value):
+                value = {key: item for key, item in value.items() if key not in legacy}
+        return value
 
     @model_validator(mode="after")
     def quotation_weights_total_one_hundred(self):
-        total = self.quotation_numeric_score_weight + self.quotation_spec_score_weight
+        total = (
+            self.quotation_price_weight
+            + self.quotation_delivery_weight
+            + self.quotation_specification_weight
+            + self.quotation_scorecard_weight
+        )
         if abs(total - 100.0) > 1e-6:
-            raise ValueError("견적 평가 가중치의 합계는 100%여야 합니다.")
+            raise ValueError("견적 평가 가중치(가격·납기·규격·평가이력)의 합계는 100%여야 합니다.")
         return self
 
 

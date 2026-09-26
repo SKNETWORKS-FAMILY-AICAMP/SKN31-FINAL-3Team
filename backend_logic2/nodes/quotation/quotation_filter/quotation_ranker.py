@@ -54,7 +54,7 @@ except ImportError:
         review_quotation,
     )
 
-from backend_logic2.repositories.deliveries import get_supplier_latest_scorecards
+from backend_logic2.repositories.deliveries import get_supplier_scorecard_history
 from procurement_db import ProcurementDatabaseConfigurationError
 try:
     from .quotation_spec_evaluator import (
@@ -91,49 +91,84 @@ def _weight_setting(name: str, default: float) -> float:
     return max(0.0, value)
 
 
-def quotation_score_weights(
-    *,
-    numeric_weight: float | None = None,
-    specification_weight: float | None = None,
-) -> tuple[float, float]:
-    """Resolve and normalize quotation score weights.
+FACTOR_KEYS = ("price", "delivery", "specification", "scorecard")
+FACTOR_LABELS = {
+    "price": "가격",
+    "delivery": "납기",
+    "specification": "규격",
+    "scorecard": "협력사 평가이력",
+}
+DEFAULT_FACTOR_WEIGHTS = {
+    "price": 35.0,
+    "delivery": 20.0,
+    "specification": 30.0,
+    "scorecard": 15.0,
+}
+# 가격: 최저가 100점, 최저가 대비 +50% 이상이면 0점, 그 사이는 선형.
+# 예전의 '최저가/금액 x 100' 비율 방식은 극단적으로 싼 견적 하나가 있으면
+# 나머지가 전부 0점 근처로 뭉개져 가격 하나가 순위를 결정했다.
+PRICE_ZERO_SCORE_EXCESS = 0.5
+# 납기: 요구일 이내 100점, 초과 하루당 10점 감점(10일 초과면 0점).
+DELIVERY_POINTS_PER_LATE_DAY = 10.0
+# 가격 비교 신뢰도: 유효 견적이 1건이면 비교할 대상이 없어 가격 항목을 빼고,
+# 2건이면 절반만 반영한다. 3건 이상이면 온전히 반영.
+PRICE_COMPETITION_FACTOR = {1: 0.0, 2: 0.5}
+# 평가이력 신뢰도: 최근 평가 1건이면 절반, 2건이면 3/4, 3건 이상이면 온전히.
+SCORECARD_COUNT_FACTOR = {1: 0.5, 2: 0.75}
 
-    During a procurement workflow, omitted values come from the case-pinned
-    company policy. CLI/direct calls retain the environment-variable fallback.
-    Ratios such as 0.6/0.4 and percentages such as 60/40 are equivalent because
-    the pair is normalized.
+# 제외가 아니라 총점에서 차감하는 페널티. requires_confirmation이면 선정 전에
+# 사람이 한 번 더 확인하도록 화면에 표시한다(발주 사고 방지).
+PENALTY_RULES: tuple[tuple[str, frozenset[str], float, str, bool], ...] = (
+    ("INSUFFICIENT_QUANTITY", frozenset({"INSUFFICIENT_QUANTITY"}), 20.0, "요청 수량 미달", True),
+    ("RFQ_ITEM_NOT_FOUND", frozenset({"RFQ_ITEM_NOT_FOUND"}), 20.0, "RFQ 품목과 연결되지 않는 품목 포함", True),
+    ("QUOTATION_EXPIRED", frozenset({"QUOTATION_EXPIRED"}), 15.0, "견적 유효기간 만료", True),
+    (
+        "AMOUNT_INCONSISTENT",
+        frozenset({"ITEM_AMOUNT_MISMATCH", "SUBTOTAL_MISMATCH", "TOTAL_MISMATCH", "UNUSUAL_VAT"}),
+        10.0,
+        "금액 계산 불일치(원본 확인 권장)",
+        False,
+    ),
+    ("INVALID_BUSINESS_NUMBER", frozenset({"INVALID_BUSINESS_NUMBER"}), 5.0, "사업자등록번호 형식 오류", False),
+)
+# 점수 항목이 대신 반영하는 이슈 - 페널티를 따로 주지 않는다.
+FACTOR_HANDLED_ISSUE_CODES = frozenset({
+    "MISSING_DELIVERY_DATE",     # 납기 0점
+    "MISSING_SPECIFICATION",     # 규격은 AI 점수
+    "SPECIFICATION_MISMATCH",    # 규격은 AI 점수
+    "RFQ_SCHEMA_ERROR",          # 우리 쪽 RFQ 문제 - 협력사 불이익 아님
+})
+# 순위 대상 자체가 아닌 경우(다른 RFQ 견적이 섞임).
+NOT_A_CANDIDATE_ISSUE_CODES = frozenset({"RFQ_MISMATCH"})
+
+
+def quotation_factor_weights(
+    weights: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """가격·납기·규격·평가이력 가중치를 합계 1로 정규화해 돌려준다.
+
+    워크플로 안에서는 케이스에 고정된 회사 정책을, 직접 호출(CLI/테스트)에서는
+    인자 또는 기본값(35/20/30/15)을 쓴다.
     """
-    from backend_logic2.policies.runtime import scoped_policy
+    if weights is None:
+        from backend_logic2.policies.runtime import scoped_policy
 
-    policy = scoped_policy()
-    numeric = (
-        (
-            policy.rules.quotation_numeric_score_weight
-            if policy is not None
-            else _weight_setting(
-                "QUOTATION_NUMERIC_SCORE_WEIGHT",
-                DEFAULT_NUMERIC_SCORE_WEIGHT,
-            )
-        )
-        if numeric_weight is None
-        else float(numeric_weight)
-    )
-    specification = (
-        (
-            policy.rules.quotation_spec_score_weight
-            if policy is not None
-            else _weight_setting(
-                "QUOTATION_SPEC_SCORE_WEIGHT",
-                DEFAULT_SPECIFICATION_SCORE_WEIGHT,
-            )
-        )
-        if specification_weight is None
-        else float(specification_weight)
-    )
-    if numeric < 0 or specification < 0 or numeric + specification <= 0:
-        raise ValueError("수치·규격 가중치 중 하나 이상은 양수여야 합니다.")
-    total = numeric + specification
-    return numeric / total, specification / total
+        policy = scoped_policy()
+        if policy is not None:
+            rules = policy.rules
+            weights = {
+                "price": rules.quotation_price_weight,
+                "delivery": rules.quotation_delivery_weight,
+                "specification": rules.quotation_specification_weight,
+                "scorecard": rules.quotation_scorecard_weight,
+            }
+        else:
+            weights = dict(DEFAULT_FACTOR_WEIGHTS)
+    resolved = {key: float(weights.get(key, 0.0)) for key in FACTOR_KEYS}
+    if any(value < 0 for value in resolved.values()) or sum(resolved.values()) <= 0:
+        raise ValueError("견적 평가 가중치 중 하나 이상은 양수여야 합니다.")
+    total = sum(resolved.values())
+    return {key: value / total for key, value in resolved.items()}
 
 
 def _delivery_metrics(
@@ -165,21 +200,81 @@ def _delivery_metrics(
     return latest_delivery, late_days
 
 
-def _is_structurally_rankable(review: QuotationReview) -> tuple[bool, list[str]]:
-    """Keep deterministic validation as a guard, but delegate spec semantics."""
+def classify_review(review: QuotationReview) -> dict[str, Any]:
+    """견적 하나가 순위에서 어떤 대우를 받는지 판정한다.
 
-    blocking = [
-        issue
-        for issue in review.issues
-        if issue.severity == IssueSeverity.ERROR and issue.code not in AI_SPEC_ISSUE_CODES
+    - kind="parse_failed": 견적 데이터를 스키마로 읽지 못함(review.quotation
+      없음). 순위에서 빠지는 건 사실상 이 경우뿐이다.
+    - kind="rfq_mismatch": 다른 RFQ 견적이 섞여 들어옴 - 이 MR 후보가 아님.
+    - kind="candidate": 그 외 전부. 값이 비었거나 틀린 건 제외 대신 점수
+      0점/페널티로 반영하고 순위에 남긴다.
+    """
+    errors = [issue for issue in review.issues if issue.severity == IssueSeverity.ERROR]
+    if review.quotation is None:
+        return {
+            "kind": "parse_failed",
+            "evidence": [issue.evidence for issue in errors] or list(review.rejection_evidence),
+            "penalties": [],
+            "warnings": [],
+            "requires_confirmation": False,
+        }
+    if any(issue.code in NOT_A_CANDIDATE_ISSUE_CODES for issue in errors):
+        return {
+            "kind": "rfq_mismatch",
+            "evidence": [
+                issue.evidence for issue in errors if issue.code in NOT_A_CANDIDATE_ISSUE_CODES
+            ],
+            "penalties": [],
+            "warnings": [],
+            "requires_confirmation": False,
+        }
+
+    penalties: list[dict[str, Any]] = []
+    matched_codes: set[str] = set()
+    for key, codes, points, label, confirm in PENALTY_RULES:
+        hits = [issue for issue in errors if issue.code in codes]
+        if not hits:
+            continue
+        matched_codes.update(issue.code for issue in hits)
+        penalties.append({
+            "code": key,
+            "points": points,
+            "label": label,
+            "requires_confirmation": confirm,
+            "evidence": [issue.evidence for issue in hits],
+        })
+    warnings = [
+        issue.message
+        for issue in errors
+        if issue.code not in matched_codes
+        and issue.code not in FACTOR_HANDLED_ISSUE_CODES
+        and issue.code not in NOT_A_CANDIDATE_ISSUE_CODES
     ]
-    quantity_ok = bool(review.item_compliance) and all(
-        item.quantity_compliant for item in review.item_compliance
-    )
-    evidence = [issue.evidence for issue in blocking]
-    if not quantity_ok:
-        evidence.append("RFQ 요청 수량을 충족하지 않습니다.")
-    return review.quotation is not None and not blocking and quantity_ok, evidence
+    return {
+        "kind": "candidate",
+        "evidence": [],
+        "penalties": penalties,
+        "warnings": warnings,
+        "requires_confirmation": any(row["requires_confirmation"] for row in penalties),
+    }
+
+
+def _is_structurally_rankable(review: QuotationReview) -> tuple[bool, list[str]]:
+    """하위 호환용 - 이제는 파싱 실패/다른 RFQ 견적만 순위 대상이 아니다."""
+    classified = classify_review(review)
+    return classified["kind"] == "candidate", list(classified["evidence"])
+
+
+def _scorecard_view(scorecard: Any) -> tuple[float | None, int]:
+    """(0~100 점수, 평가 건수). 평가이력이 없으면 (None, 0)."""
+    if not isinstance(scorecard, dict) or scorecard.get("weighted_score") is None:
+        return None, 0
+    try:
+        weighted = float(scorecard["weighted_score"])
+    except (TypeError, ValueError):
+        return None, 0
+    count = int(scorecard.get("evaluation_count") or 1)
+    return max(0.0, min(100.0, weighted * 20.0)), max(1, count)
 
 
 def rank_quotations_with_spec_scores(
@@ -189,16 +284,20 @@ def rank_quotations_with_spec_scores(
     *,
     top_k: int = 3,
     supplier_scorecards: dict[str, dict[str, Any]] | None = None,
-    numeric_weight: float | None = None,
-    specification_weight: float | None = None,
+    weights: dict[str, float] | None = None,
     evaluation_source: str = DEFAULT_SPEC_EVALUATION_SOURCE,
 ) -> RankingResult:
-    """Combine deterministic price/delivery metrics with semantic spec scores."""
+    """가격·납기·규격·협력사 평가이력 4항목 가중합에서 페널티를 빼 순위를 매긴다.
 
-    numeric_weight, specification_weight = quotation_score_weights(
-        numeric_weight=numeric_weight,
-        specification_weight=specification_weight,
-    )
+    규칙(요약)
+    - 순위에서 빠지는 건 파싱 실패와 다른 RFQ 견적뿐. 나머지는 전부 순위에 남는다.
+    - 협력사가 안 낸 값(금액·납기)은 그 항목 0점.
+    - 우리가 아직 못 가진 값(규격 AI 평가 미완료, 신규 협력사 평가이력, 회신
+      1건이라 비교 불가한 가격)은 그 항목을 빼고 가중치를 재정규화한다.
+    - 수량 미달·만료·금액 불일치 등은 페널티로 총점에서 차감한다.
+    """
+
+    base_weights = quotation_factor_weights(weights)
     if top_k < 1:
         raise ValueError("top_k는 1 이상이어야 합니다.")
 
@@ -208,152 +307,219 @@ def rank_quotations_with_spec_scores(
         for row in review_data
     ]
     supplier_scorecards = supplier_scorecards or {}
-    rankable: list[tuple[QuotationReview, QuotationSpecAssessment]] = []
+
     excluded: list[dict[str, Any]] = []
+    parse_failed: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for review in reviews:
-        structurally_rankable, structural_evidence = _is_structurally_rankable(review)
-        assessment = spec_assessments.get(review.quotation_id)
-        evidence = structural_evidence
-        if assessment is None:
-            evidence = [*evidence, "AI 규격 평가 점수와 이유가 없습니다."]
-        # A deprecated explicit compliant=False is still honored for callers
-        # that construct legacy assessment objects. The active Qwen contract
-        # omits this field, so low/mismatched specs remain rankable by score.
-        legacy_noncompliant = bool(
-            assessment is not None and assessment.compliant is False
-        )
-        if legacy_noncompliant:
-            evidence = [*evidence, assessment.reason]
-        if not structurally_rankable or assessment is None or legacy_noncompliant:
-            excluded.append({
+        classified = classify_review(review)
+        if classified["kind"] != "candidate":
+            entry = {
+                "kind": classified["kind"],
                 "quotation_id": review.quotation_id,
                 "supplier_name": review.supplier_name,
                 "status": review.status.value,
-                "evidence": evidence or review.rejection_evidence,
-                "specification_score": assessment.score if assessment else None,
-                "specification_reason": assessment.reason if assessment else None,
-                "evaluation_source": evaluation_source if assessment else None,
-            })
+                "evidence": classified["evidence"],
+            }
+            excluded.append(entry)
+            if classified["kind"] == "parse_failed":
+                parse_failed.append(entry)
             continue
-        rankable.append((review, assessment))
+        candidates.append({"review": review, "classified": classified})
 
-    currencies = {
-        review.quotation.currency
-        for review, _ in rankable
-        if review.quotation is not None
-    }
-    use_base_amount = len(currencies) > 1
-    if use_base_amount and any(
-        review.quotation is None or review.quotation.base_total_amount is None
-        for review, _ in rankable
-    ):
-        raise ValueError(
-            "서로 다른 통화의 견적을 비교하려면 모든 Supplier Quotation에 "
-            "ERPNext base_grand_total 환산금액이 필요합니다."
-        )
-
-    prepared: list[dict[str, Any]] = []
-    for review, assessment in rankable:
-        quotation = review.quotation
-        if quotation is None:  # guarded above; helps type checkers
-            continue
-        delivery, late_days = _delivery_metrics(review, rfq)
-        amount = quotation.base_total_amount if use_base_amount else quotation.total_amount
-        if amount is None:
-            raise ValueError(f"견적 비교금액이 없습니다: {review.quotation_id}")
-        prepared.append({
-            "review": review,
-            "assessment": assessment,
-            "quotation": quotation,
-            "delivery": delivery,
-            "late_days": late_days,
-            "comparison_amount": amount,
-        })
-
-    if not prepared:
+    if not candidates:
         return RankingResult(
             rfq_name=rfq.rfq_name,
             requested_top_k=top_k,
             recommended=[],
             excluded=excluded,
+            parse_failed=parse_failed,
+            competition_count=0,
+            single_bid=False,
         )
 
-    lowest_amount = min(row["comparison_amount"] for row in prepared)
-    for row in prepared:
-        amount = row["comparison_amount"]
-        price_score = float(lowest_amount / amount * Decimal("100")) if amount else 100.0
-        late_days = row["late_days"]
-        delivery_score = (
-            50.0
-            if late_days is None
-            else min(100.0, max(0.0, 100.0 - late_days * 5.0))
+    # 비교 금액: 통화가 섞이면 ERP 환산금액, 없으면 '가격 미제출'로 0점.
+    currencies = {row["review"].quotation.currency for row in candidates}
+    use_base_amount = len(currencies) > 1
+    for row in candidates:
+        quotation = row["review"].quotation
+        amount = quotation.base_total_amount if use_base_amount else quotation.total_amount
+        row["amount"] = amount if amount is not None and amount > 0 else None
+        delivery, late_days = _delivery_metrics(row["review"], rfq)
+        row["delivery"] = delivery
+        row["late_days"] = late_days
+
+    priced = [row["amount"] for row in candidates if row["amount"] is not None]
+    lowest_amount = min(priced) if priced else None
+    competition_count = len(candidates)
+    price_factor = PRICE_COMPETITION_FACTOR.get(competition_count, 1.0)
+    dated = [row["delivery"] for row in candidates if row["delivery"] is not None]
+    earliest_delivery = min(dated) if dated else None
+
+    for row in candidates:
+        review = row["review"]
+        quotation = review.quotation
+        factors: dict[str, float | None] = {}
+        factor_multipliers: dict[str, float] = {}
+        missing: list[dict[str, str]] = []
+
+        # 가격
+        if price_factor <= 0:
+            factors["price"] = None
+            missing.append({"factor": "price", "reason": "유효 견적이 1건뿐이라 가격 비교 불가(단독 응찰)"})
+        elif row["amount"] is None or lowest_amount is None:
+            factors["price"] = 0.0
+            factor_multipliers["price"] = price_factor
+        else:
+            excess = float((row["amount"] - lowest_amount) / lowest_amount)
+            factors["price"] = round(max(0.0, min(100.0, 100.0 * (1 - excess / PRICE_ZERO_SCORE_EXCESS))), 2)
+            factor_multipliers["price"] = price_factor
+
+        # 납기
+        if row["late_days"] is not None:
+            factors["delivery"] = round(
+                max(0.0, min(100.0, 100.0 - row["late_days"] * DELIVERY_POINTS_PER_LATE_DAY)), 2
+            )
+        elif row["delivery"] is not None and earliest_delivery is not None:
+            behind = (row["delivery"] - earliest_delivery).days
+            factors["delivery"] = round(max(0.0, 100.0 - behind * DELIVERY_POINTS_PER_LATE_DAY), 2)
+        else:
+            factors["delivery"] = 0.0
+        factor_multipliers["delivery"] = 1.0
+
+        # 규격(AI)
+        assessment = spec_assessments.get(review.quotation_id)
+        warnings = list(row["classified"]["warnings"])
+        if assessment is None:
+            factors["specification"] = None
+            missing.append({"factor": "specification", "reason": "AI 규격 평가 미완료"})
+        else:
+            factors["specification"] = float(assessment.score)
+            factor_multipliers["specification"] = 1.0
+            if assessment.compliant is False:
+                warnings.append(f"AI가 필수 규격 불일치로 판단: {assessment.reason}")
+
+        # 협력사 평가이력
+        card_score, card_count = _scorecard_view(
+            supplier_scorecards.get(str(quotation.supplier_id or ""))
+            or supplier_scorecards.get(str(quotation.supplier_name or ""))
         )
-        numeric_score = round(price_score * 0.75 + delivery_score * 0.25, 2)
-        # Missing or conflicting specifications lower only the specification
-        # component; they do not remove an otherwise valid quotation.
-        specification_score = float(row["assessment"].score)
-        overall_score = round(
-            numeric_score * numeric_weight + specification_score * specification_weight,
-            2,
+        if card_score is None:
+            factors["scorecard"] = None
+            missing.append({"factor": "scorecard", "reason": "평가 이력 없음(신규 협력사)"})
+        else:
+            factors["scorecard"] = round(card_score, 2)
+            factor_multipliers["scorecard"] = SCORECARD_COUNT_FACTOR.get(card_count, 1.0)
+
+        effective = {
+            key: base_weights[key] * factor_multipliers[key]
+            for key in FACTOR_KEYS
+            if factors.get(key) is not None and key in factor_multipliers
+        }
+        weight_total = sum(effective.values())
+        applied = {key: round(value / weight_total, 4) for key, value in effective.items()} if weight_total > 0 else {}
+        base_score = round(
+            sum(float(factors[key]) * applied[key] for key in applied), 2
+        ) if applied else 0.0
+        penalty_points = float(sum(item["points"] for item in row["classified"]["penalties"]))
+        overall = round(max(0.0, base_score - penalty_points), 2)
+
+        numeric_keys = [key for key in ("price", "delivery") if key in applied]
+        numeric_weight_sum = sum(applied[key] for key in numeric_keys)
+        numeric_score = (
+            round(sum(float(factors[key]) * applied[key] for key in numeric_keys) / numeric_weight_sum, 2)
+            if numeric_weight_sum > 0
+            else None
         )
-        scorecard = supplier_scorecards.get(str(row["quotation"].supplier_id or ""))
-        scorecard_score = (
-            float(scorecard["weighted_score"])
-            if isinstance(scorecard, dict) and scorecard.get("weighted_score") is not None
-            else -1.0
-        )
+
         row.update({
+            "factors": factors,
+            "applied": applied,
+            "missing": missing,
+            "base_score": base_score,
+            "penalty_points": penalty_points,
+            "overall": overall,
             "numeric_score": numeric_score,
-            "specification_score": specification_score,
-            "overall_score": overall_score,
-            "scorecard_score": scorecard_score,
+            "assessment": assessment,
+            "card_count": card_count,
+            "warnings": warnings,
         })
 
-    prepared.sort(key=lambda row: (
-        -row["overall_score"],
-        row["comparison_amount"],
+    candidates.sort(key=lambda row: (
+        -row["overall"],
+        row["amount"] if row["amount"] is not None else Decimal("Infinity"),
         row["late_days"] if row["late_days"] is not None else 10**9,
         row["delivery"].toordinal() if row["delivery"] else 10**9,
-        -row["scorecard_score"],
+        -(row["factors"]["scorecard"] if row["factors"].get("scorecard") is not None else -1.0),
         row["review"].quotation_id,
     ))
 
     recommended: list[RankedQuotation] = []
     previous_score: float | None = None
     current_rank = 0
-    for position, row in enumerate(prepared, 1):
-        if row["overall_score"] != previous_score:
+    for position, row in enumerate(candidates, 1):
+        if row["overall"] != previous_score:
             current_rank = position
-            previous_score = row["overall_score"]
+            previous_score = row["overall"]
         if current_rank > top_k:
             break
         review = row["review"]
-        quotation = row["quotation"]
+        quotation = review.quotation
         assessment = row["assessment"]
-        tied = sum(1 for other in prepared if other["overall_score"] == row["overall_score"]) > 1
+        factors = row["factors"]
+        tied = sum(1 for other in candidates if other["overall"] == row["overall"]) > 1
         delivery_label = row["delivery"].isoformat() if row["delivery"] else "미기재"
+
+        def _fmt(key: str) -> str:
+            value = factors.get(key)
+            return "제외" if value is None else f"{value:.0f}"
+
+        penalty_text = (
+            " 페널티 -" + ", -".join(
+                f"{item['points']:.0f}({item['label']})" for item in row["classified"]["penalties"]
+            ) + "."
+            if row["classified"]["penalties"]
+            else ""
+        )
+        spec_reason = f" {assessment.reason}" if assessment is not None else ""
+        reason = (
+            f"종합 {row['overall']:.2f}점 = 가격 {_fmt('price')} · 납기 {_fmt('delivery')} · "
+            f"규격 {_fmt('specification')} · 평가이력 {_fmt('scorecard')}.{penalty_text}{spec_reason} "
+            f"총액 {quotation.total_amount} {quotation.currency}, 납기 {delivery_label}."
+        )
         recommended.append(RankedQuotation(
             rank=current_rank,
             quotation_id=quotation.quotation_id,
             supplier_id=quotation.supplier_id,
             supplier_name=quotation.supplier_name,
             total_amount=quotation.total_amount,
-            comparison_amount=row["comparison_amount"],
+            comparison_amount=row["amount"] if row["amount"] is not None else Decimal("0"),
             currency=quotation.currency,
             expected_delivery_date=row["delivery"],
             late_days=row["late_days"],
             tied=tied,
-            reason=(
-                f"종합 {row['overall_score']:.2f}점: 가격·납기 {row['numeric_score']:.2f}점, "
-                f"규격 {row['specification_score']:.2f}점. {assessment.reason} "
-                f"총액 {quotation.total_amount} {quotation.currency}, 납기 {delivery_label}."
-            ),
+            reason=reason,
             numeric_score=row["numeric_score"],
-            specification_score=row["specification_score"],
-            overall_score=row["overall_score"],
-            specification_reason=assessment.reason,
-            specification_items=[item.model_dump(mode="json") for item in assessment.items],
-            evaluation_source=evaluation_source,
+            specification_score=factors.get("specification"),
+            overall_score=row["overall"],
+            specification_reason=assessment.reason if assessment is not None else None,
+            specification_items=(
+                [item.model_dump(mode="json") for item in assessment.items]
+                if assessment is not None
+                else []
+            ),
+            evaluation_source=evaluation_source if assessment is not None else None,
+            price_score=factors.get("price"),
+            delivery_score=factors.get("delivery"),
+            scorecard_score=factors.get("scorecard"),
+            scorecard_count=row["card_count"],
+            base_score=row["base_score"],
+            penalty_points=row["penalty_points"],
+            penalties=row["classified"]["penalties"],
+            applied_weights=row["applied"],
+            missing_factors=row["missing"],
+            requires_confirmation=row["classified"]["requires_confirmation"],
+            warnings=row["warnings"],
         ))
 
     return RankingResult(
@@ -361,6 +527,9 @@ def rank_quotations_with_spec_scores(
         requested_top_k=top_k,
         recommended=recommended,
         excluded=excluded,
+        parse_failed=parse_failed,
+        competition_count=competition_count,
+        single_bid=competition_count == 1,
     )
 
 
@@ -521,10 +690,14 @@ def rank_quotations(
 
 
 def _attach_supplier_scorecards(quotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """최근 공급사 평가를 붙이되 저장소 장애나 신규 업체는 중립으로 둔다."""
+    """최근 공급사 평가(최대 3건 평균 + 건수)를 붙인다.
+
+    저장소 장애나 신규 업체는 평가이력 없음으로 두고, 순위 쪽에서 그 항목을
+    빼고 가중치를 재정규화한다.
+    """
     suppliers = [str(row.get("supplier") or "").strip() for row in quotations]
     try:
-        scorecards = get_supplier_latest_scorecards(suppliers)
+        scorecards = get_supplier_scorecard_history(suppliers)
     except Exception as exc:
         LOGGER.warning("Supplier Scorecard 집계 실패: %s", exc)
         scorecards = {}
@@ -661,8 +834,21 @@ def evaluate_quotations(
     spec_assessments: dict[str, QuotationSpecAssessment] = {}
     cache_misses: list[QuotationReview] = []
     cache_hits = 0
+    fingerprints: dict[str, str] = {}
+    evaluator: QuotationSpecEvaluator | None = None
+    evaluator_error: str | None = None
+    # 규격 평가기(RunPod)는 4항목 중 하나일 뿐이다. 예전엔 평가기가 없거나
+    # 실패하면 순위 전체를 비우고 오류로 돌려줬는데, 이제는 규격 항목만
+    # '평가 미완료'로 빼고(가중치 재정규화) 나머지 항목으로 순위를 매긴다.
+    # 어느 견적이 규격 점수 없이 매겨졌는지는 missing_factors와
+    # specification_evaluation.status로 화면에 그대로 드러난다.
     try:
         evaluator = spec_evaluator or build_quotation_spec_evaluator()
+    except (TypeError, ValueError) as exc:
+        evaluator_error = f"규격 평가기 설정이 올바르지 않습니다: {exc}"
+        LOGGER.warning("Quotation specification evaluator unavailable: %s", exc)
+
+    if evaluator is not None:
         fingerprints = {
             review.quotation_id: specification_evaluation_fingerprint(
                 rfq, review.quotation, evaluator
@@ -685,8 +871,7 @@ def evaluate_quotations(
             LOGGER.warning("Quotation specification cache read failed: %s", exc)
             cached_rows = {}
         for review in reviews:
-            quotation = review.quotation
-            if quotation is None:
+            if review.quotation is None:
                 continue
             try:
                 cached = QuotationSpecAssessment.model_validate(
@@ -698,43 +883,24 @@ def evaluate_quotations(
             spec_assessments[review.quotation_id] = cached
             cache_hits += 1
 
-        fresh_assessments = (
-            evaluator.evaluate(rfq, cache_misses) if cache_misses else {}
-        )
-    except (TypeError, ValueError) as exc:
-        return {
-            "requirements": rfq.model_dump(mode="json"),
-            "quotations": quotations,
-            "ranking": [],
-            "error": f"규격 평가기 설정이 올바르지 않습니다: {exc}",
-        }
-    try:
-        numeric_weight, specification_weight = quotation_score_weights()
+        try:
+            fresh_assessments = (
+                evaluator.evaluate(rfq, cache_misses) if cache_misses else {}
+            )
+        except (TypeError, ValueError) as exc:
+            LOGGER.warning("Quotation specification evaluation failed: %s", exc)
+            fresh_assessments = None
+            evaluator_error = f"{evaluator.model_name} 규격 평가 실패: {exc}"
         if fresh_assessments is None:
-            # Never disguise an unavailable semantic evaluator as a successful
-            # legacy/rule-only analysis.  The frontend must keep the previous
-            # result marked stale (or show the error) and let the user retry.
-            return {
-                "requirements": rfq.model_dump(mode="json"),
-                "quotations": quotations,
-                "ranking": [],
-                "error": (
-                    f"{evaluator.model_name} 규격 평가가 완료되지 않아 "
-                    "기존 규칙 기반 순위로 대체하지 않습니다. "
-                    "RunPod 설정과 작업 로그를 확인한 뒤 다시 시도하세요."
-                ),
-                "specification_evaluation": {
-                    "status": "failed",
-                    "model": evaluator.model_name,
-                    "numeric_weight": numeric_weight,
-                    "specification_weight": specification_weight,
-                },
-            }
+            evaluator_error = evaluator_error or (
+                f"{evaluator.model_name} 규격 평가가 완료되지 않았습니다. "
+                "규격 항목을 제외하고 순위를 매겼으며, '회신 새로 확인'으로 다시 평가할 수 있습니다."
+            )
+            fresh_assessments = {}
         for review in cache_misses:
             assessment = fresh_assessments.get(review.quotation_id)
-            if assessment is None:
-                continue
-            spec_assessments[review.quotation_id] = assessment
+            if assessment is not None:
+                spec_assessments[review.quotation_id] = assessment
         if fresh_assessments:
             try:
                 from backend_logic2.repositories.quotation_specification_cache import (
@@ -753,17 +919,27 @@ def evaluate_quotations(
             except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
                 # A cache write failure cannot invalidate good scores.
                 LOGGER.warning("Quotation specification cache write failed: %s", exc)
+
+    model_name = evaluator.model_name if evaluator is not None else "unavailable"
+    evaluable_ids = [review.quotation_id for review in reviews if review.quotation is not None]
+    unevaluated = [quotation_id for quotation_id in evaluable_ids if quotation_id not in spec_assessments]
+    if not unevaluated:
+        evaluation_status = "completed"
+    elif len(unevaluated) == len(evaluable_ids):
+        evaluation_status = "failed"
+    else:
+        evaluation_status = "partial"
+    try:
+        factor_weights = quotation_factor_weights()
         result = rank_quotations_with_spec_scores(
             reviews,
             rfq,
             spec_assessments,
             top_k=max(1, len(reviews)) if _rfq_names is not None else top_k,
             supplier_scorecards=scorecards,
-            numeric_weight=numeric_weight,
-            specification_weight=specification_weight,
-            evaluation_source=evaluator.model_name,
+            weights=factor_weights,
+            evaluation_source=model_name,
         )
-        evaluation_status = "completed"
     except ValueError as exc:
         return {
             "requirements": rfq.model_dump(mode="json"),
@@ -816,19 +992,34 @@ def evaluate_quotations(
             "specification_reason": ranked.specification_reason,
             "specification_items": ranked.specification_items,
             "evaluation_source": ranked.evaluation_source,
+            "price_score": ranked.price_score,
+            "delivery_score": ranked.delivery_score,
+            "scorecard_score": ranked.scorecard_score,
+            "scorecard_count": ranked.scorecard_count,
+            "base_score": ranked.base_score,
+            "penalty_points": ranked.penalty_points,
+            "penalties": ranked.penalties,
+            "applied_weights": ranked.applied_weights,
+            "missing_factors": ranked.missing_factors,
+            "requires_confirmation": ranked.requires_confirmation,
+            "warnings": ranked.warnings,
         })
     return {
         "requirements": rfq.model_dump(mode="json"),
         "quotations": quotations,
         "ranking": _enrich_ranking_with_prices(ranking, quotations),
         "excluded": result.excluded,
+        "parse_failed": result.parse_failed,
+        "competition_count": result.competition_count,
+        "single_bid": result.single_bid,
         "specification_evaluation": {
             "status": evaluation_status,
-            "model": evaluator.model_name,
+            "model": model_name,
             "cache_hits": cache_hits,
             "cache_misses": len(cache_misses),
-            "numeric_weight": numeric_weight,
-            "specification_weight": specification_weight,
+            "unevaluated": unevaluated,
+            "error": evaluator_error,
+            "weights": factor_weights,
         },
     }
 
