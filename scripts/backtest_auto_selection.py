@@ -28,7 +28,9 @@ _CASES_SQL = """
            workflow_snapshot #> '{values,quotation_ranking}' AS ranking,
            workflow_snapshot #> '{values,quotation_excluded}' AS excluded,
            workflow_snapshot #> '{values,quotation_ranking_meta}' AS meta,
-           workflow_snapshot #> '{values,existing_supplier_candidates}' AS existing_candidates
+           workflow_snapshot #> '{values,existing_supplier_candidates}' AS existing_candidates,
+           workflow_snapshot #> '{values,selected_suppliers}' AS rfq_recipients,
+           quotation_snapshot AS quotation_snapshot
     FROM procurement.procurement_case
     WHERE workflow_snapshot #>> '{values,selected_supplier}' IS NOT NULL
       AND workflow_snapshot #>> '{values,selected_supplier}' <> ''
@@ -88,6 +90,14 @@ def main() -> int:
         print("검증할 과거 건이 없습니다 (선정이 끝나고 순위가 저장된 건 기준).")
         return 0
 
+    # 진단: 순위에 몇 건이 올라 있고, 실제로는 몇 곳이 회신했는지.
+    # 옛 2항목 엔진은 규격 점수가 없는 견적을 순위에서 통째로 뺐기 때문에,
+    # "순위 건수"와 "실제 회신 건수"가 다르면 경쟁 부족 판정이 데이터의
+    # 흔적일 수 있다.
+    ranking_sizes = Counter()
+    responded_sizes = Counter()
+    shrunk = 0
+
     blockers = Counter()
     agreed: list[dict[str, Any]] = []
     disagreed: list[dict[str, Any]] = []
@@ -108,6 +118,14 @@ def main() -> int:
                 deadline_passed=True,
                 known_supplier_names=known,
             )
+            ranking_size = len(_rows(case.get("ranking")))
+            snapshot = case.get("quotation_snapshot") if isinstance(case.get("quotation_snapshot"), dict) else {}
+            responded = int(snapshot.get("responded_count") or 0)
+            ranking_sizes[ranking_size] += 1
+            responded_sizes[responded] += 1
+            if responded > ranking_size:
+                shrunk += 1
+
             actual = str(case.get("selected_supplier") or "").strip()
             predicted = decision.evidence.get("top_supplier")
             row = {
@@ -139,6 +157,20 @@ def main() -> int:
         print("\n사람에게 넘어간 이유:")
         for code, count in blockers.most_common():
             print(f"  - {code}: {count}건")
+
+    print("\n--- 진단 ---")
+    print("순위에 오른 견적 수:  " + " · ".join(
+        f"{size}건→{count}개 케이스" for size, count in sorted(ranking_sizes.items())
+    ))
+    print("실제 회신한 협력사 수: " + " · ".join(
+        f"{size}곳→{count}개 케이스" for size, count in sorted(responded_sizes.items())
+    ))
+    if shrunk:
+        print(
+            f"\n⚠ {shrunk}개 케이스는 회신 수보다 순위 건수가 적습니다. "
+            "옛 엔진이 규격 평가가 없는 견적을 순위에서 뺀 흔적일 수 있어, "
+            "경쟁 부족 판정이 실제보다 과하게 잡혔을 수 있습니다."
+        )
     return 0
 
 
