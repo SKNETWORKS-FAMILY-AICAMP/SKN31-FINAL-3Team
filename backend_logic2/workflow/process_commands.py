@@ -63,6 +63,12 @@ class PurchaseProcessState(TypedDict, total=False):
     # 라운드는 rfq_name/quotation_deadline로 따로 관리하고 여기엔 안 넣는다.
     rfq_rounds: list[dict[str, Any]]
     quotation_ranking: list[dict[str, Any]]
+    # 규격/정합성 검증에서 순위에 들지 못한 견적과 그 사유. 예전에는 순위가
+    # 통째로 비었을 때만 error 문구에 요약해서 붙이고 버렸기 때문에, 일부
+    # 견적만 제외된 경우 프론트가 "AI 평가가 아직 없는 견적"과 "검증에서
+    # 탈락한 견적"을 구분할 수 없어 영원히 '평가 전'처럼 보였다. 항상 저장해
+    # 화면에서 사유를 그대로 보여준다.
+    quotation_excluded: list[dict[str, Any]]
     requested_supplier: str
     requested_quotation: str
     selected_supplier: str
@@ -816,6 +822,7 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         return Command(
             update={
                 "quotation_ranking": state.get("quotation_ranking") or [],
+                "quotation_excluded": excluded_rows,
                 "status": "awaiting_quotation_check",
                 "error": fallback_message,
             },
@@ -825,7 +832,12 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
     if choice == "check":
         # 조회는 했지만 아직 확정은 아님 - 결과만 갱신하고 계속 대기상태 유지
         return Command(
-            update={"quotation_ranking": result["ranking"], "status": "awaiting_quotation_check", "error": ""},
+            update={
+                "quotation_ranking": result["ranking"],
+                "quotation_excluded": result.get("excluded") or [],
+                "status": "awaiting_quotation_check",
+                "error": "",
+            },
             goto="check_quotations",
         )
 
@@ -845,6 +857,7 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
     return Command(
         update={
             "quotation_ranking": result["ranking"],
+            "quotation_excluded": result.get("excluded") or [],
             "requested_supplier": requested_supplier,
             "requested_quotation": requested_quotation,
             "status": "awaiting_final_selection",
