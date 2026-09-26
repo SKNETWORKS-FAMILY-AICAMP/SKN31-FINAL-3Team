@@ -31,6 +31,10 @@ class AutoDecision:
     allowed: bool
     mode: str
     enabled: bool
+    # 어느 단계의 판정인지. 화면이 지난 단계의 판정을 지금 상태로 착각하지
+    # 않으려면 반드시 필요하다(RFQ 발송 판정이 남아 있는데 최종 선정이
+    # 멈춘 것처럼 보이는 문제가 실제로 있었다).
+    node: str = ""
     checks: list[dict[str, Any]] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
 
@@ -63,6 +67,7 @@ class AutoDecision:
             "allowed": self.allowed,
             "mode": self.mode,
             "enabled": self.enabled,
+            "node": self.node,
             "checks": self.checks,
             "evidence": self.evidence,
             "summary": self.summary(),
@@ -90,7 +95,7 @@ def record_decision(case_id: str | None, node: str, decision: "AutoDecision") ->
                 detail = f"{detail} [{facts}]"
         if blocked:
             detail = f"{detail} (걸린 조건: {', '.join(blocked)})"
-        log_ai_decision(str(case_id), node, f"[{decision.mode}] {detail}")
+        log_ai_decision(str(case_id), decision.node or node, f"[{decision.mode}] {detail}")
     except Exception:  # noqa: BLE001 - 기록 실패가 진행을 막으면 안 된다
         pass
 
@@ -205,6 +210,7 @@ def evaluate_rfq_dispatch(
         allowed=allowed,
         mode=mode,
         enabled=enabled,
+        node="auto_rfq_dispatch",
         checks=checks,
         evidence={
             "candidate_count": len(named),
@@ -356,6 +362,7 @@ def evaluate_final_selection(
         allowed=allowed,
         mode=mode,
         enabled=enabled,
+        node="auto_final_selection",
         checks=checks,
         evidence={
             "competition_count": competition,

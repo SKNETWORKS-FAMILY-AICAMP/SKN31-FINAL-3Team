@@ -180,3 +180,14 @@ def test_unknown_values_are_not_treated_as_passing(automation_on) -> None:
 def test_score_gap_needs_two_quotations() -> None:
     assert score_gap([{"overall_score": 90.0}]) is None
     assert score_gap([{"overall_score": 90.0}, {"overall_score": 77.5}]) == 12.5
+
+
+def test_each_verdict_says_which_step_it_came_from(automation_on) -> None:
+    """RFQ 발송 판정이 남아 있는데 최종 선정이 멈춘 것처럼 보이면 안 된다."""
+    rfq = evaluate_rfq_dispatch(
+        [{"name": "동관컴퍼니", "email": "a@x.com"}], existing_supplier_names={"동관컴퍼니"}
+    )
+    selection = evaluate_final_selection(_ranking_result(), deadline_passed=True)
+
+    assert rfq.as_payload()["node"] == "auto_rfq_dispatch"
+    assert selection.as_payload()["node"] == "auto_final_selection"
