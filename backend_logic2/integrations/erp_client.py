@@ -56,6 +56,45 @@ class ERPNextAPIError(Exception):
     pass
 
 
+# ⚠️ requests는 timeout을 주지 않으면 **무한정** 기다린다. ERPNext 연결 하나가
+# 늘어지면 그 호출을 한 스레드가 영구히 묶이고, 그런 스레드가 몇 개 쌓이면
+# API 스레드풀이 고갈돼 관계없는 화면까지 전부 응답을 못 한다. 실제로 이
+# 사고를 겪었다 - 재배포하면 낫고 시간이 지나면 또 재발했으며, 요청이 끝나지
+# 못해 케이스가 FAILED도 아닌 "...중" 상태로 남았다.
+#
+# 호출부마다 timeout을 적어 넣는 방식은 한 곳만 빠뜨려도 같은 사고가 난다
+# (실제로 20곳 중 18곳이 빠져 있었다). 그래서 세션이 기본값을 강제한다.
+# 개별 호출이 timeout을 직접 주면 그 값을 그대로 쓴다(첨부파일 다운로드처럼
+# 오래 걸리는 호출용).
+_CONNECT_TIMEOUT_SECONDS = float(os.environ.get("ERPNEXT_CONNECT_TIMEOUT_SECONDS") or 5)
+_READ_TIMEOUT_SECONDS = float(os.environ.get("ERPNEXT_READ_TIMEOUT_SECONDS") or 30)
+_DEFAULT_TIMEOUT = (_CONNECT_TIMEOUT_SECONDS, _READ_TIMEOUT_SECONDS)
+
+
+class _TimeoutEnforcingSession(requests.Session):
+    """timeout 없는 호출에 기본값을 채우고, 네트워크 실패를 읽을 수 있게 바꾼다."""
+
+    def request(self, method, url, **kwargs):  # type: ignore[override]
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = _DEFAULT_TIMEOUT
+        try:
+            return super().request(method, url, **kwargs)
+        except requests.Timeout as exc:
+            raise ERPNextAPIError(
+                f"ERPNext 응답이 없습니다(제한 {_READ_TIMEOUT_SECONDS:.0f}초 초과). "
+                "잠시 후 다시 시도해 주세요."
+            ) from exc
+        except requests.ConnectionError as exc:
+            raise ERPNextAPIError(
+                "ERPNext에 연결할 수 없습니다. 서버 상태를 확인해 주세요."
+            ) from exc
+
+
+_SESSION = _TimeoutEnforcingSession()
+# 다른 모듈(노드 등)에서 ERPNext를 직접 호출할 때도 이 세션을 쓴다.
+ERP_SESSION = _SESSION
+
+
 EmailDeliveryPolicy = Literal["block_all", "custom_only", "send_all"]
 
 
@@ -178,7 +217,7 @@ def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None, start
     if start is not None:
         params["limit_start"] = int(start)
 
-    res = requests.get(f"{SITE_URL}/api/resource/{doctype}", headers=HEADERS, params=params)
+    res = _SESSION.get(f"{SITE_URL}/api/resource/{doctype}", headers=HEADERS, params=params)
     if res.status_code != 200:
         raise ERPNextAPIError(f"GET {doctype}: {res.status_code} - {res.text[:300]}")
     return res.json().get("data")
@@ -186,7 +225,7 @@ def erp_get(doctype, filters=None, fields=None, order_by=None, limit=None, start
 
 def erp_get_one(doctype, name):
     """ERPNext에서 문서 하나를 ID로 직접 조회 (품목/공급사 등 자식테이블까지 다 포함해서 가져옴)"""
-    res = requests.get(f"{SITE_URL}/api/resource/{doctype}/{name}", headers=HEADERS)
+    res = _SESSION.get(f"{SITE_URL}/api/resource/{doctype}/{name}", headers=HEADERS)
     if res.status_code != 200:
         raise ERPNextAPIError(f"GET {doctype}/{name}: {res.status_code} - {res.text[:300]}")
     return res.json().get("data")
@@ -227,14 +266,14 @@ def erp_download_file(file_id, *, expected_attached_to_doctype=None):
     # 수행하는 whitelisted download_file 메서드를 통해 받아야 API Token
     # 인증이 안정적으로 적용됩니다.
     if int(file_document.get("is_private") or 0) == 1:
-        response = requests.get(
+        response = _SESSION.get(
             f"{SITE_URL.rstrip('/')}/api/method/frappe.utils.file_manager.download_file",
             headers=HEADERS,
             params={"file_url": file_url},
             timeout=60,
         )
     else:
-        response = requests.get(download_url, headers=HEADERS, timeout=60)
+        response = _SESSION.get(download_url, headers=HEADERS, timeout=60)
     if response.status_code != 200:
         raise ERPNextAPIError(
             f"DOWNLOAD File/{file_id}: {response.status_code} - {response.text[:300]}"
@@ -333,7 +372,7 @@ def erp_post(doctype, payload):
     """ERPNext에 새 문서 생성 (Draft 상태로 생성됨)"""
     payload = dict(payload)
     payload["doctype"] = doctype
-    res = requests.post(f"{SITE_URL}/api/resource/{doctype}", headers=HEADERS, json=payload)
+    res = _SESSION.post(f"{SITE_URL}/api/resource/{doctype}", headers=HEADERS, json=payload)
     if res.status_code not in (200, 201):
         raise ERPNextAPIError(f"POST {doctype}: {res.status_code} - {res.text[:500]}")
     return res.json().get("data")
@@ -363,7 +402,7 @@ def ensure_item_supplier(item_code: str, supplier_name: str) -> dict:
         }
 
     supplier_items.append({"supplier": supplier_name})
-    response = requests.put(
+    response = _SESSION.put(
         f"{SITE_URL}/api/resource/Item/{quote(item_code, safe='')}",
         headers=HEADERS,
         json={"supplier_items": supplier_items},
@@ -391,7 +430,7 @@ def erp_submit(doctype, name, max_retries=3):
     import time
 
     for attempt in range(max_retries):
-        res = requests.put(
+        res = _SESSION.put(
             f"{SITE_URL}/api/resource/{doctype}/{name}",
             headers=HEADERS,
             json={"docstatus": 1},
@@ -422,7 +461,7 @@ def erp_cancel(doctype, name):
             f"CANCEL {doctype}/{name}: Submit(docstatus=1) 문서만 취소할 수 있습니다. "
             f"현재 docstatus={docstatus}"
         )
-    res = requests.put(
+    res = _SESSION.put(
         f"{SITE_URL}/api/resource/{doctype}/{name}",
         headers=HEADERS,
         json={"docstatus": 2},
@@ -441,7 +480,7 @@ def get_item_doctype_fields():
 
 def erp_call(method, payload=None):
     """Frappe의 whitelisted method를 호출하고 반환값을 꺼낸다."""
-    res = requests.post(
+    res = _SESSION.post(
         f"{SITE_URL}/api/method/{method}",
         headers=HEADERS,
         json=payload or {},
@@ -513,7 +552,7 @@ def erp_send_email(doctype, name, recipients, subject, content):
         "content": content,
         "send_email": 1,
     }
-    res = requests.post(
+    res = _SESSION.post(
         f"{SITE_URL}/api/method/frappe.core.doctype.communication.email.make",
         headers=HEADERS,
         json=payload,
@@ -573,7 +612,7 @@ def erp_add_comment(doctype, name, comment_text):
         "content": comment_text,
         "comment_type": "Comment",
     }
-    res = requests.post(f"{SITE_URL}/api/resource/Comment", headers=HEADERS, json=payload)
+    res = _SESSION.post(f"{SITE_URL}/api/resource/Comment", headers=HEADERS, json=payload)
     if res.status_code not in (200, 201):
         raise ERPNextAPIError(f"COMMENT {doctype}/{name}: {res.status_code} - {res.text[:500]}")
     return res.json().get("data")
@@ -644,7 +683,7 @@ def erp_assign_to(doctype, name, assign_to_email, description=None, priority="Me
         "description": description or f"{doctype} {name} 업무가 배정되었습니다.",
         "priority": priority,
     }
-    res = requests.post(
+    res = _SESSION.post(
         f"{SITE_URL}/api/method/frappe.desk.form.assign_to.add",
         headers=HEADERS,
         json=payload,
@@ -809,7 +848,7 @@ def get_material_requests_with_items(limit: int = 50):
         "order_by": "creation desc",
         "limit_page_length": limit,
     }
-    res = requests.get(url, headers=HEADERS, params=params)
+    res = _SESSION.get(url, headers=HEADERS, params=params)
     if res.status_code != 200:
         return []
 
@@ -817,7 +856,7 @@ def get_material_requests_with_items(limit: int = 50):
 
     detailed_mrs = []
     for mr in mr_data:
-        doc_res = requests.get(f"{url}/{mr['name']}", headers=HEADERS)
+        doc_res = _SESSION.get(f"{url}/{mr['name']}", headers=HEADERS)
         if doc_res.status_code == 200:
             detailed_mrs.append(doc_res.json().get("data", {}))
 
@@ -1300,7 +1339,7 @@ def ensure_supplier_portal_access(supplier_name, contact_email):
         portal_users = supplier_doc.get("portal_users", [])
         portal_users.append({"user": contact_email})
 
-        res = requests.put(
+        res = _SESSION.put(
             f"{SITE_URL}/api/resource/Supplier/{supplier_name}",
             headers=HEADERS,
             json={"portal_users": portal_users},
@@ -1309,7 +1348,7 @@ def ensure_supplier_portal_access(supplier_name, contact_email):
             raise ERPNextAPIError(f"Portal Users 연결 실패: {res.text[:300]}")
     else:
         # 이미 있는 계정이면, 비밀번호만 새로 재설정
-        res = requests.put(
+        res = _SESSION.put(
             f"{SITE_URL}/api/resource/User/{contact_email}",
             headers=HEADERS,
             json={"new_password": password},
@@ -1375,7 +1414,7 @@ def send_rfq_native(rfq_name):
                 "rfq_name": rfq_name,
             }
 
-    res = requests.post(
+    res = _SESSION.post(
         f"{SITE_URL}/api/method/erpnext.buying.doctype.request_for_quotation.request_for_quotation.send_supplier_emails",
         headers=HEADERS,
         json={"rfq_name": rfq_name},
@@ -1411,7 +1450,7 @@ def get_saved_substitute(item_code):
 
 def save_substitute_to_erp(item_code, substitute_code):
     """사람이 고른 대체품을 다음번에 자동으로 쓸 수 있게 Item에 저장."""
-    res = requests.put(
+    res = _SESSION.put(
         f"{SITE_URL}/api/resource/Item/{item_code}",
         headers=HEADERS,
         json={"preferred_substitute": substitute_code},
@@ -1456,7 +1495,7 @@ def get_all_available_candidates(warehouse=None):
 
 if __name__ == "__main__":
     print("=== 1. 연결 확인 ===")
-    res = requests.get(f"{SITE_URL}/api/method/frappe.auth.get_logged_user", headers=HEADERS)
+    res = _SESSION.get(f"{SITE_URL}/api/method/frappe.auth.get_logged_user", headers=HEADERS)
     print(res.status_code, res.text[:200])
 
     print("\n=== 2. Supplier 목록 조회 ===")
@@ -1529,7 +1568,7 @@ def create_purchase_requisition_draft(data: PRCreateRequest, background_tasks: B
         }
 
         # 2. ERPNext API 호출 (Draft 생성)
-        response = requests.post(
+        response = _SESSION.post(
             f"{SITE_URL}/api/resource/Material Request",
             headers=HEADERS,
             json=pr_payload

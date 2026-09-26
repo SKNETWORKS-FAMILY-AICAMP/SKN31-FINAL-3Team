@@ -25,7 +25,7 @@ import sys
 import os
 
 import requests
-from backend_logic2.integrations.erp_client import erp_get, erp_get_one, ERPNextAPIError, SITE_URL, HEADERS
+from backend_logic2.integrations.erp_client import ERP_SESSION, erp_get, erp_get_one, ERPNextAPIError, SITE_URL, HEADERS
 
 
 def get_pending_item_requests():
@@ -61,7 +61,7 @@ def print_item_detail(item):
 def approve_item_request(item_code):
     """구매부서 승인 — disabled=0으로 활성화.
     이 스크립트 자체가 구매부서 전용 도구라, 부서 재확인 안 함."""
-    res = requests.put(
+    res = ERP_SESSION.put(
         f"{SITE_URL}/api/resource/Item/{item_code}",
         headers=HEADERS,
         json={"disabled": 0},

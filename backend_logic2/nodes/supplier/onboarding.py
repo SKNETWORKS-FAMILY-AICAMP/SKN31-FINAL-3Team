@@ -8,6 +8,7 @@ from urllib.parse import quote
 import requests
 
 from backend_logic2.integrations.erp_client import (
+    ERP_SESSION,
     ERPNextAPIError,
     HEADERS,
     SITE_URL,
@@ -184,7 +185,7 @@ def approve_supplier_onboarding(
             "통장사본 확인이 필요합니다."
         )
 
-    response = requests.put(
+    response = ERP_SESSION.put(
         (
             f"{SITE_URL}/api/resource/Supplier/"
             f"{quote(supplier_id, safe='')}"

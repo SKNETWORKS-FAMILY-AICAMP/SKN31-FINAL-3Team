@@ -153,7 +153,7 @@ class EmailDeliveryPolicyTests(unittest.TestCase):
         self.assertEqual(suppliers[0]["contact"], "CONTACT-1")
         submit.assert_called_once_with("Request for Quotation", "RFQ-1")
 
-    @patch.object(erp_client.requests, "post")
+    @patch.object(erp_client.ERP_SESSION, "post")
     def test_direct_email_custom_only_sends_only_allowlisted_addresses(self, post):
         post.return_value.status_code = 200
         post.return_value.json.return_value = {"message": {"name": "COMM-1"}}
@@ -177,7 +177,7 @@ class EmailDeliveryPolicyTests(unittest.TestCase):
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["recipients"], ["safe@example.com"])
 
-    @patch.object(erp_client.requests, "post")
+    @patch.object(erp_client.ERP_SESSION, "post")
     def test_direct_email_custom_only_blocks_when_allowlist_is_empty(self, post):
         with patch.dict(
             os.environ,

@@ -22,7 +22,7 @@ def test_public_mr_attachment_uses_same_site_file_url():
         "attached_to_doctype": "Material Request",
     }
     with patch.object(erp_client, "erp_get_one", return_value=document), patch.object(
-        erp_client.requests, "get", return_value=_response()
+        erp_client.ERP_SESSION, "get", return_value=_response()
     ) as request:
         result = erp_client.erp_download_file(
             "FILE-1", expected_attached_to_doctype="Material Request"
@@ -41,7 +41,7 @@ def test_private_mr_attachment_uses_frappe_download_method():
         "attached_to_doctype": "Material Request",
     }
     with patch.object(erp_client, "erp_get_one", return_value=document), patch.object(
-        erp_client.requests, "get", return_value=_response()
+        erp_client.ERP_SESSION, "get", return_value=_response()
     ) as request:
         erp_client.erp_download_file(
             "FILE-2", expected_attached_to_doctype="Material Request"
@@ -64,7 +64,7 @@ def test_attachment_download_rejects_other_doctype_before_file_request():
         "attached_to_doctype": "Purchase Invoice",
     }
     with patch.object(erp_client, "erp_get_one", return_value=document), patch.object(
-        erp_client.requests, "get"
+        erp_client.ERP_SESSION, "get"
     ) as request:
         with pytest.raises(PermissionError):
             erp_client.erp_download_file(

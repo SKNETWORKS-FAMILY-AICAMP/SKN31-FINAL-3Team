@@ -17,6 +17,7 @@ nodes/create_and_send_rfq.py — 6번 모듈: RFQ 생성 + 발송
 import os
 import requests
 from backend_logic2.integrations.erp_client import (
+    ERP_SESSION,
     ERPNextAPIError,
     HEADERS,
     SITE_URL,
@@ -235,7 +236,7 @@ def send_rfq(rfq_name: str):
                 "rfq_name": rfq_name,
             }
 
-    res = requests.post(
+    res = ERP_SESSION.post(
         f"{SITE_URL}/api/method/erpnext.buying.doctype.request_for_quotation.request_for_quotation.send_supplier_emails",
         headers=HEADERS,
         json={"rfq_name": rfq_name},

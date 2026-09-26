@@ -10,7 +10,7 @@ raw하게 확인하는 진단용 스크립트. remind_rfq.py에서 JSON 파싱 �
 
 import requests
 
-from backend_logic2.integrations.erp_client import API_KEY, API_SECRET, HEADERS, SITE_URL
+from backend_logic2.integrations.erp_client import ERP_SESSION, API_KEY, API_SECRET, HEADERS, SITE_URL
 
 
 def main():
@@ -20,7 +20,7 @@ def main():
 
     url = f"{SITE_URL}/api/resource/Request for Quotation"
     print(f"GET {url}")
-    res = requests.get(url, headers=HEADERS, params={"limit_page_length": 1})
+    res = ERP_SESSION.get(url, headers=HEADERS, params={"limit_page_length": 1})
 
     print(f"status_code = {res.status_code}")
     print(f"final url   = {res.url}")

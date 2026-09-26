@@ -17,7 +17,7 @@ resolve_suppliers.py로 찾은 신규 후보들을 실제 ERPNext Supplier로 �
 
 import html
 import requests
-from backend_logic2.integrations.erp_client import erp_get_one, erp_post, ERPNextAPIError, SITE_URL, HEADERS
+from backend_logic2.integrations.erp_client import ERP_SESSION, erp_get_one, erp_post, ERPNextAPIError, SITE_URL, HEADERS
 from backend_logic2.nodes.supplier.tools.case_logging import log_status_change
 
 
@@ -73,7 +73,7 @@ def register_candidate_suppliers(candidates: list, case_id: str = None) -> list:
         existing = get_existing_supplier(name)
         if existing:
             if not existing.get("email_id"):
-                response = requests.put(
+                response = ERP_SESSION.put(
                     f"{SITE_URL}/api/resource/Supplier/{name}",
                     headers=HEADERS,
                     json={"email_id": email},

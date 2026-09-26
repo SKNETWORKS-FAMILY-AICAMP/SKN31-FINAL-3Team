@@ -10,7 +10,7 @@ def test_existing_item_supplier_is_not_written_again():
             "erp_get_one",
             return_value={"supplier_items": [{"supplier": "SUP-001"}]},
         ),
-        patch.object(erp_client.requests, "put") as put,
+        patch.object(erp_client.ERP_SESSION, "put") as put,
     ):
         result = erp_client.ensure_item_supplier("ITEM-001", "SUP-001")
 
@@ -27,7 +27,7 @@ def test_completed_supplier_is_appended_without_losing_existing_rows():
             "erp_get_one",
             return_value={"supplier_items": [existing]},
         ),
-        patch.object(erp_client.requests, "put", return_value=response) as put,
+        patch.object(erp_client.ERP_SESSION, "put", return_value=response) as put,
     ):
         result = erp_client.ensure_item_supplier("ITEM/001", "SUP-002")
 
