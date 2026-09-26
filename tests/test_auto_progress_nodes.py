@@ -33,6 +33,11 @@ def _rfq_state(**overrides):
         "case_id": "CASE-1",
         "supplier_candidates": _candidates(),
         "existing_supplier_candidates": _candidates(),
+        # resolve_supplier_pool이 "기존 풀만으로 충분"이라고 판정한 상태.
+        "supplier_pool_decision": {
+            "needs_search": False,
+            "reasons": ["[ITEM-1] 기존 공급사 3곳 확보 -> 기존 공급사 풀 사용"],
+        },
     }
     state.update(overrides)
     return state
@@ -84,9 +89,13 @@ def test_rfq_targets_go_out_without_a_person_when_all_are_known(registrations) -
     assert command.update["auto_progress"]["allowed"] is True
 
 
-def test_a_new_supplier_in_the_pool_still_asks_the_person(registrations) -> None:
+def test_a_pool_needing_new_suppliers_still_asks_the_person(registrations) -> None:
     state = _rfq_state(
         supplier_candidates=[*_candidates(), {"name": "처음보는곳", "email": "d@x.com"}],
+        supplier_pool_decision={
+            "needs_search": True,
+            "reasons": ["[ITEM-1] 기존 공급사 1곳 < 최소 경쟁기준 3곳 -> 신규 공급사 탐색 필요"],
+        },
     )
     with policy_scope(_policy(automation_mode="on")), \
             patch(
@@ -98,7 +107,7 @@ def test_a_new_supplier_in_the_pool_still_asks_the_person(registrations) -> None
     mock_interrupt.assert_called_once()
     payload = mock_interrupt.call_args[0][0]
     assert payload["auto_progress"]["allowed"] is False
-    assert "NEW_SUPPLIER_INCLUDED" in {
+    assert "SUPPLIER_POOL" in {
         row["code"] for row in payload["auto_progress"]["checks"] if row["status"] == "blocked"
     }
 

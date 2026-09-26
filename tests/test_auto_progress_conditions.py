@@ -145,35 +145,54 @@ def test_default_policy_keeps_every_checkpoint_manual() -> None:
     assert decision.mode == "off"
 
 
-def test_new_supplier_in_the_rfq_pool_always_needs_a_person(automation_on) -> None:
-    candidates = [
-        {"name": "동관컴퍼니", "email": "a@x.com"},
-        {"name": "세희세희", "email": "b@x.com"},
-        {"name": "처음보는곳", "email": "c@x.com"},
-    ]
-    decision = evaluate_rfq_dispatch(candidates, existing_supplier_names={"동관컴퍼니", "세희세희"})
+def _pool(needs_search: bool = False):
+    return {
+        "needs_search": needs_search,
+        "reasons": ["[ITEM-1] 기존 공급사 4곳 확보 + 마지막 등록 2년 전 -> 기존 공급사 풀 사용"],
+    }
+
+
+def test_rfq_goes_out_when_the_pool_decision_says_existing_only(automation_on) -> None:
+    """판정의 뼈대는 resolve_supplier_pool이 이미 내려놓았다.
+
+    거기서 '기존 풀만'으로 갈라졌다면 신규 협력사가 없고 경쟁 수도
+    충족한다는 뜻이라, 같은 비교를 다시 하지 않는다.
+    """
+    decision = evaluate_rfq_dispatch(
+        [{"name": "동관컴퍼니", "email": "a@x.com"}, {"name": "세희세희", "email": "b@x.com"}],
+        pool_decision=_pool(),
+    )
+    assert decision.allowed is True
+    assert decision.evidence["needs_search"] is False
+
+
+def test_a_pool_that_needs_new_suppliers_goes_to_a_person(automation_on) -> None:
+    decision = evaluate_rfq_dispatch(
+        [{"name": "동관컴퍼니", "email": "a@x.com"}],
+        pool_decision={"needs_search": True, "reasons": ["[ITEM-1] 과거 확정 구매이력 없음 -> 신규 공급사 탐색 필요"]},
+    )
     assert decision.allowed is False
-    assert "NEW_SUPPLIER_INCLUDED" in {row["code"] for row in decision.blockers}
+    blocked = {row["code"]: row["detail"] for row in decision.blockers}
+    assert "SUPPLIER_POOL" in blocked
+    # 판정 이유를 그대로 전달한다 - 다시 지어내지 않는다.
+    assert "과거 확정 구매이력 없음" in blocked["SUPPLIER_POOL"]
 
 
-def test_rfq_pool_needs_contacts_and_enough_competition(automation_on) -> None:
-    known = {"A", "B", "C"}
+def test_rfq_still_needs_contacts_and_someone_to_send_to(automation_on) -> None:
     no_email = evaluate_rfq_dispatch(
-        [{"name": "A", "email": "a@x.com"}, {"name": "B"}, {"name": "C", "email": "c@x.com"}],
-        existing_supplier_names=known,
+        [{"name": "동관컴퍼니", "email": "a@x.com"}, {"name": "세희세희"}],
+        pool_decision=_pool(),
     )
     assert "MISSING_EMAIL" in {row["code"] for row in no_email.blockers}
 
-    too_few = evaluate_rfq_dispatch(
-        [{"name": "A", "email": "a@x.com"}, {"name": "B", "email": "b@x.com"}],
-        existing_supplier_names=known,
+    nobody = evaluate_rfq_dispatch([], pool_decision=_pool())
+    assert "HAS_CANDIDATES" in {row["code"] for row in nobody.blockers}
+
+
+def test_a_missing_pool_decision_is_not_treated_as_passing(automation_on) -> None:
+    decision = evaluate_rfq_dispatch(
+        [{"name": "동관컴퍼니", "email": "a@x.com"}], pool_decision=None
     )
-    assert "MIN_COMPETITION" in {row["code"] for row in too_few.blockers}
-
-
-def test_unknown_values_are_not_treated_as_passing(automation_on) -> None:
-    # 기존 거래처 목록을 모르면 통과가 아니라 정지다.
-    decision = evaluate_rfq_dispatch([{"name": "A", "email": "a@x.com"}], existing_supplier_names=set())
     assert decision.allowed is False
 
 
@@ -185,22 +204,9 @@ def test_score_gap_needs_two_quotations() -> None:
 def test_each_verdict_says_which_step_it_came_from(automation_on) -> None:
     """RFQ 발송 판정이 남아 있는데 최종 선정이 멈춘 것처럼 보이면 안 된다."""
     rfq = evaluate_rfq_dispatch(
-        [{"name": "동관컴퍼니", "email": "a@x.com"}], existing_supplier_names={"동관컴퍼니"}
+        [{"name": "동관컴퍼니", "email": "a@x.com"}], pool_decision=_pool()
     )
     selection = evaluate_final_selection(_ranking_result(), deadline_passed=True)
 
     assert rfq.as_payload()["node"] == "auto_rfq_dispatch"
     assert selection.as_payload()["node"] == "auto_final_selection"
-
-
-def test_an_empty_candidate_pool_says_so_plainly(automation_on) -> None:
-    """협력사를 직접 입력해 보내는 흐름에서는 추천 후보가 비어 있다.
-
-    그때 '최소 경쟁 수 미달'로 말하면 실제로 몇 곳에 보냈는지와 어긋나
-    읽는 사람이 혼란스럽다.
-    """
-    decision = evaluate_rfq_dispatch([], existing_supplier_names={"동관컴퍼니"})
-
-    codes = {row["code"] for row in decision.blockers}
-    assert "NO_CANDIDATES" in codes
-    assert "MIN_COMPETITION" not in codes

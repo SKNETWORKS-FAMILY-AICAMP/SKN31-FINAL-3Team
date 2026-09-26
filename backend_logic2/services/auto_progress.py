@@ -133,18 +133,23 @@ def _amount(value: Any) -> Decimal | None:
 def evaluate_rfq_dispatch(
     candidates: list[dict[str, Any]],
     *,
-    existing_supplier_names: set[str] | None = None,
+    pool_decision: dict[str, Any] | None = None,
 ) -> AutoDecision:
     """RFQ 대상을 사람 확인 없이 확정·발송해도 되는지.
 
-    신규 협력사가 한 곳이라도 섞이면 무조건 사람이 본다. 거래한 적 없는
-    업체를 자동으로 입찰에 넣는 건 성격이 다른 결정이다.
+    ⚠️ 판정의 뼈대는 이미 resolve_supplier_pool이 내려놓았다. 그 함수는
+    품목마다 과거 확정 구매이력, 기존 공급사 수(최소 경쟁 기준), 공급사
+    풀의 노후화(마지막 등록 시점)를 보고 "기존 풀만 쓸지 / 신규를 찾아야
+    할지"를 정한다. 즉 **기존 풀로 갈라진 건은 그 자체로 신규 협력사가
+    없고 경쟁 수도 충족한다는 뜻**이다.
+
+    그래서 여기서 후보 목록을 다시 비교해 같은 결론을 내지 않는다. 그건
+    중복인 데다 정보도 적다. 그 판정을 그대로 받고, 발송에 실제로 필요한
+    것(연락처)만 따로 확인한다.
     """
     rules = _rules()
     mode = rules.automation_mode
     enabled = bool(rules.auto_rfq_dispatch)
-    known = {str(name or "").strip() for name in (existing_supplier_names or set())}
-    known.discard("")
 
     named = [
         dict(candidate)
@@ -153,29 +158,35 @@ def evaluate_rfq_dispatch(
     ]
     checks: list[dict[str, Any]] = []
 
-    new_suppliers = [
-        str(row.get("name")).strip()
-        for row in named
-        if str(row.get("name")).strip() not in known
-    ]
-    if not known:
+    reasons = [str(row) for row in (pool_decision or {}).get("reasons") or []]
+    detail = " / ".join(reasons) if reasons else ""
+    if pool_decision is None:
         checks.append(_unknown(
-            "EXISTING_POOL_UNKNOWN",
-            "기존 거래처 목록 확인",
-            "기존 거래처 목록을 확인할 수 없어 사람이 대상을 정합니다.",
+            "SUPPLIER_POOL",
+            "기존 공급사 풀만으로 진행",
+            "공급사 풀 판정 기록이 없어 담당자가 대상을 정합니다.",
         ))
-    elif new_suppliers:
+    elif pool_decision.get("needs_search"):
         checks.append(_blocked(
-            "NEW_SUPPLIER_INCLUDED",
-            "전부 기존 거래처",
-            f"신규 협력사 {len(new_suppliers)}곳이 후보에 있습니다 ({', '.join(new_suppliers[:3])})",
+            "SUPPLIER_POOL",
+            "기존 공급사 풀만으로 진행",
+            detail or "신규 협력사 탐색이 필요하다고 판정된 건이라 담당자가 대상을 정합니다.",
         ))
     else:
         checks.append(_passed(
-            "NEW_SUPPLIER_INCLUDED",
-            "전부 기존 거래처",
-            f"후보 {len(named)}곳 모두 거래 이력이 있습니다",
+            "SUPPLIER_POOL",
+            "기존 공급사 풀만으로 진행",
+            detail or "거래 이력이 있는 기존 공급사만으로 경쟁 요건을 채웠습니다",
         ))
+
+    if not named:
+        checks.append(_blocked(
+            "HAS_CANDIDATES",
+            "발송 대상 존재",
+            "RFQ를 보낼 후보가 없어 담당자가 직접 지정해야 합니다",
+        ))
+    else:
+        checks.append(_passed("HAS_CANDIDATES", "발송 대상 존재", f"후보 {len(named)}곳"))
 
     missing_email = [
         str(row.get("name")).strip()
@@ -191,28 +202,6 @@ def evaluate_rfq_dispatch(
     else:
         checks.append(_passed("MISSING_EMAIL", "연락처 확보", "모든 후보의 이메일이 확인됐습니다"))
 
-    minimum = int(rules.min_competing_suppliers)
-    if not named:
-        # 추천 후보 목록이 비어 있는 경우다(담당자가 협력사를 직접 입력해
-        # 보내는 흐름). 자동으로 고를 대상 자체가 없으니 사람이 정해야 한다.
-        checks.append(_blocked(
-            "NO_CANDIDATES",
-            "추천 후보 존재",
-            "추천된 협력사 후보가 없어 담당자가 직접 지정해야 합니다",
-        ))
-    elif len(named) < minimum:
-        checks.append(_blocked(
-            "MIN_COMPETITION",
-            f"후보 {minimum}곳 이상",
-            f"후보가 {len(named)}곳뿐이라 최소 경쟁 수({minimum})를 채우지 못했습니다",
-        ))
-    else:
-        checks.append(_passed(
-            "MIN_COMPETITION",
-            f"후보 {minimum}곳 이상",
-            f"후보 {len(named)}곳으로 최소 경쟁 수를 채웠습니다",
-        ))
-
     allowed = all(row["status"] == "passed" for row in checks)
     return AutoDecision(
         allowed=allowed,
@@ -222,8 +211,8 @@ def evaluate_rfq_dispatch(
         checks=checks,
         evidence={
             "candidate_count": len(named),
-            "new_supplier_count": len(new_suppliers),
             "missing_email_count": len(missing_email),
+            "needs_search": (pool_decision or {}).get("needs_search"),
         },
     )
 

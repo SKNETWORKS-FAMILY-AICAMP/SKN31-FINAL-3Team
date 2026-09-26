@@ -41,6 +41,9 @@ class PurchasingRules(StrictModel):
     # on     : 조건을 통과하면 사람 없이 진행한다.
     automation_mode: Literal["off", "shadow", "on"] = "off"
     # 단계별 스위치. automation_mode가 off이면 둘 다 의미가 없다.
+    # RFQ 대상 자동 확정·발송. 판정의 뼈대는 resolve_supplier_pool이 이미
+    # 내려놓았다(기존 풀만으로 경쟁이 되는지). 이 스위치는 그 판정을 믿고
+    # 사람 확인을 건너뛸지만 정한다.
     auto_rfq_dispatch: bool = True
     auto_final_selection: bool = True
     # 자동 선정에 필요한 최소 경쟁 견적 수. min_competing_suppliers("몇 곳을

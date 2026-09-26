@@ -58,6 +58,8 @@ class PurchaseProcessState(TypedDict, total=False):
     # 체크리스트로 그린다.
     auto_progress: dict[str, Any]
     existing_supplier_candidates: list[dict[str, Any]]
+    # resolve_supplier_pool의 판정(기존 풀만 쓸지 / 신규를 찾아야 할지).
+    supplier_pool_decision: dict[str, Any]
     supplier_candidates: list[dict[str, Any]]
     supplier_registration_results: list[dict[str, Any]]
     supplier_document_review: dict[str, Any]
@@ -509,6 +511,16 @@ def resolve_suppliers_choice_command(state: PurchaseProcessState) -> Command:
     return Command(
         update={
             "existing_supplier_candidates": result["existing_candidates"],
+            # 이 판정이 곧 "신규 협력사 없이 기존 풀만으로 경쟁이 되는가"다.
+            # RFQ 자동 발송이 같은 판단을 다시 하지 않고 이걸 그대로 쓴다.
+            "supplier_pool_decision": {
+                "needs_search": bool(result["needs_search"]),
+                "reasons": [
+                    str(decision.get("reason") or "")
+                    for decision in (result.get("item_decisions") or {}).values()
+                    if isinstance(decision, dict) and decision.get("reason")
+                ],
+            },
             "status": "resolving_supplier_pool",
         },
         goto="search_new_suppliers" if result["needs_search"] else "select_rfq_targets",
@@ -613,12 +625,9 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
     from backend_logic2.services import auto_progress as auto_progress_module
     from backend_logic2.services.auto_progress import evaluate_rfq_dispatch
 
-    existing_names = {
-        str(row.get("name") or "").strip()
-        for row in (state.get("existing_supplier_candidates") or [])
-        if isinstance(row, dict)
-    }
-    auto = evaluate_rfq_dispatch(candidates, existing_supplier_names=existing_names)
+    auto = evaluate_rfq_dispatch(
+        candidates, pool_decision=state.get("supplier_pool_decision")
+    )
     auto_answer: dict[str, Any] | None = None
     if auto.should_proceed:
         auto_deadline = _default_quotation_deadline(str(state.get("mr_name") or ""))
