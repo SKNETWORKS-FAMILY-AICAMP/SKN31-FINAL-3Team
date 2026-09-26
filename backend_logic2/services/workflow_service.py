@@ -117,6 +117,119 @@ def _run_queued_quotation_analysis(
             )
 
 
+def _run_queued_task_answer(
+    task_id: str,
+    *,
+    answer: dict[str, Any],
+    answered_by: str,
+    expected_version: int,
+    case_id: str,
+    stage: str,
+) -> None:
+    """HTTP 요청이 끝난 뒤에 실제 그래프를 돌린다.
+
+    resume_task를 그대로 부른다 - 작업 종류별 처리(점수카드 등)와 잠금·검증이
+    전부 그 안에 있어서, 여기서 다시 구현하면 두 경로가 갈라진다.
+    """
+    try:
+        resume_task(
+            task_id,
+            answer=answer,
+            answered_by=answered_by,
+            expected_version=expected_version,
+        )
+    except Exception as exc:  # noqa: BLE001 - 배경 실패는 화면에 보여야 한다
+        # RUNNING으로 영원히 남겨두면 사용자는 "멈췄다"만 보고 이유를 모른다.
+        try:
+            case = case_repository.get_case(case_id)
+            if case and case["status"] not in _TERMINAL_CASE_STATUSES:
+                case_repository.transition_case(
+                    case_id,
+                    status="WAITING_INPUT",
+                    stage=stage,
+                    reason="작업 처리 중 오류가 발생했습니다.",
+                    triggered_by=answered_by,
+                    last_error=str(exc),
+                )
+        except Exception as projection_exc:  # noqa: BLE001
+            print(
+                "[task answer] 실패 상태 저장 오류: "
+                f"{projection_exc}; original={exc}"
+            )
+
+
+def queue_task_answer(
+    task_id: str,
+    *,
+    answer: dict[str, Any],
+    answered_by: str,
+    expected_version: int | None,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    """대기 작업에 답하고, 그래프는 HTTP 소켓을 잡지 않은 채로 돌린다.
+
+    ⚠️ 왜 이래야 하는가: 사람이 답하면 그래프가 이어 도는데, 그 안에서
+    ERPNext 쓰기·메일 발송·공급사 검색·AI 호출이 일어난다. 이걸 요청 안에서
+    그대로 기다리면 nginx의 /api/ 기본 제한(60초)을 넘기고, nginx가 504를
+    HTML로 돌려준다. 프론트는 JSON detail을 못 찾아 "구매 작업 API 요청에
+    실패했습니다"만 띄우는데, 정작 그래프는 서버에서 계속 돌기 때문에
+    케이스는 실패도 아닌 "...중" 상태로 남는다. 사용자가 다시 누르면 같은
+    thread_id에서 실행이 겹쳐 상태가 더 꼬인다.
+    (견적 분석 경로는 같은 문제를 먼저 겪어서 이미 이 방식으로 고쳐져 있었다.
+    나머지 답변 경로 전부에 같은 처방을 한다.)
+
+    검증은 동기로 한다 - 버전 충돌이나 단계 불일치는 사용자가 즉시 알아야
+    하고, 배경에서 조용히 실패하면 안 된다.
+    """
+    if expected_version is None:
+        raise ValueError("작업 버전이 필요합니다. 목록을 새로고침한 뒤 다시 시도해 주세요.")
+    task = task_repository.get_task(task_id)
+    if task is None:
+        raise LookupError(task_id)
+    if task["status"] != "PENDING":
+        raise ValueError("이미 처리 중이거나 완료된 작업입니다.")
+    case_id = str(task["case_id"])
+    case = case_repository.get_case(case_id)
+    if case is None:
+        raise LookupError(case_id)
+    if case["status"] in _TERMINAL_CASE_STATUSES:
+        raise ValueError("이미 종료된 구매 작업에는 응답할 수 없습니다.")
+    if case["status"] == "RUNNING":
+        raise ValueError("이미 처리가 진행 중입니다. 잠시 뒤 화면을 확인해 주세요.")
+
+    expected_stage = _TASK_STAGE.get(str(task["task_type"]))
+    if expected_stage and case["stage"] != expected_stage:
+        raise ValueError(
+            f"현재 단계({case['stage']})와 작업 종류({task['task_type']})가 일치하지 않습니다. "
+            "목록을 새로고침해 주세요."
+        )
+
+    stage = str(case.get("stage") or expected_stage or "")
+    case_repository.transition_case(
+        case_id,
+        status="RUNNING",
+        stage=stage,
+        reason="작업을 처리하고 있습니다.",
+        triggered_by=answered_by,
+        last_error=None,
+    )
+    background_tasks.add_task(
+        _run_queued_task_answer,
+        task_id,
+        answer=answer,
+        answered_by=answered_by,
+        expected_version=expected_version,
+        case_id=case_id,
+        stage=stage,
+    )
+    return {
+        "accepted": True,
+        "case_id": case_id,
+        "task_id": task_id,
+        "status": "RUNNING",
+    }
+
+
 def queue_quotation_analysis(
     task_id: str,
     *,

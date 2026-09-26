@@ -508,12 +508,19 @@ def answer_task(
             )
             response.status_code = status.HTTP_202_ACCEPTED
             return queued
-        return workflow_service.resume_task(
+        # 나머지 답변도 전부 같은 이유로 배경에서 돌린다. 사람이 답하면
+        # 그래프가 ERPNext 쓰기·메일 발송·공급사 검색까지 이어 도는데, 그걸
+        # 요청 안에서 기다리면 nginx /api/ 기본 제한(60초)을 넘겨 504가 나고,
+        # 화면에는 정체불명의 "구매 작업 API 요청에 실패했습니다"만 남는다.
+        queued = workflow_service.queue_task_answer(
             task_id,
             answer=body.answer,
             answered_by=_user_id(current_user),
             expected_version=body.version,
+            background_tasks=background_tasks,
         )
+        response.status_code = status.HTTP_202_ACCEPTED
+        return queued
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="대기 작업을 찾을 수 없습니다.") from exc
     except (ValueError, RuntimeError) as exc:
