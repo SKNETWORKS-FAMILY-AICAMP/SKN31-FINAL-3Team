@@ -393,6 +393,44 @@ def set_automation_hold(
     }
 
 
+@router.post("/cases/{case_id}/automation/scan")
+def run_automation_scan(case_id: str, current_user: CurrentUser):
+    """이 건의 자동 진행 판정을 지금 즉시 돌립니다.
+
+    평소에는 견적 마감 스캔(10분 주기)과 전원 회신 웹훅이 알아서 부르지만,
+    기다리지 않고 지금 확인하고 싶을 때 쓰는 경로입니다. 판정 규칙은 같아서
+    기록 모드에서는 판정만 남고 실제로 진행되지 않습니다.
+    """
+    case = _require_case_access(case_id, current_user)
+    from backend_logic2.services import auto_progress_runner
+
+    try:
+        outcome = auto_progress_runner.process_case(case)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"자동 진행 판정에 실패했습니다: {exc}") from exc
+
+    refreshed = case_repository.get_case(case_id) or case
+    values = (refreshed.get("workflow_snapshot") or {}).get("values") or {}
+    reasons = {
+        "advanced": "조건을 통과해 다음 단계로 넘어갔습니다.",
+        "blocked": "조건에 걸려 멈췄습니다. 판정 내용을 확인하세요.",
+        "recorded": "판정만 기록했습니다(기록 모드).",
+        "deadline_extended": "회신이 없어 마감을 자동으로 연장했습니다.",
+        "held": "담당자가 자동 진행을 보류해 둔 건입니다.",
+        "disabled": "회사 정책에서 자동 진행이 꺼져 있습니다.",
+        "unchanged": "지난 판정 이후 상황이 달라지지 않아 다시 판정하지 않았습니다.",
+        "no_task": "지금 깨울 대기 작업이 없습니다.",
+        "not_mine": "이 서버에 이 건의 워크플로 진행 상황이 없습니다.",
+        "failed": "판정 중 오류가 났습니다. 서버 로그를 확인하세요.",
+    }
+    return {
+        "outcome": outcome,
+        "message": reasons.get(outcome, outcome),
+        "stage": refreshed.get("stage"),
+        "auto_progress": values.get("auto_progress"),
+    }
+
+
 @router.get("/cases/{case_id}/timeline")
 def get_case_timeline(case_id: str, current_user: CurrentUser):
     """이 건에 무슨 일이 언제 있었는지 - 단계 전환·사람 응답·AI 판단을 합친 이력."""
