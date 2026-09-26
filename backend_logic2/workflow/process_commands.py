@@ -45,6 +45,11 @@ class PurchaseProcessState(TypedDict, total=False):
     direct_purchase_items: dict[str, dict[str, Any]]
     force_bidding: bool
     order_started: bool
+    # 협력사 선정 화면에서 "수주 접수 요청 메일을 지금 보낸다"는 확인을 이미
+    # 받은 경우 True. 선정 이후 사람에게 같은 확인을 두 번(발주 시작, PR 요청)
+    # 더 묻지 않고 PR 발송까지 이어서 진행한다. 신규 협력사 서류 검토처럼
+    # 성격이 다른 확인 단계는 이 플래그와 무관하게 그대로 멈춘다.
+    auto_pr_dispatch: bool
     existing_supplier_candidates: list[dict[str, Any]]
     supplier_candidates: list[dict[str, Any]]
     supplier_registration_results: list[dict[str, Any]]
@@ -895,6 +900,7 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
     )
     return Command(
         update={
+            "auto_pr_dispatch": _auto_pr_dispatch_requested(answer),
             "quotation_ranking": result["ranking"],
             "quotation_excluded": result.get("excluded") or [],
             "quotation_ranking_meta": {
@@ -911,6 +917,11 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
     )
 
 
+def _auto_pr_dispatch_requested(answer: Any) -> bool:
+    """선정 화면에서 수주 접수 요청 메일 발송까지 확인받았는지."""
+    return isinstance(answer, dict) and bool(answer.get("start_order"))
+
+
 def final_selection_command(state: PurchaseProcessState) -> Command:
     """[8단계-대기] 순위목록을 보여주고 최종 공급사를 선정한다.
 
@@ -921,6 +932,7 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
     ranking = state.get("quotation_ranking", [])
     supplier = str(state.get("requested_supplier") or "").strip()
     quotation_id = str(state.get("requested_quotation") or "").strip()
+    auto_pr_dispatch = bool(state.get("auto_pr_dispatch"))
     if not supplier:
         answer = interrupt({
             "type": "final_selection",
@@ -933,10 +945,17 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
             if isinstance(answer, dict)
             else ""
         )
+        # 이 화면에서 다시 고르는 경우엔 이번 답변의 확인 여부만 따른다
+        # (예전 확인이 남아 메일이 나가는 일이 없도록).
+        auto_pr_dispatch = _auto_pr_dispatch_requested(answer)
     valid_suppliers = {r.get("supplier") for r in ranking}
     if supplier not in valid_suppliers:
         return Command(
-            update={"status": "awaiting_final_selection", "error": "순위 목록의 supplier를 선택하세요."},
+            update={
+                "status": "awaiting_final_selection",
+                "auto_pr_dispatch": False,
+                "error": "순위 목록의 supplier를 선택하세요.",
+            },
             goto="final_selection",
         )
 
@@ -972,6 +991,7 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
                     "status": "awaiting_final_selection",
                     "requested_supplier": "",
                     "requested_quotation": "",
+                    "auto_pr_dispatch": False,
                     "error": "선택한 견적은 유효기간이 지났습니다. 다른 견적을 선택하거나 재비딩해 주세요.",
                 },
                 goto="final_selection",
@@ -979,6 +999,7 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
 
     return Command(
         update={
+            "auto_pr_dispatch": auto_pr_dispatch,
             "selected_supplier": supplier,
             "selected_quotation": str(
                 selected_row.get("quotation_id") or selected_row.get("name") or ""
@@ -1066,6 +1087,14 @@ def await_order_start_command(state: PurchaseProcessState) -> Command:
             goto="request_pr",
         )
 
+    # 선정 팝업에서 "수주 접수 요청 메일을 지금 보낸다"는 확인을 이미 받았으면
+    # 같은 뜻의 '발주 시작' 확인을 다시 묻지 않는다.
+    if state.get("auto_pr_dispatch") and not state.get("order_started"):
+        return Command(
+            update={"order_started": True, "status": "awaiting_pr_request", "error": ""},
+            goto="request_pr",
+        )
+
     answer = interrupt({
         "type": "order_start",
         "mr_name": state["mr_name"],
@@ -1121,6 +1150,14 @@ def request_pr_command(state: PurchaseProcessState) -> Command:
             update={"status": "supplier_selected", "error": "발주 진행을 먼저 눌러 주세요."},
             goto="await_order_start",
         )
+    # 같은 확인을 세 번 받지 않는다. 플래그는 여기서 지워서, PR 발송이
+    # 실패해 다시 돌아오면 그때는 사람이 직접 'PR 요청'을 누르게 한다.
+    if state.get("auto_pr_dispatch"):
+        return Command(
+            update={"auto_pr_dispatch": False, "status": "creating_pr", "error": ""},
+            goto="create_pr",
+        )
+
     answer = interrupt({
         "type": "pr_request",
         "case_id": state["case_id"],
