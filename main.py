@@ -287,6 +287,20 @@ async def lifespan(app: FastAPI):
     if webhook_mode():
         callback_url()
     runpod_task = asyncio.create_task(_recover_runpod_jobs(), name="runpod-quotation-recovery")
+    # 견적 마감이 지난 케이스를 깨우는 스캔. 워크플로는 사람의 답을
+    # 기다리며 꺼져 있고 "마감 시각이 됐다"는 사건이 아니라, 아무도
+    # 깨우지 않으면 영원히 멈춰 있다. 회사 정책이 꺼짐이면 스캔이 돌아도
+    # 아무 건도 건드리지 않는다.
+    from backend_logic2.services.auto_progress_scheduler import (
+        auto_progress_loop,
+        scheduler_enabled,
+    )
+
+    auto_progress_task: asyncio.Task[None] | None = None
+    if scheduler_enabled():
+        auto_progress_task = asyncio.create_task(
+            auto_progress_loop(), name="auto-progress-scan"
+        )
     ingest_mode = _mr_ingest_mode()
     polling_task: asyncio.Task[None] | None = None
     startup_reconciliation_task: asyncio.Task[None] | None = None
@@ -363,6 +377,11 @@ async def lifespan(app: FastAPI):
             item_task.cancel()
         with suppress(asyncio.CancelledError):
             await item_task
+        if auto_progress_task is not None:
+            if not auto_progress_task.done():
+                auto_progress_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await auto_progress_task
 
 
 app = FastAPI(title="SKN31 Purchasing Agent API", lifespan=lifespan)

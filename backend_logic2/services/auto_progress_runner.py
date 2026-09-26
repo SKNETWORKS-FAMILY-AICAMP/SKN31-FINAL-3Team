@@ -98,6 +98,27 @@ def situation_signature(case: dict[str, Any]) -> str:
     ])
 
 
+def has_local_checkpoint(case: dict[str, Any]) -> bool:
+    """이 인스턴스가 그 케이스의 워크플로 진행 상황을 갖고 있는가.
+
+    ⚠️ 데이터베이스는 서버와 개발용 PC가 함께 보는데, 워크플로 체크포인트는
+    인스턴스마다 따로 있는 SQLite 파일이다. 체크포인트가 없는 쪽이 케이스를
+    재개하면 처음부터 다시 도는 사고가 난다. 그래서 스캔은 자기가 진행
+    상황을 갖고 있는 건만 건드린다.
+    """
+    thread_id = str(case.get("thread_id") or case.get("mr_name") or "").strip()
+    if not thread_id:
+        return False
+    try:
+        from backend_logic2.workflow.process_graph import get_process_app
+
+        snapshot = get_process_app().get_state({"configurable": {"thread_id": thread_id}})
+    except Exception:  # noqa: BLE001 - 확인이 안 되면 건드리지 않는다
+        LOGGER.warning("체크포인트 확인 실패: thread_id=%s", thread_id, exc_info=True)
+        return False
+    return bool(snapshot and (snapshot.next or snapshot.values))
+
+
 def _pending_quotation_task(case_id: str) -> dict[str, Any] | None:
     for task in task_repository.list_tasks(case_id=case_id, audience="BUYER", status="PENDING"):
         if str(task.get("task_type")) in _QUOTATION_TASK_TYPES:
@@ -191,6 +212,12 @@ def process_case(case: dict[str, Any], *, trigger: str = "deadline") -> str:
     if task is None:
         return "no_task"
 
+    if not has_local_checkpoint(case):
+        LOGGER.info(
+            "이 인스턴스에 워크플로 진행 상황이 없어 건너뜁니다: case_id=%s", case_id
+        )
+        return "not_mine"
+
     signature = situation_signature(case)
     if trigger == "deadline" and case.get("auto_progress_signature") == signature:
         return "unchanged"
@@ -251,6 +278,7 @@ def run_due_auto_progress(now: datetime | None = None) -> dict[str, int]:
     counts = {
         "scanned": 0, "advanced": 0, "blocked": 0, "recorded": 0,
         "deadline_extended": 0, "held": 0, "skipped": 0, "failed": 0,
+        "not_mine": 0,
     }
     moment = now or datetime.now(timezone.utc)
 

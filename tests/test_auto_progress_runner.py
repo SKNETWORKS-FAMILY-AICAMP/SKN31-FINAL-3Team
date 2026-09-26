@@ -54,6 +54,8 @@ def harness(monkeypatch):
         yield
 
     monkeypatch.setattr(runner, "case_lock", fake_case_lock)
+    # 기본은 "이 인스턴스가 진행 상황을 갖고 있다" - 없는 경우는 전용 테스트에서.
+    monkeypatch.setattr(runner, "has_local_checkpoint", lambda case: True)
     monkeypatch.setattr(runner, "_policy_for", lambda case: state["policy"])
     monkeypatch.setattr(
         runner.task_repository,
@@ -181,3 +183,15 @@ def test_a_failed_resume_does_not_stop_the_rest(harness, monkeypatch) -> None:
     monkeypatch.setattr(workflow_service, "resume_task", boom)
     assert runner.process_case(harness["case"]) == "failed"
     assert harness["signatures"][-1] is not None
+
+
+def test_a_case_whose_checkpoint_lives_elsewhere_is_left_alone(harness, monkeypatch) -> None:
+    """DB는 함께 보지만 워크플로 진행 상황은 인스턴스마다 따로 있다.
+
+    없는 쪽이 재개하면 처음부터 다시 도는 사고가 나므로 건드리지 않는다.
+    """
+    monkeypatch.setattr(runner, "has_local_checkpoint", lambda case: False)
+
+    assert runner.process_case(harness["case"]) == "not_mine"
+    assert harness["resumed"] == []
+    assert harness["signatures"] == []
