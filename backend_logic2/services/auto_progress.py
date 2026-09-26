@@ -270,7 +270,7 @@ def evaluate_final_selection(
         checks.append(_passed("PARSE_FAILED", "견적서 전부 판독 성공", "파싱 실패 0건"))
 
     competition = int(result.get("competition_count") or len(ranking))
-    minimum = int(rules.min_competing_suppliers)
+    minimum = int(rules.auto_selection_min_quotations)
     if result.get("single_bid") or competition < minimum:
         checks.append(_blocked(
             "MIN_COMPETITION",

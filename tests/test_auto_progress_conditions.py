@@ -93,6 +93,26 @@ def test_confirmation_penalty_on_the_top_quotation_stops_the_flow(automation_on)
     assert "TOP_PENALTY" in {row["code"] for row in decision.blockers}
 
 
+def test_two_quotations_are_enough_but_a_single_bid_never_is(automation_on) -> None:
+    two = _ranking_result(
+        ranking=[
+            {"supplier": "동관컴퍼니", "quotation_id": "SQ-1", "overall_score": 93.6,
+             "total_amount": "8400000", "penalties": []},
+            {"supplier": "세희세희", "quotation_id": "SQ-2", "overall_score": 81.2},
+        ],
+        competition_count=2,
+    )
+    assert evaluate_final_selection(two, deadline_passed=True).allowed is True
+
+    single = _ranking_result(
+        ranking=[{"supplier": "동관컴퍼니", "quotation_id": "SQ-1", "overall_score": 93.6,
+                  "total_amount": "8400000", "penalties": []}],
+        competition_count=1,
+        single_bid=True,
+    )
+    assert evaluate_final_selection(single, deadline_passed=True).allowed is False
+
+
 def test_amount_over_the_limit_stops_the_flow() -> None:
     with policy_scope(_policy(automation_mode="on", auto_selection_max_amount=1_000_000)):
         decision = evaluate_final_selection(_ranking_result(), deadline_passed=True)

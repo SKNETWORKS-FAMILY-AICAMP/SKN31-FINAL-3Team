@@ -43,8 +43,12 @@ class PurchasingRules(StrictModel):
     # 단계별 스위치. automation_mode가 off이면 둘 다 의미가 없다.
     auto_rfq_dispatch: bool = True
     auto_final_selection: bool = True
+    # 자동 선정에 필요한 최소 경쟁 견적 수. min_competing_suppliers("몇 곳을
+    # 찾아 초대할까")와는 다른 질문이라 따로 둔다. 최솟값이 2라서 어떤
+    # 설정으로도 단독 응찰은 자동 선정되지 않는다.
+    auto_selection_min_quotations: int = Field(default=2, ge=2, le=20)
     # 1순위와 2순위의 종합점수 차이가 이보다 작으면 박빙으로 보고 사람에게
-    # 넘긴다. 경쟁 견적 최소 건수는 min_competing_suppliers를 그대로 쓴다.
+    # 넘긴다.
     auto_selection_score_gap: float = Field(default=10.0, ge=0, le=100, allow_inf_nan=False)
     # 선정 금액이 이 값을 넘으면 금액만으로 사람 확인 대상이 된다.
     auto_selection_max_amount: int = Field(default=50_000_000, ge=1, le=1_000_000_000_000)
