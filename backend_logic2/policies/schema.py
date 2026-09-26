@@ -28,6 +28,32 @@ class PurchasingRules(StrictModel):
     quotation_specification_weight: float = Field(default=30.0, ge=0, le=100, allow_inf_nan=False)
     quotation_scorecard_weight: float = Field(default=15.0, ge=0, le=100, allow_inf_nan=False)
 
+    # --- 자동 진행 ---
+    # 사람이 멈추는 곳을 세 군데(처리 시작·PO 승인·협력사 평가)로 줄이기 위한
+    # 설정. 나머지 단계는 조건을 통과하면 사람 없이 진행하고, 하나라도 걸리면
+    # 그 자리에서 멈춰 담당자를 부른다.
+    #
+    # off    : 지금까지처럼 모든 체크포인트에서 사람을 기다린다. 기본값이며,
+    #          이미 진행 중인 케이스에 고정된 옛 정책에는 이 키가 자체가 없어
+    #          자동으로 off가 된다(운영 중 서비스가 갑자기 움직이지 않는다).
+    # shadow : 조건을 평가해 "이렇게 진행했을 것"을 기록만 남기고 실제로는
+    #          멈춘다. 임계값을 실제 데이터로 검증하는 단계.
+    # on     : 조건을 통과하면 사람 없이 진행한다.
+    automation_mode: Literal["off", "shadow", "on"] = "off"
+    # 단계별 스위치. automation_mode가 off이면 둘 다 의미가 없다.
+    auto_rfq_dispatch: bool = True
+    auto_final_selection: bool = True
+    # 1순위와 2순위의 종합점수 차이가 이보다 작으면 박빙으로 보고 사람에게
+    # 넘긴다. 경쟁 견적 최소 건수는 min_competing_suppliers를 그대로 쓴다.
+    auto_selection_score_gap: float = Field(default=10.0, ge=0, le=100, allow_inf_nan=False)
+    # 선정 금액이 이 값을 넘으면 금액만으로 사람 확인 대상이 된다.
+    auto_selection_max_amount: int = Field(default=50_000_000, ge=1, le=1_000_000_000_000)
+    # 마감인데 회신이 0건일 때 한 번만 자동 연장할 일수(0이면 자동 연장 안 함).
+    auto_deadline_extension_days: int = Field(default=3, ge=0, le=30)
+    # 납기요청일까지 이만큼은 남아 있어야 자동 연장한다. 연장만 반복하다
+    # 납기를 놓치는 게 가장 나쁜 결말이라서 둔 안전장치다.
+    auto_deadline_extension_min_lead_days: int = Field(default=7, ge=0, le=180)
+
     @model_validator(mode="before")
     @classmethod
     def drop_legacy_quotation_weights(cls, value):

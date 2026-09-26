@@ -157,3 +157,24 @@ def test_admin_permissions_and_validation(client):
         assert client.post('/api/company-policy/publish', json=body).status_code == 409
         body['policy']['rules']['urgent_lead_days'] = -1
         assert client.post('/api/company-policy/publish', json=body).status_code == 422
+
+
+def test_automation_defaults_to_off_for_policies_without_the_keys():
+    """운영 중인 케이스에 고정된 옛 정책이 자동으로 움직이면 안 된다."""
+    from backend_logic2.policies.schema import CompanyPolicy
+
+    legacy = {
+        'rules': {
+            'urgent_lead_days': 7,
+            'quotation_numeric_score_weight': 60,
+            'quotation_spec_score_weight': 40,
+        },
+        'guidance': {},
+        'supplier_sources': ['tavily'],
+    }
+    rules = CompanyPolicy.model_validate(legacy).rules
+    assert rules.automation_mode == 'off'
+    assert CompanyPolicy().rules.automation_mode == 'off'
+    # 단계별 스위치는 켜져 있어도 모드가 off면 의미가 없다.
+    assert rules.auto_rfq_dispatch is True
+    assert rules.auto_final_selection is True
