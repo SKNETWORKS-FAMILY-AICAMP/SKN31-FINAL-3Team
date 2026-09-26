@@ -50,6 +50,10 @@ class PurchaseProcessState(TypedDict, total=False):
     # 더 묻지 않고 PR 발송까지 이어서 진행한다. 신규 협력사 서류 검토처럼
     # 성격이 다른 확인 단계는 이 플래그와 무관하게 그대로 멈춘다.
     auto_pr_dispatch: bool
+    # "manual"(사람이 고름) 또는 "auto"(조건을 통과해 자동 선정). PO 승인
+    # 화면이 이 건에 사람 손이 닿았는지 보여주는 데 쓴다.
+    selection_mode: str
+    selection_evidence: dict[str, Any]
     existing_supplier_candidates: list[dict[str, Any]]
     supplier_candidates: list[dict[str, Any]]
     supplier_registration_results: list[dict[str, Any]]
@@ -1000,6 +1004,9 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
     return Command(
         update={
             "auto_pr_dispatch": auto_pr_dispatch,
+            # 이 경로는 사람이 화면에서 고른 선정이다. 조건을 통과해 자동으로
+            # 선정되는 경로는 여기 오기 전에 selection_mode를 세워 둔다.
+            "selection_mode": state.get("selection_mode") or "manual",
             "selected_supplier": supplier,
             "selected_quotation": str(
                 selected_row.get("quotation_id") or selected_row.get("name") or ""
@@ -1123,15 +1130,24 @@ def po_approval_command(state: PurchaseProcessState) -> Command:
         "type": "po_approval",
         "mr_name": state["mr_name"],
         "rfq_name": state.get("rfq_name"),
+        "selected_rfq_name": state.get("selected_rfq_name"),
         "selected_supplier": state.get("selected_supplier"),
+        "selected_quotation": state.get("selected_quotation"),
+        # 화면이 "왜 이 협력사인지"를 2순위와 비교해 보여줄 수 있도록 순위를
+        # 그대로 넘긴다(4항목 점수와 적용 가중치가 행마다 실려 있다).
         "quotation_ranking": state.get("quotation_ranking", []),
+        # 사람이 고른 선정인지, 조건을 통과해 자동으로 된 선정인지.
+        "selection_mode": state.get("selection_mode") or "manual",
+        "selection_evidence": state.get("selection_evidence") or {},
         "purchase_mode": "direct" if state.get("direct_purchase") else "quotation",
         "direct_purchase_items": state.get("direct_purchase_items", {}),
         "instructions": "PO는 법적 효력이 있으므로 생성·발송 전에 최종 승인 또는 반려하세요.",
     })
     decision = _decision_value(answer)
     if decision == "approve":
-        return Command(update={"status": "creating_pr", "error": ""}, goto="create_pr")
+        # PR(수주 접수 요청)은 이 시점에 이미 발송돼 협력사가 수락까지 한
+        # 상태다. 승인은 곧 PO 생성·발송이다.
+        return Command(update={"status": "creating_po", "error": ""}, goto="create_po")
     if decision == "reject":
         return Command(
             update={"status": "human_review", "error": "PO 발송 전 최종 승인에서 반려되었습니다."},
@@ -1230,9 +1246,18 @@ def await_supplier_pr_response_command(state: PurchaseProcessState) -> Command:
     decision = _decision_value(answer)
     reason = str(answer.get("reason") or "").strip() if isinstance(answer, dict) else ""
     if decision == "accept":
+        # ⚠️ 예전에는 여기서 곧장 create_po로 넘어가, 법적 효력이 있는 PO가
+        # 사람 확인 없이 생성·발송됐다(po_approval 노드는 만들어져 있었지만
+        # 아무도 호출하지 않는 죽은 노드였다). 선정이 자동으로 이뤄질 수
+        # 있게 되면서 이 게이트가 마지막 안전망이 된다.
         return Command(
-            update={"pr_status": "ACCEPTED", "pr_rejection_reason": "", "status": "creating_po", "error": ""},
-            goto="create_po",
+            update={
+                "pr_status": "ACCEPTED",
+                "pr_rejection_reason": "",
+                "status": "awaiting_po_approval",
+                "error": "",
+            },
+            goto="po_approval",
         )
     if decision == "reject" and len(reason) >= 2:
         rejected_supplier = str(state.get("selected_supplier") or "").strip()

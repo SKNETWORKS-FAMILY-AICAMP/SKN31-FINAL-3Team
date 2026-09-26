@@ -371,7 +371,12 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(command.goto, "request_pr")
         self.assertEqual(command.update["status"], "awaiting_pr_request")
 
-    def test_supplier_pr_acceptance_continues_to_po_creation(self):
+    def test_supplier_pr_acceptance_waits_for_po_approval(self):
+        """협력사가 수락해도 PO는 사람 승인을 거쳐야 만들어진다.
+
+        선정이 자동으로 이뤄질 수 있게 되면서, 법적 효력이 있는 PO 직전의
+        이 승인이 마지막 안전망이다.
+        """
         state = {
             "case_id": "case-1",
             "mr_name": "MAT-MR-0001",
@@ -383,8 +388,24 @@ class WorkflowIntegrationTests(unittest.TestCase):
             return_value={"decision": "accept"},
         ):
             command = await_supplier_pr_response_command(state)
-        self.assertEqual(command.goto, "create_po")
+        self.assertEqual(command.goto, "po_approval")
+        self.assertEqual(command.update["status"], "awaiting_po_approval")
         self.assertEqual(command.update["pr_status"], "ACCEPTED")
+
+    def test_po_approval_creates_the_purchase_order(self):
+        state = {
+            "case_id": "case-1",
+            "mr_name": "MAT-MR-0001",
+            "selected_supplier": "공급사 A",
+            "quotation_ranking": [{"supplier": "공급사 A", "overall_score": 91.0}],
+        }
+        with patch(
+            "backend_logic2.workflow.process_commands.interrupt",
+            return_value={"decision": "approve"},
+        ):
+            command = po_approval_command(state)
+        self.assertEqual(command.goto, "create_po")
+        self.assertEqual(command.update["status"], "creating_po")
 
     def test_pr_request_button_starts_email_creation(self):
         state = {"case_id": "case-1", "mr_name": "MAT-MR-0001", "order_started": True}
