@@ -130,3 +130,14 @@ def test_refresh_skips_closed_stages_and_never_raises(harness, monkeypatch) -> N
         boom,
     )
     assert quotation_service.refresh_live_ranking("CASE-1") is None
+
+
+def test_needs_refresh_for_missing_other_round_or_legacy_ranking() -> None:
+    assert quotation_service.live_ranking_needs_refresh(_case()) is True
+    fresh = {"rfq_name": "RFQ-2", "ranking": [{"quotation_id": "SQ-1", "price_score": 100.0}]}
+    assert quotation_service.live_ranking_needs_refresh(_case(live_quotation_ranking=fresh)) is False
+    other_round = {**fresh, "rfq_name": "RFQ-1"}
+    assert quotation_service.live_ranking_needs_refresh(_case(live_quotation_ranking=other_round)) is True
+    legacy = {"rfq_name": "RFQ-2", "ranking": [{"quotation_id": "SQ-1", "numeric_score": 100.0}]}
+    assert quotation_service.live_ranking_needs_refresh(_case(live_quotation_ranking=legacy)) is True
+    assert quotation_service.live_ranking_needs_refresh(_case(stage="ORDER_START")) is False

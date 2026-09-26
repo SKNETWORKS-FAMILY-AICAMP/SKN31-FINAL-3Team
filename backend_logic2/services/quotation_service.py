@@ -901,6 +901,43 @@ def _refresh_live_ranking_locked(
     return payload
 
 
+def live_ranking_needs_refresh(case: dict[str, Any]) -> bool:
+    """실시간 순위가 없거나(배포 전 케이스), 다른 차수 기준이거나, 예전
+    2항목 점수 엔진으로 계산된 것이면 True."""
+    if str(case.get("stage") or "") not in _PREWARM_STAGES:
+        return False
+    current_rfq = str(_workflow_values(case).get("rfq_name") or "").strip()
+    if not current_rfq:
+        return False
+    live = case.get("live_quotation_ranking")
+    if not isinstance(live, dict):
+        return True
+    if str(live.get("rfq_name") or "") != current_rfq:
+        return True
+    ranking = live.get("ranking") or []
+    return any(isinstance(row, dict) and "price_score" not in row for row in ranking)
+
+
+_LIVE_RANKING_IN_FLIGHT: set[str] = set()
+
+
+def refresh_live_ranking_if_needed(case_id: str) -> None:
+    """화면이 열릴 때 호출 - 필요할 때만, 같은 케이스는 한 번에 하나만 계산한다."""
+    with _LIVE_RANKING_LOCKS_GUARD:
+        if case_id in _LIVE_RANKING_IN_FLIGHT:
+            return
+        _LIVE_RANKING_IN_FLIGHT.add(case_id)
+    try:
+        case = case_repository.get_case(case_id)
+        if case is not None and live_ranking_needs_refresh(case):
+            refresh_live_ranking(case_id)
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("실시간 견적 순위 보충 계산 실패: case_id=%s", case_id)
+    finally:
+        with _LIVE_RANKING_LOCKS_GUARD:
+            _LIVE_RANKING_IN_FLIGHT.discard(case_id)
+
+
 def prewarm_specification_analysis(case_id: str, rfq_name: str) -> None:
     """호환용 - 예전 이름. 이제는 실시간 순위까지 함께 계산해 저장한다."""
     refresh_live_ranking(case_id, rfq_name)

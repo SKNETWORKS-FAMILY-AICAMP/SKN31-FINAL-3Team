@@ -325,7 +325,11 @@ def extend_quotation_deadline(
 
 
 @router.get("/cases/{case_id}/quotations/validation")
-def get_case_quotation_validation(case_id: str, current_user: CurrentUser):
+def get_case_quotation_validation(
+    case_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser,
+):
     """견적별 "순위 진입 가능 여부"와 차단 사유를 즉시 돌려준다.
 
     RunPod 규격 평가나 워크플로 실행 없이 결정적 검증만 다시 돌리므로,
@@ -333,6 +337,12 @@ def get_case_quotation_validation(case_id: str, current_user: CurrentUser):
     금액 불일치·유효기간 만료처럼 다시 분석해도 바뀌지 않는 사유로 빠진
     것인지 화면에서 바로 구분할 수 있다."""
     case = _require_case_access(case_id, current_user)
+    # 실시간 순위가 없거나 예전 점수 엔진 결과면(배포 전부터 있던 케이스)
+    # 팝업을 여는 김에 새 엔진으로 다시 계산해 둔다. 다음 목록 갱신에 반영된다.
+    if quotation_service.live_ranking_needs_refresh(case):
+        background_tasks.add_task(
+            quotation_service.refresh_live_ranking_if_needed, str(case_id)
+        )
     try:
         result = quotation_service.validate_case_quotations(case)
     except ERPNextAPIError as exc:
