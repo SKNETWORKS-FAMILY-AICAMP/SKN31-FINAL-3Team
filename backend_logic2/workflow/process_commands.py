@@ -814,11 +814,19 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             for row in excluded_rows[:5]
             if isinstance(row, dict)
         )
-        fallback_message = (
-            result.get("message") or result.get("error") or "제출된 견적이 없습니다. 나중에 다시 확인하세요."
-        )
+        # ⚠️ 견적이 들어왔는데 전부 검증에서 탈락한 경우에도 "제출된 견적이
+        # 없습니다"라고 떠서, 협력사가 회신을 안 한 것처럼 읽혔다. 제외된
+        # 견적이 있으면 문구 자체를 바꾼다.
+        if excluded_rows:
+            fallback_message = (
+                f"회신된 견적 {len(excluded_rows)}건이 모두 검증에서 제외되어 순위를 만들지 못했습니다."
+            )
+        else:
+            fallback_message = (
+                result.get("message") or result.get("error") or "제출된 견적이 없습니다. 나중에 다시 확인하세요."
+            )
         if excluded_summary:
-            fallback_message = f"{fallback_message} (제외된 견적: {excluded_summary})"
+            fallback_message = f"{fallback_message} (제외 사유 - {excluded_summary})"
         return Command(
             update={
                 "quotation_ranking": state.get("quotation_ranking") or [],

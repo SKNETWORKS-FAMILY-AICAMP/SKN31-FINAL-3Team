@@ -508,6 +508,78 @@ def register_supplier_quotation_event(
 _PREWARM_STAGES = {"QUOTATION_COLLECTION", "SUPPLIER_SELECTION"}
 
 
+def validate_case_quotations(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """이 케이스의 견적들이 "순위에 들어갈 수 있는 상태인지"를 즉시 판정한다.
+
+    RunPod 규격 평가나 LangGraph 실행 없이, 결정적 검증(수량 충족, 수량x단가
+    = 금액, 공급가액/총액/세액 정합, 유효기간, 사업자번호, RFQ 품목 연결,
+    납기 비교 가능 여부)만 다시 돌려서 견적별 차단 사유를 돌려준다.
+
+    화면에서 "회신은 왔는데 순위에 없는 견적"이 (1) 아직 AI 평가가 안 끝난
+    것인지 (2) 애초에 검증에서 탈락해 아무리 다시 분석해도 안 바뀌는
+    것인지 구분하기 위한 조회용이다 - 예전에는 순위가 통째로 비었을 때만
+    오류 문구에 사유가 붙어서, 일부만 제외된 경우 원인을 알 수 없었다.
+    """
+    from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
+        get_reviewable_quotations_for_rfqs,
+    )
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import (
+        load_rfq_requirements,
+        review_quotation,
+    )
+    # 순위 진입 가능 여부 판정은 ranker와 같은 규칙을 써야 화면과 실제
+    # 결과가 어긋나지 않는다(규격 관련 이슈는 AI에 위임되어 차단 사유가
+    # 아니라는 규칙 포함).
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import (
+        _is_structurally_rankable,
+    )
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
+        IssueSeverity,
+    )
+
+    values = _workflow_values(case)
+    current_rfq = str(values.get("rfq_name") or "").strip()
+    rfq_names: list[str] = []
+    for entry in values.get("rfq_rounds") or []:
+        if isinstance(entry, dict):
+            name = str(entry.get("rfq_name") or "").strip()
+            if name:
+                rfq_names.append(name)
+    if current_rfq:
+        rfq_names.append(current_rfq)
+    rfq_names = list(dict.fromkeys(rfq_names))
+    if not rfq_names:
+        return []
+
+    rfq = load_rfq_requirements(current_rfq or rfq_names[-1])
+    quotations = get_reviewable_quotations_for_rfqs(rfq_names)
+    known = set(rfq_names)
+
+    items: list[dict[str, Any]] = []
+    for quotation in quotations:
+        review = review_quotation(quotation, rfq, known_rfq_names=known)
+        rankable, evidence = _is_structurally_rankable(review)
+        items.append(
+            {
+                "quotation_id": review.quotation_id,
+                "supplier_name": review.supplier_name,
+                "status": review.status.value if review.status else None,
+                "rankable": rankable,
+                "blocking_issues": [
+                    {
+                        "code": issue.code,
+                        "message": issue.message,
+                        "evidence": issue.evidence,
+                    }
+                    for issue in review.issues
+                    if issue.severity == IssueSeverity.ERROR
+                ],
+                "evidence": evidence,
+            }
+        )
+    return items
+
+
 def prewarm_specification_analysis(case_id: str, rfq_name: str) -> None:
     """도착한 견적의 규격 평가를 미리 계산해 캐시에 넣어둔다(결과는 버린다)."""
     try:

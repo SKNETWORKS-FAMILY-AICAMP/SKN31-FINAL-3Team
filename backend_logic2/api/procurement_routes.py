@@ -324,6 +324,24 @@ def extend_quotation_deadline(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.get("/cases/{case_id}/quotations/validation")
+def get_case_quotation_validation(case_id: str, current_user: CurrentUser):
+    """견적별 "순위 진입 가능 여부"와 차단 사유를 즉시 돌려준다.
+
+    RunPod 규격 평가나 워크플로 실행 없이 결정적 검증만 다시 돌리므로,
+    '회신은 왔는데 순위에 없는 견적'이 아직 평가 중인지, 아니면 수량 부족·
+    금액 불일치·유효기간 만료처럼 다시 분석해도 바뀌지 않는 사유로 빠진
+    것인지 화면에서 바로 구분할 수 있다."""
+    case = _require_case_access(case_id, current_user)
+    try:
+        items = quotation_service.validate_case_quotations(case)
+    except ERPNextAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"items": items, "count": len(items)}
+
+
 @router.get("/cases/{case_id}/quotation-deadline/history")
 def get_quotation_deadline_history(case_id: str, current_user: CurrentUser):
     """견적 마감일 연장 이력(오래된 순).
