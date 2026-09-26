@@ -142,6 +142,10 @@ def _extend_deadline_for_silence(case: dict[str, Any], policy) -> bool:
     from backend_logic2.services import workflow_service
 
     rules = policy.rules
+    # ⚠️ 기록 모드(섀도)는 판정만 남기고 아무것도 바꾸지 않아야 한다.
+    # 마감을 실제로 미뤄버리면 "기록만 한다"는 약속이 깨진다.
+    if rules.automation_mode != "on":
+        return False
     days = int(rules.auto_deadline_extension_days)
     if days <= 0 or case.get("auto_deadline_extended_at"):
         return False

@@ -195,3 +195,18 @@ def test_a_case_whose_checkpoint_lives_elsewhere_is_left_alone(harness, monkeypa
     assert runner.process_case(harness["case"]) == "not_mine"
     assert harness["resumed"] == []
     assert harness["signatures"] == []
+
+
+def test_shadow_mode_never_touches_the_deadline(harness) -> None:
+    """기록 모드는 판정만 남긴다. 마감을 실제로 미루면 약속이 깨진다."""
+    harness["policy"] = _policy(automation_mode="shadow")
+    harness["after"] = _case()
+    case = _case(
+        quotation_snapshot={"recipient_count": 2, "responded_count": 0},
+        required_by=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+
+    outcome = runner.process_case(case)
+
+    assert outcome != "deadline_extended"
+    assert harness["extended"] == []
