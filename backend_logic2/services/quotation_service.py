@@ -716,35 +716,229 @@ def validate_case_quotations(case: dict[str, Any]) -> dict[str, Any]:
     return {"items": items, "intake_failures": intake_failures}
 
 
-def prewarm_specification_analysis(case_id: str, rfq_name: str) -> None:
-    """도착한 견적의 규격 평가를 미리 계산해 캐시에 넣어둔다(결과는 버린다)."""
+_LIVE_RANKING_LOCKS: dict[str, Lock] = {}
+_LIVE_RANKING_LOCKS_GUARD = Lock()
+
+
+def _live_ranking_lock(case_id: str) -> Lock:
+    with _LIVE_RANKING_LOCKS_GUARD:
+        return _LIVE_RANKING_LOCKS.setdefault(case_id, Lock())
+
+
+def build_live_ranking_payload(
+    result: dict[str, Any],
+    *,
+    rfq_name: str,
+    rfq_names: list[str],
+    notices: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """evaluate_quotations 결과에서 화면에 필요한 부분만 뽑아 저장 형태로 만든다."""
+    from datetime import datetime, timezone
+
+    return {
+        "rfq_name": rfq_name,
+        "rfq_names": list(rfq_names),
+        "ranking": list(result.get("ranking") or []),
+        "excluded": list(result.get("excluded") or []),
+        "parse_failed": list(result.get("parse_failed") or []),
+        "competition_count": int(result.get("competition_count") or 0),
+        "single_bid": bool(result.get("single_bid")),
+        "specification_evaluation": dict(result.get("specification_evaluation") or {}),
+        "message": result.get("message") or "",
+        "error": result.get("error") or "",
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "notices": dict(notices or {}),
+    }
+
+
+def save_live_ranking_from_result(
+    case_id: str | None,
+    result: dict[str, Any],
+    *,
+    rfq_name: str,
+    rfq_names: list[str],
+) -> None:
+    """그래프(견적 확인/최종 선정)에서 이미 계산한 결과를 실시간 순위에도 반영한다."""
+    if not case_id:
+        return
     try:
-        case = case_repository.get_case(case_id)
-        if case is None:
-            return
-        stage = str(case.get("stage") or "")
-        if stage not in _PREWARM_STAGES:
-            return
-        from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import (
-            evaluate_quotations,
+        case = case_repository.get_case(str(case_id)) or {}
+        previous = case.get("live_quotation_ranking") or {}
+        notices = previous.get("notices") if isinstance(previous, dict) else None
+        case_repository.save_live_quotation_ranking(
+            str(case_id),
+            build_live_ranking_payload(
+                result, rfq_name=rfq_name, rfq_names=rfq_names, notices=notices
+            ),
+        )
+    except Exception:  # noqa: BLE001 - 읽기 모델 저장 실패가 그래프를 멈추면 안 된다
+        LOGGER.exception("실시간 견적 순위 저장에 실패했습니다: case_id=%s", case_id)
+
+
+def _ranking_notice_message(case: dict[str, Any], payload: dict[str, Any], reason: str) -> tuple[str, str]:
+    label = case.get("mr_name") or payload.get("rfq_name") or ""
+    reason_text = "견적 마감 시각이 지났습니다" if reason == "deadline" else "모든 협력사가 회신했습니다"
+    ranking = payload.get("ranking") or []
+    parse_failed = payload.get("parse_failed") or []
+    if ranking:
+        top = ranking[0]
+        supplier = top.get("supplier_name") or top.get("supplier") or "-"
+        score = top.get("overall_score")
+        score_text = f" (종합 {float(score):.1f}점)" if isinstance(score, (int, float)) else ""
+        if payload.get("single_bid"):
+            detail = f"단독 응찰 {supplier}{score_text} - 수용 또는 재비딩을 결정해 주세요"
+        else:
+            detail = f"추천 1순위 {supplier}{score_text} · 비교 대상 {len(ranking)}건"
+        if parse_failed:
+            detail += f" · 읽지 못한 견적 {len(parse_failed)}건"
+        return "견적 순위가 준비되었습니다", f"{label} · {reason_text} · {detail}"
+    if parse_failed:
+        return (
+            "견적서를 읽지 못했습니다",
+            f"{label} · {reason_text} · 회신 견적 {len(parse_failed)}건 모두 파싱 실패 - 원본 파일을 확인해 주세요",
+        )
+    return "비교할 견적이 없습니다", f"{label} · {reason_text} · 순위에 오른 견적이 없습니다 - 마감 연장이나 재비딩을 검토해 주세요"
+
+
+def refresh_live_ranking(
+    case_id: str,
+    rfq_name: str | None = None,
+    *,
+    notify_reason: str | None = None,
+) -> dict[str, Any] | None:
+    """모든 차수 견적으로 순위를 다시 계산해 케이스의 실시간 순위에 저장한다.
+
+    견적이 도착할 때마다(웹훅) 호출된다. 규격 평가는 지문 캐시를 쓰므로
+    이미 평가된 견적은 RunPod을 다시 부르지 않는다. 그래프는 건드리지
+    않는다 - 최종 선정(견적 Submit)은 여전히 사람이 시작한다.
+
+    notify_reason: "deadline"(마감 도달) / "all_responded"(전원 회신)이면
+    같은 RFQ 차수에 대해 한 번만 담당자에게 알림을 보낸다. 웹훅 경로에서는
+    None으로 호출되며, 전원 회신 여부는 여기서 직접 판단한다.
+    """
+    try:
+        with _live_ranking_lock(str(case_id)):
+            return _refresh_live_ranking_locked(str(case_id), rfq_name, notify_reason)
+    except Exception:  # noqa: BLE001 - 순위 갱신 실패가 웹훅/잡을 실패시키면 안 된다
+        LOGGER.exception("실시간 견적 순위 갱신에 실패했습니다: case_id=%s rfq=%s", case_id, rfq_name)
+        return None
+
+
+def _refresh_live_ranking_locked(
+    case_id: str,
+    rfq_name: str | None,
+    notify_reason: str | None,
+) -> dict[str, Any] | None:
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_ranker import (
+        evaluate_quotations_for_rfqs,
+    )
+    from backend_logic2.policies.repository import for_case
+    from backend_logic2.policies.runtime import policy_scope
+    from backend_logic2.policies.schema import CompanyPolicy
+    from backend_logic2.workflow.process_commands import _rfq_round_map, _rfq_round_names
+
+    case = case_repository.get_case(case_id)
+    if case is None:
+        return None
+    if str(case.get("stage") or "") not in _PREWARM_STAGES:
+        return None
+    values = _workflow_values(case)
+    current_rfq = str(values.get("rfq_name") or rfq_name or "").strip()
+    if not current_rfq:
+        return None
+    round_state = {**values, "rfq_name": current_rfq}
+    rfq_names = _rfq_round_names(round_state)
+
+    # 그래프 노드와 같은 규칙(케이스에 고정된 회사 정책 버전)으로 계산한다.
+    snapshot = for_case(case_id)
+    with policy_scope(CompanyPolicy.model_validate(snapshot["policy"])):
+        result = evaluate_quotations_for_rfqs(
+            rfq_names,
+            current_rfq_name=current_rfq,
+            round_by_rfq=_rfq_round_map(round_state),
         )
 
-        result = evaluate_quotations(rfq_name)
-        error = result.get("error") if isinstance(result, dict) else None
-        if error:
-            LOGGER.info(
-                "견적 규격 평가 미리 실행이 완료되지 않았습니다(다음 분석에서 재시도): "
-                "case_id=%s rfq=%s error=%s",
-                case_id,
-                rfq_name,
-                error,
-            )
-    except Exception:  # noqa: BLE001 - 미리 실행 실패가 웹훅 처리를 되돌리면 안 된다
-        LOGGER.exception(
-            "견적 규격 평가 미리 실행에 실패했습니다: case_id=%s rfq=%s",
-            case_id,
-            rfq_name,
+    previous = case.get("live_quotation_ranking") or {}
+    notices = dict(previous.get("notices") or {}) if isinstance(previous, dict) else {}
+    payload = build_live_ranking_payload(
+        result, rfq_name=current_rfq, rfq_names=rfq_names, notices=notices
+    )
+
+    reason = notify_reason
+    if reason is None:
+        quotation_snapshot = case.get("quotation_snapshot") or {}
+        recipients = int(quotation_snapshot.get("recipient_count") or 0)
+        responded = int(quotation_snapshot.get("responded_count") or 0)
+        if recipients > 0 and responded >= recipients:
+            reason = "all_responded"
+    should_notify = bool(reason) and notices.get(reason) != current_rfq
+    if should_notify:
+        payload["notices"][reason] = current_rfq
+
+    case_repository.save_live_quotation_ranking(case_id, payload)
+
+    if should_notify:
+        title, message = _ranking_notice_message(case, payload, str(reason))
+        ranking = payload.get("ranking") or []
+        notification_repository.create_notification(
+            case_id=case_id,
+            recipient_id=case.get("assigned_user_id"),
+            notification_type="QUOTATION_RANKING_READY",
+            title=title,
+            message=message,
+            payload={
+                "mr_name": case.get("mr_name"),
+                "rfq_name": current_rfq,
+                "stage": case.get("stage"),
+                "reason": reason,
+                "competition_count": payload.get("competition_count"),
+                "single_bid": payload.get("single_bid"),
+                "parse_failed_count": len(payload.get("parse_failed") or []),
+                "top_supplier": (ranking[0].get("supplier_name") or ranking[0].get("supplier")) if ranking else None,
+                "top_score": ranking[0].get("overall_score") if ranking else None,
+            },
         )
+    return payload
+
+
+def prewarm_specification_analysis(case_id: str, rfq_name: str) -> None:
+    """호환용 - 예전 이름. 이제는 실시간 순위까지 함께 계산해 저장한다."""
+    refresh_live_ranking(case_id, rfq_name)
+
+
+def refresh_due_live_rankings() -> dict[str, int]:
+    """견적 마감 시각이 지난 케이스의 순위를 확정 계산하고 담당자에게 알린다.
+
+    그래프를 최종 선정으로 자동으로 넘기지는 않는다(견적 Submit과 재비딩
+    가능 여부가 걸려 있어 사람이 시작해야 한다). 차수별로 한 번만 알린다.
+    """
+    from datetime import datetime, timezone
+
+    counts = {"checked": 0, "refreshed": 0, "failed": 0}
+    now = datetime.now(timezone.utc)
+    for case in case_repository.list_cases_for_quotation_reconciliation():
+        if str(case.get("stage") or "") != "QUOTATION_COLLECTION":
+            continue
+        deadline = case.get("quotation_deadline_at")
+        if not isinstance(deadline, datetime):
+            continue
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if deadline > now:
+            continue
+        counts["checked"] += 1
+        values = _workflow_values(case)
+        current_rfq = str(values.get("rfq_name") or "").strip()
+        previous = case.get("live_quotation_ranking") or {}
+        notices = previous.get("notices") if isinstance(previous, dict) else None
+        if isinstance(notices, dict) and notices.get("deadline") == current_rfq:
+            continue
+        payload = refresh_live_ranking(str(case["case_id"]), current_rfq, notify_reason="deadline")
+        if payload is None:
+            counts["failed"] += 1
+        else:
+            counts["refreshed"] += 1
+    return counts
 
 
 def reconcile_supplier_quotations(*, notify: bool = True) -> dict[str, int]:

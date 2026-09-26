@@ -786,7 +786,7 @@ def supplier_quotation_webhook(
             if not projection.get("matched") or not projection.get("case_id"):
                 continue
             background_tasks.add_task(
-                quotation_service.prewarm_specification_analysis,
+                quotation_service.refresh_live_ranking,
                 str(projection["case_id"]),
                 str(projection["rfq_name"]),
             )

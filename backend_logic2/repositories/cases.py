@@ -444,6 +444,23 @@ def update_quotation_snapshot(
     return dict(current), False
 
 
+def save_live_quotation_ranking(case_id: str, payload: dict[str, Any]) -> bool:
+    """실시간 견적 순위를 저장한다. version은 올리지 않는다(그래프 쓰기와 충돌 방지)."""
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            UPDATE procurement.procurement_case
+            SET live_quotation_ranking = %(payload)s,
+                live_quotation_ranking_at = now()
+            WHERE case_id = %(case_id)s
+            RETURNING case_id
+            """,
+            {"case_id": case_id, "payload": Jsonb(_json_value(payload))},
+        ).fetchone()
+    return row is not None
+
+
 def list_cases(
     *,
     status: str | None = None,

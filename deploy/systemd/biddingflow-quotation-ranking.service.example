@@ -1,0 +1,11 @@
+[Unit]
+Description=BiddingFlow quotation deadline ranking job
+After=network-online.target biddingflow-api.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/biddingflow/SKN31-FINAL-3Team
+EnvironmentFile=/opt/biddingflow/SKN31-FINAL-3Team/.env
+ExecStart=/opt/biddingflow/SKN31-FINAL-3Team/.venv/bin/python -m backend_logic2.jobs.quotation_deadline_ranking_job

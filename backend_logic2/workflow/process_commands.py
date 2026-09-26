@@ -801,6 +801,16 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         round_by_rfq=_rfq_round_map(state),
     )
     print_evaluation(result)
+    # 그래프가 계산한 결과를 케이스의 실시간 순위(그래프 밖 읽기 모델)에도
+    # 그대로 반영해서, 화면이 보는 순위가 두 군데로 갈라지지 않게 한다.
+    from backend_logic2.services.quotation_service import save_live_ranking_from_result
+
+    save_live_ranking_from_result(
+        state.get("case_id"),
+        result,
+        rfq_name=state["rfq_name"],
+        rfq_names=_rfq_round_names(state),
+    )
 
     if result.get("error") or result.get("message") or not result.get("ranking"):
         # ⚠️ "제출된 견적이 없습니다"라는 기본 문구만 보여주면, 실제로는 견적이

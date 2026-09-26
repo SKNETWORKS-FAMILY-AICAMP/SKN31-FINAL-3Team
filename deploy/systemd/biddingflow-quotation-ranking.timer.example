@@ -1,0 +1,11 @@
+[Unit]
+Description=Rank quotations for BiddingFlow cases whose quotation deadline passed (every 10 minutes)
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+RandomizedDelaySec=30
+Unit=biddingflow-quotation-ranking.service
+
+[Install]
+WantedBy=timers.target
