@@ -189,3 +189,63 @@ def test_automation_off_never_selects() -> None:
 
     assert command.goto == "check_quotations"
     submit.assert_not_called()
+
+
+def _run_rebid(previous_verdict):
+    """예외 결정 화면에서 '재비딩'을 고른 상황."""
+    state = {
+        "mr_name": "MAT-MR-2026-00120",
+        "case_id": "CASE-1",
+        "rfq_name": "PUR-RFQ-2026-00010",
+        "existing_supplier_candidates": _candidates(),
+        "supplier_candidates": _candidates(),
+        "auto_progress": previous_verdict,
+    }
+    with policy_scope(_policy(automation_mode="on")), \
+            patch(
+                "backend_logic2.workflow.process_commands.interrupt",
+                return_value={"decision": "rebid"},
+            ), \
+            patch("backend_logic2.workflow.process_commands._archive_current_rfq_round",
+                  return_value=[{"rfq_name": "PUR-RFQ-2026-00010"}]):
+        return check_quotations_command(state)
+
+
+def test_rebid_clears_the_previous_rounds_verdict() -> None:
+    """지난 판정이 남으면 화면이 예외 결정 화면에 갇힌다.
+
+    실제로 겪은 증상: 재비딩을 눌러도 계속 '결정 필요'로 보이고, 자동 진행을
+    보류하면(그 표시가 꺼져서) 정상으로 보였다.
+    """
+    blocked = {
+        "allowed": False,
+        "mode": "on",
+        "enabled": True,
+        "node": "auto_final_selection",
+        "checks": [{"code": "SCORE_GAP", "label": "점수차", "detail": "붙었다", "status": "blocked"}],
+    }
+
+    command = _run_rebid(blocked)
+
+    assert command.goto == "select_rfq_targets"
+    assert command.update["auto_progress"] == {}
+    # 협력사 풀은 그대로 남아 같은 후보로 다시 고를 수 있어야 한다.
+    assert command.update["rfq_name"] == ""
+    assert command.update["quotation_deadline"] == ""
+
+
+def test_a_rebid_round_is_never_auto_dispatched(registrations) -> None:
+    """2차는 협력사와 마감일을 사람이 정한다."""
+    state = _rfq_state(rfq_rounds=[{"rfq_name": "PUR-RFQ-2026-00010"}])
+
+    with policy_scope(_policy(automation_mode="on")), \
+            patch(
+                "backend_logic2.workflow.process_commands.interrupt",
+                return_value={"suppliers": ["동관컴퍼니"], "quotation_deadline": "2026-10-05T18:00:00+09:00"},
+            ) as mock_interrupt:
+        select_rfq_targets_command(state)
+
+    # 자동으로 나가지 않고 사람에게 물었다.
+    mock_interrupt.assert_called_once()
+    checks = mock_interrupt.call_args[0][0]["auto_progress"]["checks"]
+    assert "REBID_ROUND" in {row["code"] for row in checks if row["status"] == "blocked"}

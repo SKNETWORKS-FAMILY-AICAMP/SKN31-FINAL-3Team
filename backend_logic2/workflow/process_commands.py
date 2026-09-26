@@ -891,6 +891,11 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
                 "selected_suppliers": [],
                 "supplier_registration_results": [],
                 "quotation_deadline": "",
+                # ⚠️ 지난 차수의 자동 진행 판정을 반드시 비운다. 남겨두면 화면이
+                # "자동 선정이 조건에 걸려 멈췄다"로 계속 읽어서, 재비딩을 눌러도
+                # 협력사 선정 화면이 아니라 예외 결정 화면에 갇힌다(자동 진행을
+                # 보류하면 그 표시가 꺼져서 정상으로 보이는 게 같은 원인이다).
+                "auto_progress": {},
                 "status": "awaiting_supplier_approval",
                 "error": "",
             },
@@ -1494,6 +1499,8 @@ def handle_pr_rejection_command(state: PurchaseProcessState) -> Command:
                 "pr_id": "", "pr_status": "", "pr_supplier_email": "",
                 "rfq_name": "", "quotation_ranking": [], "requested_supplier": "",
                 "selected_suppliers": [], "supplier_registration_results": [], "quotation_deadline": "",
+                # 지난 차수 판정을 비운다 - 위 재비딩 경로와 같은 이유다.
+                "auto_progress": {},
                 "status": "awaiting_supplier_approval", "error": "",
             },
             goto="select_rfq_targets",
