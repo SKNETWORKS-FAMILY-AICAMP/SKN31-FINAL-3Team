@@ -13,6 +13,7 @@ RFQ 발송도 최종 선정도 외부로 메일이 나가는, 되돌리기 어�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -310,6 +311,38 @@ def evaluate_final_selection(
     else:
         checks.append(_passed("TOP_PENALTY", "1순위 감점 항목 없음", "확인이 필요한 감점 없음"))
 
+    # ⚠️ 유효기간이 지난 견적을 자동으로 고르면 안 된다. final_selection이
+    # 뒤늦게 막아주긴 하지만, 그 전에 견적을 이미 확정(Submit)해버린 뒤라
+    # 되돌리기 어렵다. 조건 단계에서 걸러야 한다.
+    valid_till_raw = str(top.get("valid_till") or "").strip()
+    if not valid_till_raw:
+        checks.append(_passed("QUOTATION_VALIDITY", "견적 유효기간", "유효기간이 지정되지 않았습니다"))
+    else:
+        try:
+            valid_till = date.fromisoformat(valid_till_raw[:10])
+        except ValueError:
+            checks.append(_unknown(
+                "QUOTATION_VALIDITY", "견적 유효기간",
+                f"유효기간을 읽을 수 없습니다({valid_till_raw})",
+            ))
+        else:
+            if valid_till < date.today():
+                checks.append(_blocked(
+                    "QUOTATION_VALIDITY", "견적 유효기간",
+                    f"1순위 견적의 유효기간({valid_till})이 지났습니다",
+                ))
+            else:
+                checks.append(_passed(
+                    "QUOTATION_VALIDITY", "견적 유효기간", f"{valid_till}까지 유효합니다",
+                ))
+
+    top_supplier_name = str(top.get("supplier") or top.get("supplier_name") or "").strip()
+    if ranking and not top_supplier_name:
+        checks.append(_blocked(
+            "TOP_SUPPLIER_NAME", "1순위 협력사 확인",
+            "1순위 견적에 협력사 이름이 없어 자동으로 고를 수 없습니다",
+        ))
+
     gap = score_gap(ranking)
     threshold = float(rules.auto_selection_score_gap)
     if gap is None:
@@ -342,7 +375,7 @@ def evaluate_final_selection(
 
     known = {str(name or "").strip() for name in (known_supplier_names or set())}
     known.discard("")
-    top_supplier = str(top.get("supplier") or top.get("supplier_name") or "").strip()
+    top_supplier = top_supplier_name
     if not known:
         checks.append(_passed("KNOWN_SUPPLIER", "거래 이력 있는 협력사", "거래 이력 확인을 생략했습니다"))
     elif top_supplier and top_supplier not in known:

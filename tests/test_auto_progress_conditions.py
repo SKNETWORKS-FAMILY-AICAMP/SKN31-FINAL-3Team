@@ -210,3 +210,24 @@ def test_each_verdict_says_which_step_it_came_from(automation_on) -> None:
 
     assert rfq.as_payload()["node"] == "auto_rfq_dispatch"
     assert selection.as_payload()["node"] == "auto_final_selection"
+
+
+def test_an_expired_top_quotation_is_never_auto_selected(automation_on) -> None:
+    """final_selection이 뒤늦게 막긴 하지만 그땐 이미 견적을 확정한 뒤다."""
+    result = _ranking_result()
+    result["ranking"][0]["valid_till"] = "2020-01-01"
+
+    decision = evaluate_final_selection(result, deadline_passed=True)
+
+    assert decision.allowed is False
+    assert "QUOTATION_VALIDITY" in {row["code"] for row in decision.blockers}
+
+
+def test_a_top_quotation_without_a_supplier_name_stops_the_flow(automation_on) -> None:
+    result = _ranking_result()
+    result["ranking"][0]["supplier"] = ""
+
+    decision = evaluate_final_selection(result, deadline_passed=True)
+
+    assert decision.allowed is False
+    assert "TOP_SUPPLIER_NAME" in {row["code"] for row in decision.blockers}
