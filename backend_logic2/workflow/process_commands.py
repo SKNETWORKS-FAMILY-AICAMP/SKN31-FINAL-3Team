@@ -63,6 +63,10 @@ class PurchaseProcessState(TypedDict, total=False):
     selected_suppliers: list[str]
     custom_rfq_suppliers: list[str]
     quotation_deadline: str
+    # resolve_supplier_pool의 판정(신규 탐색 필요 여부와 그 사유).
+    supplier_pool_decision: dict
+    # 마지막 자동 진행 판정. 화면이 "왜 멈췄는지"를 읽는 근거다.
+    auto_progress: dict
     rfq_name: str
     # 재비딩으로 이미 마감된 지난 라운드들의 이력. 재비딩할 때 ERPNext의
     # RFQ/Supplier Quotation을 취소·폐기하지 않고 그대로 둔 채 새 RFQ를
@@ -503,9 +507,20 @@ def resolve_suppliers_choice_command(state: PurchaseProcessState) -> Command:
         print(line)
     print(f"  -> 최종판정: {'신규탐색 필요' if result['needs_search'] else '기존 공급사만 사용'}\n")
 
+    # ⚠️ 판정 결과를 state에 남긴다. RFQ 자동 발송이 "신규를 찾아야 하나"를
+    # 다시 판단하지 않고 이걸 그대로 쓴다 - 같은 질문을 두 곳에서 따로
+    # 판단하면 언젠가 갈라진다.
     return Command(
         update={
             "existing_supplier_candidates": result["existing_candidates"],
+            "supplier_pool_decision": {
+                "needs_search": bool(result["needs_search"]),
+                "reasons": [
+                    f"[{item_code}] {decision['reason']}"
+                    for item_code, decision in (result.get("item_decisions") or {}).items()
+                    if decision.get("needs_search")
+                ],
+            },
             "status": "resolving_supplier_pool",
         },
         goto="search_new_suppliers" if result["needs_search"] else "select_rfq_targets",
@@ -555,6 +570,32 @@ def search_new_suppliers_command(state: PurchaseProcessState) -> Command:
     )
 
 
+def _mr_schedule_date(mr_name: str):
+    """MR의 납기요청일. 못 읽으면 None - 그때는 마감일 제약이 없는 것으로 본다.
+
+    ⚠️ 이 값은 procurement_case 테이블에 없다. 예전에 케이스 행에서 읽으려다
+    항상 None이 나와서, 납기 여유 검사가 한 번도 작동하지 않은 적이 있다.
+    ERPNext에서 읽는다.
+    """
+    from datetime import date as _date
+
+    from backend_logic2.integrations.erp_client import erp_get_one
+
+    if not mr_name:
+        return None
+    try:
+        material_request = erp_get_one("Material Request", mr_name) or {}
+    except Exception:  # noqa: BLE001 - 조회 실패는 제약 없음으로 본다
+        return None
+    raw = str(material_request.get("schedule_date") or "").strip()
+    if not raw:
+        return None
+    try:
+        return _date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
 def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
     """[5단계-대기] RFQ 보낼 대상 선택. existing_pool_sufficient로 바로
     온 경우엔 supplier_candidates가 아직 안 채워져 있을 수 있어서,
@@ -565,17 +606,42 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
         for candidate in raw_candidates
     ]
 
-    answer = interrupt({
-        "type": "select_rfq_targets",
-        "mr_name": state["mr_name"],
-        "candidates": candidates,
-        "missing_email": [row["name"] for row in candidates if not row.get("email")],
-        "input_schema": {
-            "suppliers": ["선택할 업체명"],
-            "supplier_updates": [{"name": "업체명", "email": "contact@example.com"}],
-            "dismiss": ["제외할 업체명"],
-        },
-    })
+    # --- 자동 발송 판정 ---
+    # 기존 협력사만으로 충분하고 전원 연락처가 있으면 사람 확인 없이 보낸다.
+    # 하나라도 어긋나면 지금까지와 똑같이 사람에게 묻는다.
+    from backend_logic2.services import auto_progress as auto_progress_module
+
+    is_rebid = bool(state.get("rfq_rounds"))
+    auto_deadline = auto_progress_module.auto_rfq_deadline(
+        _mr_schedule_date(str(state.get("mr_name") or ""))
+    )
+    auto = auto_progress_module.evaluate_rfq_dispatch(
+        candidates,
+        pool_decision=state.get("supplier_pool_decision"),
+        is_rebid=is_rebid,
+        deadline=auto_deadline,
+    )
+    auto_progress_module.record_decision(state.get("case_id"), auto)
+
+    if auto.should_proceed:
+        print(f"[RFQ 자동 발송] {len(candidates)}곳 · 마감 {auto_deadline}")
+        answer = {
+            "suppliers": [row["name"] for row in candidates],
+            "quotation_deadline": auto_deadline,
+        }
+    else:
+        answer = interrupt({
+            "type": "select_rfq_targets",
+            "mr_name": state["mr_name"],
+            "candidates": candidates,
+            "missing_email": [row["name"] for row in candidates if not row.get("email")],
+            "auto_progress": auto.as_payload(),
+            "input_schema": {
+                "suppliers": ["선택할 업체명"],
+                "supplier_updates": [{"name": "업체명", "email": "contact@example.com"}],
+                "dismiss": ["제외할 업체명"],
+            },
+        })
     if not isinstance(answer, dict):
         answer = {"action": _decision_value(answer)}
 
