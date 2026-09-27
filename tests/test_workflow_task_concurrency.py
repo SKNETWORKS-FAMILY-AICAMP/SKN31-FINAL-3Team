@@ -178,11 +178,64 @@ class QueuedTaskAnswerTests(unittest.TestCase):
 
     @patch.object(workflow_service.case_repository, "get_case")
     @patch.object(workflow_service.task_repository, "get_task")
-    def test_a_double_submit_is_refused(self, get_task, get_case):
+    def test_a_double_submit_is_refused_while_it_really_runs(self, get_task, get_case):
         get_task.return_value = self._task()
         get_case.return_value = self._case(status="RUNNING")
 
-        with self.assertRaisesRegex(ValueError, "이미 처리가 진행 중"):
+        with workflow_service.graph_case_in_flight("case-1"):
+            with self.assertRaisesRegex(ValueError, "이미 처리가 진행 중"):
+                workflow_service.queue_task_answer(
+                    "task-1",
+                    answer={"suppliers": ["동관컴퍼니"]},
+                    answered_by="buyer",
+                    expected_version=3,
+                    background_tasks=MagicMock(),
+                )
+
+    @patch.object(workflow_service.case_repository, "transition_case")
+    @patch.object(workflow_service, "_settle_case_after_failure")
+    @patch.object(workflow_service.case_repository, "get_case")
+    @patch.object(workflow_service.task_repository, "get_task")
+    def test_a_leftover_running_mark_is_cleaned_up_instead_of_blocking(
+        self, get_task, get_case, settle, transition
+    ):
+        """⚠️ RUNNING 표시는 DB에, 실제 작업은 메모리에 있다.
+
+        재시작이나 예외로 작업이 사라지면 표시만 남는데, 그걸 '처리 중'으로
+        믿고 막으면 사용자는 아무것도 못 하게 된다(실제로 그렇게 막혔다).
+        진짜 도는 일이 없으면 정리하고 진행시킨다.
+        """
+        get_task.return_value = self._task()
+        get_case.side_effect = [
+            self._case(status="RUNNING"),   # 남겨진 표시
+            self._case(status="WAITING_INPUT"),  # 정리된 뒤
+        ]
+
+        result = workflow_service.queue_task_answer(
+            "task-1",
+            answer={"suppliers": ["동관컴퍼니"]},
+            answered_by="buyer",
+            expected_version=3,
+            background_tasks=MagicMock(),
+        )
+
+        settle.assert_called_once()
+        self.assertTrue(result["accepted"])
+
+    @patch.object(workflow_service.case_repository, "transition_case")
+    @patch.object(workflow_service, "_settle_case_after_failure")
+    @patch.object(workflow_service.case_repository, "get_case")
+    @patch.object(workflow_service.task_repository, "get_task")
+    def test_a_run_that_stopped_mid_node_asks_for_a_retry(
+        self, get_task, get_case, settle, transition
+    ):
+        get_task.return_value = self._task()
+        get_case.side_effect = [
+            self._case(status="RUNNING"),
+            self._case(status="FAILED", stage="HUMAN_REVIEW"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "다시 시도"):
             workflow_service.queue_task_answer(
                 "task-1",
                 answer={"suppliers": ["동관컴퍼니"]},
@@ -190,6 +243,18 @@ class QueuedTaskAnswerTests(unittest.TestCase):
                 expected_version=3,
                 background_tasks=MagicMock(),
             )
+
+    def test_work_is_only_in_flight_while_it_runs(self):
+        self.assertFalse(workflow_service.is_graph_case_in_flight("case-1"))
+        with workflow_service.graph_case_in_flight("case-1"):
+            self.assertTrue(workflow_service.is_graph_case_in_flight("case-1"))
+        self.assertFalse(workflow_service.is_graph_case_in_flight("case-1"))
+
+    def test_a_crash_still_clears_the_in_flight_mark(self):
+        with self.assertRaises(RuntimeError):
+            with workflow_service.graph_case_in_flight("case-1"):
+                raise RuntimeError("boom")
+        self.assertFalse(workflow_service.is_graph_case_in_flight("case-1"))
 
     @patch.object(workflow_service.case_repository, "get_case")
     @patch.object(workflow_service.task_repository, "get_task")

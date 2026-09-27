@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import RLock
-from typing import Any
+from typing import Any, Iterator
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks
@@ -89,6 +90,38 @@ def submit_graph_work(work: Any, *args: Any, **kwargs: Any) -> Future:
     return _GRAPH_EXECUTOR.submit(_run)
 
 
+_IN_FLIGHT_LOCK = threading.Lock()
+_IN_FLIGHT: set[str] = set()
+_STALE_RUNNING_MESSAGE = (
+    "진행 중이던 처리가 끝나지 못한 채 남아 있었습니다. 상태를 다시 맞췄습니다."
+)
+
+
+@contextmanager
+def graph_case_in_flight(case_id: str) -> Iterator[None]:
+    """이 케이스의 그래프가 지금 돌고 있다고 표시한다."""
+    key = str(case_id)
+    with _IN_FLIGHT_LOCK:
+        _IN_FLIGHT.add(key)
+    try:
+        yield
+    finally:
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT.discard(key)
+
+
+def is_graph_case_in_flight(case_id: str) -> bool:
+    """지금 실제로 도는 중인가.
+
+    ⚠️ 케이스의 RUNNING 표시만 보고 "처리 중"이라고 막으면 안 된다. 그 표시는
+    DB에 남고 실제 작업은 메모리에만 있어서, 재시작이나 예외로 작업이 사라지면
+    표시만 영원히 남는다. 그러면 사용자는 "이미 처리가 진행 중입니다"만 보고
+    아무것도 못 하게 된다(실제로 그렇게 막혔다). 진짜 기준은 이 등록부다.
+    """
+    with _IN_FLIGHT_LOCK:
+        return str(case_id) in _IN_FLIGHT
+
+
 def run_on_graph_worker(work: Any, *args: Any, **kwargs: Any) -> Any:
     """전용 스레드에서 돌리고 끝날 때까지 기다린다(폴러처럼 기다려도 되는 쪽 전용).
 
@@ -136,7 +169,7 @@ def _run_queued_quotation_analysis(
         if case is None:
             raise LookupError(case_id)
         app = get_process_app()
-        with _GRAPH_LOCK:
+        with graph_case_in_flight(case_id), _GRAPH_LOCK:
             config = _config(case["thread_id"] or case["mr_name"])
             snapshot = app.get_state(config)
             active_task_types = {
@@ -196,12 +229,13 @@ def _run_queued_task_answer(
     전부 그 안에 있어서, 여기서 다시 구현하면 두 경로가 갈라진다.
     """
     try:
-        resume_task(
-            task_id,
-            answer=answer,
-            answered_by=answered_by,
-            expected_version=expected_version,
-        )
+        with graph_case_in_flight(case_id):
+            resume_task(
+                task_id,
+                answer=answer,
+                answered_by=answered_by,
+                expected_version=expected_version,
+            )
     except Exception as exc:  # noqa: BLE001 - 배경 실패는 화면에 보여야 한다
         # RUNNING으로 영원히 남겨두면 사용자는 "멈췄다"만 보고 이유를 모른다.
         try:
@@ -262,7 +296,22 @@ def queue_task_answer(
     if case["status"] in _TERMINAL_CASE_STATUSES:
         raise ValueError("이미 종료된 구매 작업에는 응답할 수 없습니다.")
     if case["status"] == "RUNNING":
-        raise ValueError("이미 처리가 진행 중입니다. 잠시 뒤 화면을 확인해 주세요.")
+        if is_graph_case_in_flight(case_id):
+            raise ValueError("이미 처리가 진행 중입니다. 잠시 뒤 화면을 확인해 주세요.")
+        # 도는 일이 없는데 RUNNING이면 남겨진 표시다. 체크포인트 기준으로
+        # 되돌려서 사용자가 다시 시도할 수 있게 한다.
+        logger.warning("남겨진 RUNNING 표시를 정리합니다: case_id=%s", case_id)
+        _settle_case_after_failure(
+            case_id, error=_STALE_RUNNING_MESSAGE, actor=answered_by
+        )
+        case = case_repository.get_case(case_id) or case
+        if case["status"] in _TERMINAL_CASE_STATUSES:
+            raise ValueError("이미 종료된 구매 작업에는 응답할 수 없습니다.")
+        if case["status"] == "FAILED":
+            raise ValueError(
+                "진행 중이던 처리가 중단된 지점에 멈춰 있습니다. "
+                "'다시 시도'로 그 지점부터 이어서 진행해 주세요."
+            )
 
     expected_stage = _TASK_STAGE.get(str(task["task_type"]))
     if expected_stage and case["stage"] != expected_stage:
@@ -322,7 +371,15 @@ def queue_quotation_analysis(
     if case is None:
         raise LookupError(case_id)
     if case["status"] == "RUNNING":
-        raise ValueError("이미 견적 AI 분석이 진행 중입니다.")
+        if is_graph_case_in_flight(case_id):
+            raise ValueError("이미 견적 AI 분석이 진행 중입니다.")
+        logger.warning("남겨진 RUNNING 표시를 정리합니다: case_id=%s", case_id)
+        _settle_case_after_failure(
+            case_id, error=_STALE_RUNNING_MESSAGE, actor=answered_by
+        )
+        case = case_repository.get_case(case_id) or case
+        if case["status"] in _TERMINAL_CASE_STATUSES:
+            raise ValueError("이미 종료된 구매 건입니다.")
     if case["status"] in _TERMINAL_CASE_STATUSES:
         raise ValueError("이미 종료된 구매 건입니다.")
 
@@ -902,6 +959,11 @@ def queue_case_start(case_id: str, *, triggered_by: str) -> dict[str, Any]:
 def run_queued_case(case_id: str, *, triggered_by: str) -> None:
     """Background-safe graph runner.  Failures are persisted for recovery."""
 
+    with graph_case_in_flight(case_id):
+        _run_queued_case(case_id, triggered_by=triggered_by)
+
+
+def _run_queued_case(case_id: str, *, triggered_by: str) -> None:
     case = case_repository.get_case(case_id)
     if case is None:
         return

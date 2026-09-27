@@ -181,10 +181,12 @@ async def _poll_substitute_decisions() -> None:
     interval = _mr_poll_interval_seconds()
     while True:
         try:
-            # 댓글 답장을 찾으면 그래프를 이어 돌린다 - 그래프는 전용 스레드에서만.
-            await asyncio.to_thread(
-                workflow_service.run_on_graph_worker, process_substitute_replies
-            )
+            # ⚠️ 스캔(ERPNext 댓글 조회) 자체는 전용 스레드에 올리지 않는다.
+            # 이 폴러는 5초마다 도는데, 스캔까지 전용 스레드에서 하면 그래프
+            # 작업 줄을 계속 차지해서 사람이 누른 선정·승인이 뒤에서 한참
+            # 기다리게 된다. 그래프를 실제로 돌리는 부분만 안에서 전용
+            # 스레드로 넘긴다(substitute_reply_watcher.process_mr).
+            await asyncio.to_thread(process_substitute_replies)
         except asyncio.CancelledError:
             raise
         except Exception:

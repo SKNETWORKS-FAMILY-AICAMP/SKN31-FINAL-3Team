@@ -337,12 +337,12 @@ def process_case(
     if task is None:
         return "no_task"
 
+    # ⚠️ 상황이 그대로면 어떤 경로로 불렸든 다시 평가하지 않는다. 예전엔
+    # deadline일 때만 걸러서, 견적 동기화 폴러(10초 주기)가 부르는 전원 회신
+    # 경로는 같은 건을 끝없이 재평가했다. 그래프 작업 줄이 그걸로 가득 차서
+    # 사람이 누른 선정·승인이 뒤에서 계속 밀렸다.
     signature = situation_signature(case)
-    if (
-        trigger == "deadline"
-        and not force
-        and case.get("auto_progress_signature") == signature
-    ):
+    if not force and case.get("auto_progress_signature") == signature:
         return "unchanged"
 
     try:
@@ -501,7 +501,10 @@ def _process_queued_case(
         case = case_repository.get_case(case_id)
         if case is None:
             return "no_task"
-        outcome = process_case(case, trigger=trigger, force=force)
+        from backend_logic2.services.workflow_service import graph_case_in_flight
+
+        with graph_case_in_flight(case_id):
+            outcome = process_case(case, trigger=trigger, force=force)
     except Exception as exc:  # noqa: BLE001 - 전용 스레드는 다음 작업을 계속해야 한다
         LOGGER.exception("자동 진행 판정 실패: case_id=%s", case_id)
         _LAST_ERROR[case_id] = str(exc)[:300]
