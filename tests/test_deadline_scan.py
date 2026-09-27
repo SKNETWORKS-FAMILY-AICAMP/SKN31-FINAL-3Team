@@ -534,3 +534,120 @@ def test_no_periodic_sweep_runs_in_the_background() -> None:
 
     assert "scan_due_cases" not in source, "마감 스윕이 다시 배경으로 돌고 있다"
     assert "deadline_scan" not in source
+
+
+# ---------------------------------------------------------------------------
+# 수동 버튼 - 판정 시점은 서버가 정한다
+# ---------------------------------------------------------------------------
+
+
+def _readiness(ready=True, reason="마감이 지났습니다", late=None):
+    return deadline_readiness.Readiness(
+        ready=ready, reason=reason, late=late or [],
+    )
+
+
+@pytest.fixture
+def review(monkeypatch):
+    from backend_logic2.services import workflow_service
+
+    state = {"readiness": _readiness(), "logged": []}
+    monkeypatch.setattr(deadline_readiness, "judge", lambda case, **kw: state["readiness"])
+    monkeypatch.setattr(
+        "backend_logic2.nodes.supplier.tools.case_logging.log_ai_decision",
+        lambda case_id, node, detail: state["logged"].append((node, detail)),
+    )
+    state["run"] = lambda answer: workflow_service._with_server_side_readiness(
+        answer, _case(), actor="parkdongkwan0814@gmail.com"
+    )
+    return state
+
+
+def test_the_screen_cannot_claim_it_is_time_to_judge(review) -> None:
+    """⚠️ 화면이 ready=true를 주장할 수 있으면 마감 전에도 자동으로 닫힌다.
+    v1의 '지금 확인' 버튼이 정확히 그렇게 상태를 속였다."""
+    review["readiness"] = _readiness(ready=False, reason="마감 전입니다")
+
+    answer = review["run"]({"decision": "auto", "ready": True, "ready_reason": "내맘대로"})
+
+    assert answer["ready"] is False
+    assert answer["ready_reason"] == "마감 전입니다"
+
+
+def test_the_server_fills_in_the_readiness_it_judged(review) -> None:
+    review["readiness"] = _readiness(late=[{"quotation_id": "SQ-9"}])
+
+    answer = review["run"]({"decision": "auto"})
+
+    assert answer["ready"] is True
+    assert answer["late"] == [{"quotation_id": "SQ-9"}]
+
+
+def test_the_button_leaves_its_reason_on_screen(review) -> None:
+    """서버 로그를 볼 수 없으므로 "무엇을 기다리는지"가 기록에 남아야 한다."""
+    review["readiness"] = _readiness(ready=False, reason="규격 평가가 끝나지 않았습니다")
+
+    review["run"]({"decision": "auto"})
+
+    node, detail = review["logged"][0]
+    assert node == "auto_final_selection"
+    assert "규격 평가가 끝나지 않았습니다" in detail
+
+
+def test_a_failed_readiness_check_hands_over_to_a_person(review, monkeypatch) -> None:
+    """⚠️ 판정하지 못한 것을 통과로 보면 조건을 안 보고 진행해버린다."""
+    monkeypatch.setattr(
+        deadline_readiness, "judge",
+        lambda case, **kw: (_ for _ in ()).throw(RuntimeError("ERPNext down")),
+    )
+
+    answer = review["run"]({"decision": "auto"})
+
+    assert answer["ready"] is False
+    assert "확인하지 못했습니다" in answer["ready_reason"]
+
+
+def test_a_logging_failure_does_not_stop_the_judgment(review, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "backend_logic2.nodes.supplier.tools.case_logging.log_ai_decision",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("db down")),
+    )
+
+    assert review["run"]({"decision": "auto"})["ready"] is True
+
+
+@pytest.mark.parametrize("answer", [
+    {"decision": "check"},
+    {"decision": "finalize", "supplier": "동관컴퍼니"},
+    {"decision": "rebid"},
+    "이상한 값",
+])
+def test_other_decisions_are_passed_through_untouched(review, answer) -> None:
+    """⚠️ 사람이 직접 고른 결정에 손대면 안 된다."""
+    assert review["run"](answer) == answer
+    assert review["logged"] == []
+
+
+def test_the_readiness_is_judged_before_the_graph_lock_is_taken() -> None:
+    """⚠️ 이 판단은 ERPNext를 여러 번 조회한다. 잠금을 쥔 채로 하면 그동안
+    다른 사람의 클릭이 전부 그 뒤에서 기다리다 504로 죽는다."""
+    import inspect
+
+    from backend_logic2.services import workflow_service
+
+    source = inspect.getsource(workflow_service._run_queued_quotation_analysis)
+    readiness_at = source.index("_with_server_side_readiness")
+    lock_at = source.index("with _GRAPH_LOCK")
+
+    assert readiness_at < lock_at, "판정을 그래프 잠금 안에서 하고 있다"
+
+
+def test_the_button_never_holds_the_http_socket() -> None:
+    """RunPod 규격 평가가 도는 동안 소켓을 붙잡고 있으면 nginx가 먼저 끊는다."""
+    import inspect
+
+    from backend_logic2.api import procurement_routes
+
+    source = inspect.getsource(procurement_routes.answer_task)
+
+    assert '{"check", "auto"}' in source, "auto가 배경 처리 경로를 타지 않는다"

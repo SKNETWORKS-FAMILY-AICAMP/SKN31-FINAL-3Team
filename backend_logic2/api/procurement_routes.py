@@ -406,9 +406,12 @@ def answer_task(
         # timeout. Keep the browser request short and let the existing case
         # polling surface the completed checkpoint instead of losing the
         # response at the proxy after the GPU work has already started.
+        # check(조회만)와 auto(조건 판정 후 진행) 둘 다 RunPod 규격 평가를
+        # 돌릴 수 있어 요청 안에서 끝나지 않는다. 소켓을 붙잡고 있으면
+        # nginx가 먼저 끊어 504가 되므로, 202로 돌려주고 배경에서 끝낸다.
         if (
             task["task_type"] in {"quotation_check", "check_quotations"}
-            and str(body.answer.get("decision") or "").strip() == "check"
+            and str(body.answer.get("decision") or "").strip() in {"check", "auto"}
         ):
             queued = workflow_service.queue_quotation_analysis(
                 task_id,

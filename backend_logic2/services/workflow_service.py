@@ -57,6 +57,58 @@ _TASK_STAGE = {
 _TERMINAL_CASE_STATUSES = {"COMPLETED", "CANCELLED", "REJECTED"}
 
 
+def _with_server_side_readiness(
+    answer: dict[str, Any], case: dict[str, Any], *, actor: str
+) -> dict[str, Any]:
+    """'auto' 결정의 판정 시점은 **서버가** 정한다.
+
+    ⚠️ 화면이 ready=true를 주장할 수 있게 하면 마감 전에도 자동으로 닫힌다.
+    v1의 '지금 확인' 버튼이 정확히 그렇게 상태를 속였고, 아직 견적을 낼 시간이
+    남은 협력사가 있는 건을 먼저 닫았다. 그래서 화면이 무엇을 보냈든 여기서
+    다시 판정해 덮어쓴다.
+
+    ⚠️ 이 판단은 ERPNext를 여러 번 조회한다. _GRAPH_LOCK을 잡기 **전에** 끝낸다.
+    잠금을 쥔 채로 하면 그동안 다른 사람의 클릭이 전부 그 뒤에서 기다리다
+    504로 죽는다.
+
+    판정하지 못해도 흐름을 막지 않는다. 그때는 ready를 주지 않으므로
+    "아직 판정할 때가 아니다"가 되어 사람에게 넘어간다(모르는 값은 통과가
+    아니다).
+    """
+    if not isinstance(answer, dict):
+        return answer
+    if str(answer.get("decision") or "").strip() != "auto":
+        return answer
+
+    from backend_logic2.services import deadline_readiness
+
+    case_id = str(case["case_id"])
+    try:
+        readiness = deadline_readiness.judge(case)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[auto review] case_id={case_id} 판정 시점 확인 실패: {exc}")
+        return {**answer, "ready": False, "ready_reason": f"판정 시점을 확인하지 못했습니다({exc})"}
+
+    # 사람이 버튼을 눌렀으니 "무엇을 기다리는지"가 화면에 남아야 한다.
+    try:
+        from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
+
+        log_ai_decision(
+            case_id,
+            "auto_final_selection",
+            f"[{actor}] 판정 시점: {readiness.reason}",
+        )
+    except Exception as exc:  # noqa: BLE001 - 기록 실패가 진행을 막으면 안 된다
+        print(f"[auto review] case_id={case_id} 판정 시점 기록 실패: {exc}")
+
+    return {
+        **answer,
+        "ready": readiness.ready,
+        "ready_reason": readiness.reason,
+        "late": readiness.late,
+    }
+
+
 def _run_queued_quotation_analysis(
     task_id: str,
     *,
@@ -72,6 +124,7 @@ def _run_queued_quotation_analysis(
         case = case_repository.get_case(case_id)
         if case is None:
             raise LookupError(case_id)
+        answer = _with_server_side_readiness(answer, case, actor=answered_by)
         app = get_process_app()
         with _GRAPH_LOCK:
             config = _config(case["thread_id"] or case["mr_name"])
