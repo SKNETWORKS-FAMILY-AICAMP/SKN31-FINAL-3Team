@@ -115,6 +115,22 @@ def test_not_being_due_yet_waits_instead_of_calling_a_person() -> None:
     assert "마감 전입니다" in decision.summary()
 
 
+def test_a_spec_evaluation_that_never_ran_calls_a_person() -> None:
+    """⚠️ failed는 "한 건도 평가되지 않았다"다. 평가기가 없거나 못 돌았다는
+    뜻이고, 기다려도 영원히 안 끝난다. 이걸 대기로 두면 아무 표시 없이 멈춰
+    있는다 - v1에서 제일 나빴던 증상이다."""
+    decision = _evaluate(result=_result(
+        specification_evaluation={
+            "status": "failed", "unevaluated": ["SQ-1", "SQ-2"],
+            "error": "규격 평가기 설정이 올바르지 않습니다",
+        },
+    ))
+
+    assert decision.needs_person is True
+    assert "SPEC_EVALUATION" in {row["code"] for row in decision.blockers}
+    assert "규격 평가기" in decision.summary()
+
+
 def test_waiting_plus_a_real_blocker_still_calls_a_person() -> None:
     """기다릴 이유와 사람이 판단할 이유가 섞이면 사람을 부른다."""
     decision = _evaluate(
@@ -284,3 +300,73 @@ def test_score_gap_is_first_minus_second() -> None:
 
 def test_score_gap_is_unknown_when_a_score_is_missing() -> None:
     assert score_gap([{"overall_score": 90.0}, {}]) is None
+
+
+# ---------------------------------------------------------------------------
+# 거래 이력 조회 - "모른다"와 "하나도 없다"를 구분한다
+# ---------------------------------------------------------------------------
+
+
+def test_the_trade_history_comes_from_confirmed_purchase_orders(monkeypatch) -> None:
+    """확정 발주(Submit된 PO)만 이력으로 본다. 견적만 받아본 곳은 아니다."""
+    from backend_logic2.services import auto_progress
+
+    auto_progress._known_suppliers_cache = None
+    asked: dict = {}
+
+    def erp_get(doctype, filters=None, fields=None, **_kw):
+        asked["doctype"] = doctype
+        asked["filters"] = filters
+        return [{"supplier": "SUP-1", "supplier_name": "동관컴퍼니"}]
+
+    monkeypatch.setattr(
+        "backend_logic2.integrations.erp_client.erp_get", erp_get
+    )
+    with policy_scope(_policy(auto_known_supplier_years=3)):
+        names = auto_progress.known_supplier_names(today=date(2026, 9, 27))
+
+    assert names == {"SUP-1", "동관컴퍼니"}
+    assert asked["doctype"] == "Purchase Order"
+    assert ["docstatus", "=", 1] in asked["filters"]
+    assert ["transaction_date", ">=", "2023-09-27"] in asked["filters"]
+
+
+def test_a_failed_trade_history_lookup_is_unknown_not_empty(monkeypatch) -> None:
+    """⚠️ 빈 set은 "아는 곳이 하나도 없다"는 사실이지만 None은 "모른다"다.
+    실패를 빈 set으로 뭉개면 조회가 한 번 실패한 날 모든 건이 신규 협력사로
+    보여 자동 진행이 전부 멈춘다."""
+    from backend_logic2.services import auto_progress
+
+    auto_progress._known_suppliers_cache = None
+    monkeypatch.setattr(
+        "backend_logic2.integrations.erp_client.erp_get",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ERPNext down")),
+    )
+    with policy_scope(_policy()):
+        assert auto_progress.known_supplier_names() is None
+
+
+def test_the_trade_history_is_not_refetched_on_every_judgment(monkeypatch) -> None:
+    """판정은 그래프 잠금 안에서 돈다. 매번 ERPNext를 부르면 그만큼 다른
+    요청이 뒤에서 기다린다."""
+    from backend_logic2.services import auto_progress
+
+    auto_progress._known_suppliers_cache = None
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "backend_logic2.integrations.erp_client.erp_get",
+        lambda *a, **kw: calls.append(1) or [{"supplier": "SUP-1"}],
+    )
+    with policy_scope(_policy(auto_known_supplier_years=3)):
+        auto_progress.known_supplier_names()
+        auto_progress.known_supplier_names()
+
+    assert len(calls) == 1
+
+    # ⚠️ 기준 연수를 바꿨으면 다시 조회해야 한다. 캐시가 연수를 무시하면
+    # 설정을 바꿔도 5분 동안 옛 기준으로 판정한다.
+    with policy_scope(_policy(auto_known_supplier_years=7)):
+        auto_progress.known_supplier_names()
+
+    assert len(calls) == 2
+    auto_progress._known_suppliers_cache = None

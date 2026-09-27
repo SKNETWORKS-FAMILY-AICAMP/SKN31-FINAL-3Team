@@ -414,6 +414,28 @@ def list_cases_for_quotation_reconciliation() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def list_cases_awaiting_quotation_deadline() -> list[dict[str, Any]]:
+    """견적 마감을 기다리며 사람 입력 대기 중인 케이스.
+
+    마감 스캔이 읽는 목록이다. stage/status로만 좁히고 마감 시각 비교는
+    파이썬에서 한다 - 마감은 workflow_snapshot 안의 문자열이라 SQL에서
+    시각으로 비교하면 형식이 어긋나는 순간 조용히 아무것도 안 걸린다.
+    """
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM procurement.procurement_case
+            WHERE status = 'WAITING_INPUT'
+              AND stage = 'QUOTATION_COLLECTION'
+              AND workflow_snapshot #>> '{values,rfq_name}' IS NOT NULL
+            ORDER BY updated_at
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def update_quotation_snapshot(
     case_id: str, quotation_snapshot: dict[str, Any]
 ) -> tuple[dict[str, Any], bool]:

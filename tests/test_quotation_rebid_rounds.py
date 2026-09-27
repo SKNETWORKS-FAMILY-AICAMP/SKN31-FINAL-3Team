@@ -70,6 +70,8 @@ class QuotationRebidRoundTests(unittest.TestCase):
             ["PUR-RFQ-0001", "PUR-RFQ-0002"],
             current_rfq_name="PUR-RFQ-0002",
             round_by_rfq={"PUR-RFQ-0001": 0, "PUR-RFQ-0002": 1},
+            # 사람이 직접 보는 경로(check)는 마감 후 제출도 빼지 않는다.
+            excluded_quotations={},
         )
         self.assertEqual(command.goto, "check_quotations")
 

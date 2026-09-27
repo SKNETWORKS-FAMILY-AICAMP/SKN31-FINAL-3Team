@@ -11,13 +11,17 @@ RFQ 발송도 최종 선정도 외부로 메일이 나가는, 되돌리기 어�
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from backend_logic2.policies.runtime import current_policy
+
+LOGGER = logging.getLogger(__name__)
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -329,12 +333,19 @@ def evaluate_final_selection(
 
     # 4) 규격 평가가 끝났는가. 안 끝났으면 기다린다(사람을 부르지 않는다).
     spec_status = str(spec.get("status") or "")
+    unevaluated = len(spec.get("unevaluated") or [])
     if spec_status == "completed":
         checks.append(_passed("SPEC_EVALUATION", "규격 평가", f"{spec.get('model') or 'AI'} 평가 완료"))
+    elif spec_status == "failed":
+        # ⚠️ failed는 "한 건도 평가되지 않았다"는 뜻이다. 평가기가 없거나
+        # 못 돌았다는 것이고, 기다려도 영원히 안 끝난다. 이걸 대기로 두면
+        # 아무 표시 없이 멈춰 있는다 - v1에서 제일 나빴던 증상이다.
+        detail = spec.get("error") or "규격 평가가 한 건도 되지 않았습니다"
+        checks.append(_blocked("SPEC_EVALUATION", "규격 평가", str(detail)))
     elif spec_status:
         checks.append(_check(
             "SPEC_EVALUATION", "규격 평가",
-            f"규격 평가가 끝나지 않았습니다 (미평가 {len(spec.get('unevaluated') or [])}건)",
+            f"규격 평가가 끝나지 않았습니다 (미평가 {unevaluated}건)",
             status="waiting",
         ))
     else:
@@ -432,6 +443,67 @@ def evaluate_final_selection(
             "specification_status": spec_status or None,
         },
     )
+
+
+# 확정 발주 이력은 분 단위로 바뀌지 않는다. 판정은 그래프 잠금 안에서 도는데
+# 그 안에서 ERPNext를 매번 부르면 그만큼 다른 요청이 뒤에서 기다린다.
+_KNOWN_SUPPLIER_TTL_SECONDS = 300.0
+_known_suppliers_cache: tuple[float, int, set[str]] | None = None
+
+
+def known_supplier_names(*, today: date | None = None) -> set[str] | None:
+    """최근 N년 안에 **확정 발주(Submit된 Purchase Order)** 이력이 있는 협력사.
+
+    N은 회사 정책값(auto_known_supplier_years). 확정 발주를 기준으로 삼는 건
+    실제로 거래가 성립한 곳만 "아는 협력사"로 보기 위해서다 - 견적만 받아본
+    곳이나 취소된 발주는 이력이 아니다.
+
+    ⚠️ 조회에 실패하면 빈 set이 아니라 **None**을 돌려준다. 빈 set은 "아는 곳이
+    하나도 없다"는 사실이지만, None은 "모른다"다. 판정기는 모르는 걸 통과로
+    보지 않는다. 이걸 빈 set으로 뭉개면 조회가 한 번 실패한 날 모든 건이
+    신규 협력사로 보여 자동 진행이 전부 멈춘다.
+    """
+    from backend_logic2.integrations.erp_client import erp_get
+
+    global _known_suppliers_cache
+
+    years = int(_rules().auto_known_supplier_years)
+    now = monotonic()
+    cached = _known_suppliers_cache
+    if (
+        cached is not None
+        and cached[1] == years
+        and now - cached[0] < _KNOWN_SUPPLIER_TTL_SECONDS
+    ):
+        return set(cached[2])
+    base = today or datetime.now(KST).date()
+    try:
+        since = base.replace(year=base.year - years)
+    except ValueError:  # 2월 29일
+        since = base.replace(year=base.year - years, day=28)
+    try:
+        rows = erp_get(
+            "Purchase Order",
+            filters=[
+                ["docstatus", "=", 1],
+                ["transaction_date", ">=", since.isoformat()],
+            ],
+            fields=["supplier", "supplier_name"],
+            limit=2000,
+        ) or []
+    except Exception:  # noqa: BLE001 - 모르는 건 모른다고 한다
+        LOGGER.warning("확정 발주 이력 조회 실패", exc_info=True)
+        return None
+    names: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in ("supplier", "supplier_name"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                names.add(value)
+    _known_suppliers_cache = (now, years, set(names))
+    return names
 
 
 def record_decision(case_id: str | None, decision: AutoDecision) -> None:

@@ -789,34 +789,70 @@ def evaluate_quotations(
     *,
     top_k: int = 3,
     spec_evaluator: QuotationSpecEvaluator | None = None,
+    excluded_quotations: dict[str, str] | None = None,
     _rfq_names: list[str] | None = None,
     _round_by_rfq: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Validate ERP quotations and combine numeric metrics with semantic spec fit."""
+    """Validate ERP quotations and combine numeric metrics with semantic spec fit.
+
+    excluded_quotations: 순위에서 빼야 하는 ERP 견적 문서명 -> 사유. 마감 후에
+    제출된 견적을 자동 판정에서 제외하는 데 쓴다. 빼는 이유를 excluded에 그대로
+    남겨서, 화면에서 "왜 이 견적이 순위에 없는지"를 볼 수 있게 한다.
+
+    ⚠️ 비우지 말고 걸러낸다. 여기서 제외한 견적은 competition_count에도 들어가지
+    않아야 한다 - 마감 후 제출을 경쟁 건수로 세면 단독 응찰이 경쟁으로 보인다.
+    """
     try:
         rfq = load_rfq_requirements(rfq_name)
     except Exception as exc:
         return {"error": f"RFQ를 찾거나 읽을 수 없습니다: {rfq_name} ({exc})"}
 
+    dropped = {
+        str(name).strip(): str(reason)
+        for name, reason in (excluded_quotations or {}).items()
+        if str(name).strip()
+    }
     rfq_names = list(dict.fromkeys(_rfq_names or [rfq_name]))
-    quotations = _attach_supplier_scorecards(
+    all_quotations = _attach_supplier_scorecards(
         get_quotations_for_rfqs(rfq_names)
         if _rfq_names is not None
         else get_quotations_for_rfq(rfq_name)
     )
+    dropped_rows = [
+        {
+            "quotation_id": str(row.get("name") or ""),
+            "supplier_name": row.get("supplier_name") or row.get("supplier"),
+            "kind": "late_submission",
+            "evidence": [dropped[str(row.get("name") or "")]],
+        }
+        for row in all_quotations
+        if str(row.get("name") or "") in dropped
+    ]
+    quotations = [
+        row for row in all_quotations if str(row.get("name") or "") not in dropped
+    ]
     if not quotations:
         return {
             "requirements": rfq.model_dump(mode="json"),
             "quotations": [],
             "ranking": [],
-            "message": "제출된 견적이 아직 없습니다.",
+            "excluded": dropped_rows,
+            "message": (
+                f"마감 후에 제출된 견적 {len(dropped_rows)}건뿐입니다."
+                if dropped_rows
+                else "제출된 견적이 아직 없습니다."
+            ),
         }
 
-    reviewable = (
-        get_reviewable_quotations_for_rfqs(rfq_names)
-        if _rfq_names is not None
-        else get_reviewable_quotations(rfq_name)
-    )
+    reviewable = [
+        quotation
+        for quotation in (
+            get_reviewable_quotations_for_rfqs(rfq_names)
+            if _rfq_names is not None
+            else get_reviewable_quotations(rfq_name)
+        )
+        if str(quotation.quotation_id or "").strip() not in dropped
+    ]
     # known_rfq_names=rfq_names: 단일 라운드 평가에서는 rfq_names가
     # [rfq_name] 하나뿐이라 기존과 동일하게 동작하고, 여러 라운드를 함께
     # 평가할 때는(_rfq_names로 여러 개 넘어온 경우) 그 라운드들의 RFQ
@@ -1008,7 +1044,7 @@ def evaluate_quotations(
         "requirements": rfq.model_dump(mode="json"),
         "quotations": quotations,
         "ranking": _enrich_ranking_with_prices(ranking, quotations),
-        "excluded": result.excluded,
+        "excluded": [*dropped_rows, *result.excluded],
         "parse_failed": result.parse_failed,
         "competition_count": result.competition_count,
         "single_bid": result.single_bid,
@@ -1030,6 +1066,7 @@ def evaluate_quotations_for_rfqs(
     current_rfq_name: str,
     round_by_rfq: dict[str, int] | None = None,
     spec_evaluator: QuotationSpecEvaluator | None = None,
+    excluded_quotations: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate all archived and current RFQ quotations as one candidate pool."""
     normalized = list(dict.fromkeys(
@@ -1042,6 +1079,7 @@ def evaluate_quotations_for_rfqs(
     return evaluate_quotations(
         current_rfq_name,
         spec_evaluator=spec_evaluator,
+        excluded_quotations=excluded_quotations,
         _rfq_names=normalized,
         _round_by_rfq=round_by_rfq,
     )

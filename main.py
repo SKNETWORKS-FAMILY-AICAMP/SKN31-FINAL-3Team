@@ -310,6 +310,37 @@ async def _resync_waiting_cases() -> None:
         await asyncio.sleep(interval)
 
 
+def _deadline_scan_interval_seconds() -> float:
+    try:
+        configured = float(os.getenv("DEADLINE_SCAN_INTERVAL_SECONDS", "60"))
+    except ValueError:
+        configured = 60.0
+    return max(15.0, configured)
+
+
+async def _scan_quotation_deadlines() -> None:
+    """마감이 지났는데 아무 일도 일어나지 않는 건을 찾아 판정을 시작한다.
+
+    ⚠️ 그래프는 전용 스레드에서만 돈다. 여기서 직접 부르면 이벤트 루프가
+    막혀 서버 전체가 먹통이 된다(v1에서 실제로 그랬다).
+    """
+    from backend_logic2.services import deadline_scan, graph_worker
+
+    interval = _deadline_scan_interval_seconds()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            counts = await asyncio.to_thread(
+                graph_worker.run_and_wait, deadline_scan.scan_due_cases
+            )
+            if counts.get("judged"):
+                LOGGER.info("견적 마감 판정: %s", counts)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("견적 마감 스캔 실패; %.0f초 뒤 다시 시도", interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 재시작 전에 처리 중이던 건(RUNNING/PROCESSING)을 되돌린다. 작업 큐는
@@ -325,6 +356,10 @@ async def lifespan(app: FastAPI):
     resync_task = asyncio.create_task(
         _resync_waiting_cases(), name="case-waiting-stage-resync"
     )
+    deadline_task = asyncio.create_task(
+        _scan_quotation_deadlines(), name="quotation-deadline-scan"
+    )
+    app.state.deadline_scan_task = deadline_task
     from backend_logic2.services.runpod_worker_control import reconciliation_loop
     worker_lease_task = asyncio.create_task(reconciliation_loop(), name="runpod-worker-lease-expiry")
     from backend_logic2.services.runpod_quotation_jobs import webhook_mode, callback_url
@@ -379,6 +414,9 @@ async def lifespan(app: FastAPI):
         resync_task.cancel()
         with suppress(asyncio.CancelledError):
             await resync_task
+        deadline_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await deadline_task
         worker_lease_task.cancel()
         with suppress(asyncio.CancelledError):
             await worker_lease_task

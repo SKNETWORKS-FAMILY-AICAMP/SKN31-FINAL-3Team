@@ -818,14 +818,15 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         "rfq_name": state["rfq_name"],
         "message": "제출된 견적을 확인하시겠습니까? "
                     "(check: 지금 조회만 하고 계속 대기 / later: 그냥 대기 / "
+                    "auto: 조건을 판정해서 통과하면 자동 선정 / "
                     "finalize: 지금까지 견적으로 최종선정 단계로 진행 / "
                     "rebid: 현재 견적을 후보로 유지한 채 새 RFQ 차수 진행)",
-        "allowed": ["check", "later", "finalize", "rebid"],
+        "allowed": ["check", "later", "auto", "finalize", "rebid"],
     })
     choice = _decision_value(answer)
-    if choice not in ("check", "later", "finalize", "rebid"):
+    if choice not in ("check", "later", "auto", "finalize", "rebid"):
         return Command(
-            update={"status": "awaiting_quotation_check", "error": "check, later, finalize, rebid 중 선택하세요."},
+            update={"status": "awaiting_quotation_check", "error": "check, later, auto, finalize, rebid 중 선택하세요."},
             goto="check_quotations",
         )
     if choice == "later":
@@ -870,10 +871,17 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         submit_finalized_quotations,
     )
 
+    # 마감 후에 제출된 견적은 자동 판정에서 뺀다. 사람이 직접 보는 경로
+    # (check/finalize)는 지금까지처럼 전부 보여준다 - 늦게 온 건을 살릴지는
+    # 사람이 판단할 일이다.
+    excluded_quotations = (
+        _late_submissions(answer) if choice == "auto" else {}
+    )
     result = evaluate_quotations_for_rfqs(
         _rfq_round_names(state),
         current_rfq_name=state["rfq_name"],
         round_by_rfq=_rfq_round_map(state),
+        excluded_quotations=excluded_quotations,
     )
     print_evaluation(result)
     # 그래프가 계산한 결과를 케이스의 실시간 순위(그래프 밖 읽기 모델)에도
@@ -923,6 +931,12 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             )
         if excluded_summary:
             fallback_message = f"{fallback_message} (제외 사유 - {excluded_summary})"
+        if choice == "auto":
+            # ⚠️ 여기서 조용히 돌아가면 "마감이 지났는데 아무 일도 안 일어난다"가
+            # 된다. 회신 0건도 판정 결과로 남겨야 화면에서 이유가 보인다.
+            # 회신 0건은 자동 연장하지 않고 사람을 부른다.
+            decision = _judge_final_selection(state, answer, result)
+            fallback_message = f"{fallback_message} / {decision.summary()}"
         return Command(
             update={
                 "quotation_ranking": state.get("quotation_ranking") or [],
@@ -955,6 +969,29 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
             goto="check_quotations",
         )
 
+    if choice == "auto":
+        decision = _judge_final_selection(state, answer, result)
+        if not decision.should_proceed:
+            # ⚠️ 조건에 걸린 건은 견적을 확정(Submit)하지 않는다. 확정은
+            # 되돌리기 어렵고, 사람이 재비딩을 고를 수도 있다.
+            return Command(
+                update={
+                    "quotation_ranking": result["ranking"],
+                    "quotation_excluded": result.get("excluded") or [],
+                    "quotation_ranking_meta": {
+                        "competition_count": result.get("competition_count", 0),
+                        "single_bid": bool(result.get("single_bid")),
+                        "specification_evaluation": result.get("specification_evaluation") or {},
+                        "auto_progress": decision.as_payload(),
+                    },
+                    "status": "awaiting_quotation_check",
+                    "error": decision.summary(),
+                },
+                goto="check_quotations",
+            )
+        # 통과했다. 사람이 finalize를 누른 것과 같은 경로를 탄다.
+        answer = {**(answer if isinstance(answer, dict) else {}), "start_order": True}
+
     # 포털 견적은 Draft로 생성된다. 사용자가 명시적으로 최종 선정을
     # 시작할 때만 순위에 포함된 견적을 Submit하여 이후 변경을 막는다.
     submit_finalized_quotations(result["ranking"])
@@ -985,6 +1022,50 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         },
         goto="final_selection",
     )
+
+
+def _late_submissions(answer: Any) -> dict[str, str]:
+    """마감 후 제출로 판정된 견적 문서명 -> 사유.
+
+    판정은 그래프 밖(마감 스캔)에서 이미 했다. 그래프 안에서 다시 계산하면
+    ERPNext를 또 뒤지게 되고, 그 시간만큼 그래프 줄이 막힌다.
+    """
+    if not isinstance(answer, dict):
+        return {}
+    rows = answer.get("late") or []
+    dropped: dict[str, str] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("quotation_id") or "").strip()
+        if not name:
+            continue
+        submitted_at = str(row.get("submitted_at") or "").strip()
+        dropped[name] = (
+            f"마감 후 제출({submitted_at})" if submitted_at else "마감 후 제출"
+        )
+    return dropped
+
+
+def _judge_final_selection(state: PurchaseProcessState, answer: Any, result: dict):
+    """자동 선정 조건을 판정하고 그 결과를 기록한다.
+
+    ⚠️ ready는 answer가 주지 않으면 **False**다. 판정 시점이 됐는지는 마감
+    스캔이 판단하는데, 그 값이 없는 호출을 통과로 보면 마감 전에도 자동으로
+    닫힐 수 있다. 값이 없으면 "아직 판정할 때가 아니다"로 둔다.
+    """
+    from backend_logic2.services import auto_progress as auto_progress_module
+
+    payload = answer if isinstance(answer, dict) else {}
+    ready = bool(payload.get("ready"))
+    decision = auto_progress_module.evaluate_final_selection(
+        result,
+        ready=ready,
+        not_ready_reason=str(payload.get("ready_reason") or ""),
+        known_supplier_names=auto_progress_module.known_supplier_names(),
+    )
+    auto_progress_module.record_decision(state.get("case_id"), decision)
+    return decision
 
 
 def _auto_pr_dispatch_requested(answer: Any) -> bool:
