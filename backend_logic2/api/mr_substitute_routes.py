@@ -158,9 +158,24 @@ def submit_substitute_decision(
             "reason": reason,
         }
 
+    # ⚠️ 그래프는 여기서 돌리지 않는다. 신규구매를 고르면 비딩 판정 → 공급사
+    # 풀 판정 → (필요하면) 공급사 검색까지 이어 돌아 몇 분이 걸리는데, 요청
+    # 안에서 기다리면 nginx 60초 제한에 끊긴다. 게다가 이 경로는 그래프 잠금도
+    # 없이 돌아서 다른 실행과 겹칠 수 있었다. 무효 입력 판정(예전엔 실행 후
+    # 상태를 다시 읽어 판단하던 것)은 실행 전에 같은 기준으로 미리 하고,
+    # 실행은 그래프 전용 스레드에 예약한다.
+    from backend_logic2.services import workflow_service
+
     app = get_process_app()
     thread_id = _resolve_thread_id(mr_name)
     current_values = (app.get_state(_config(thread_id)).values) or {}
+    if current_values.get("status") != "awaiting_substitute_selection":
+        return to_checkpoint_data({
+            "mr_name": mr_name,
+            "success": False,
+            "status": current_values.get("status"),
+            "error": "이미 처리된 요청이거나 대체품 선택을 기다리는 상태가 아닙니다.",
+        })
     current_candidates = flatten_substitute_candidates(
         current_values.get("substitute_results", {})
     )
@@ -170,37 +185,73 @@ def submit_substitute_decision(
     if body.item_code:
         resume_data["item_code"] = body.item_code
 
-    app.invoke(Command(resume=resume_data), config=_config(thread_id))
+    is_new_purchase = (
+        str(body.decision or "").strip().lower() == "new_purchase"
+        or str(body.item_code or "").strip().lower() == "new_purchase"
+    )
+    valid_codes = {candidate.get("item_code") for candidate in current_candidates}
+    if not is_new_purchase and body.item_code not in valid_codes:
+        # substitute_selection_command와 같은 기준 - 실행했어도 되돌려졌을 입력이다.
+        return to_checkpoint_data({
+            "mr_name": mr_name,
+            "success": False,
+            "status": "awaiting_substitute_selection",
+            "error": "유효한 재고 후보 item_code 또는 'new_purchase'를 선택하세요.",
+        })
+    uses_original_stock = any(
+        candidate.get("item_code") == body.item_code
+        and candidate.get("is_original_item")
+        for candidate in current_candidates
+    )
 
-    new_values = (app.get_state(_config(thread_id)).values) or {}
-    still_waiting = new_values.get("status") == "awaiting_substitute_selection"
+    workflow_service.submit_graph_work(
+        _apply_substitute_decision,
+        mr_name,
+        thread_id,
+        resume_data,
+        new_purchase=is_new_purchase,
+        selected_item_code=None if is_new_purchase else body.item_code,
+        existing_stock=uses_original_stock,
+    )
+    return to_checkpoint_data({
+        "mr_name": mr_name,
+        "success": True,
+        "status": "processing",
+        "error": None,
+    })
+
+
+def _apply_substitute_decision(
+    mr_name: str,
+    thread_id: str,
+    resume_data: dict,
+    *,
+    new_purchase: bool,
+    selected_item_code: Optional[str],
+    existing_stock: bool,
+) -> None:
+    """그래프 전용 스레드에서 대체품 결정을 반영한다."""
+    from backend_logic2.services.workflow_service import (
+        _GRAPH_LOCK,
+        project_substitute_decision,
+    )
+
+    app = get_process_app()
+    with _GRAPH_LOCK:
+        # 예약 사이에 같은 요청이 두 번 들어왔을 수 있다 - 아직 기다리는 중일 때만.
+        current = (app.get_state(_config(thread_id)).values) or {}
+        if current.get("status") != "awaiting_substitute_selection":
+            return
+        app.invoke(Command(resume=resume_data), config=_config(thread_id))
 
     # ERPNext 요청자가 선택한 결과를 PostgreSQL에 투영하고 알림/SSE로
     # 구매 화면을 깨운다. 이 보조 처리가 실패해도 그래프 결정은 보존된다.
     try:
-        from backend_logic2.services.workflow_service import project_substitute_decision
-
-        is_new_purchase = (
-            str(body.decision or "").strip().lower() == "new_purchase"
-            or str(body.item_code or "").strip().lower() == "new_purchase"
-        )
-        uses_original_stock = any(
-            candidate.get("item_code") == body.item_code
-            and candidate.get("is_original_item")
-            for candidate in current_candidates
-        )
         project_substitute_decision(
             mr_name,
-            new_purchase=is_new_purchase,
-            selected_item_code=None if is_new_purchase else body.item_code,
-            existing_stock=uses_original_stock,
+            new_purchase=new_purchase,
+            selected_item_code=selected_item_code,
+            existing_stock=existing_stock,
         )
     except Exception as exc:
         print(f"[mr_substitute_routes] 구매 작업 상태 투영 실패({mr_name}): {exc}")
-
-    return to_checkpoint_data({
-        "mr_name": mr_name,
-        "success": not still_waiting,
-        "status": new_values.get("status"),
-        "error": new_values.get("error") if still_waiting else None,
-    })

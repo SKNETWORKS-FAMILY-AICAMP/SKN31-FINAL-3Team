@@ -209,28 +209,71 @@ class QueuedTaskAnswerTests(unittest.TestCase):
             )
         background.add_task.assert_not_called()
 
-    @patch.object(workflow_service.case_repository, "transition_case")
-    @patch.object(workflow_service.case_repository, "get_case")
-    @patch.object(workflow_service, "resume_task")
-    def test_a_background_failure_becomes_visible_instead_of_staying_running(
-        self, resume, get_case, transition
-    ):
-        resume.side_effect = RuntimeError("ERPNext 응답이 없습니다")
-        get_case.return_value = self._case(status="RUNNING")
+    def _failure_env(self, *, task_status, waiting_on_person=True):
+        return (
+            patch.object(workflow_service, "resume_task",
+                         side_effect=RuntimeError("ERPNext 응답이 없습니다")),
+            patch.object(workflow_service.task_repository, "get_task",
+                         return_value={**self._task(), "status": task_status}),
+            patch.object(workflow_service, "project_case_from_checkpoint",
+                         return_value={"status": "WAITING_INPUT", "stage": "RFQ_TARGET_SELECTION"}),
+            patch.object(workflow_service.case_repository, "get_case",
+                         return_value=self._case(status="RUNNING")),
+            patch.object(workflow_service, "get_process_app",
+                         return_value=SimpleNamespace(
+                             get_state=lambda config: SimpleNamespace(next=("x",), values={}))),
+            patch.object(workflow_service, "_interrupt_payloads",
+                         return_value=[{"type": "select_rfq_targets"}] if waiting_on_person else []),
+            patch.object(workflow_service.case_repository, "transition_case"),
+        )
 
-        workflow_service._run_queued_task_answer(
-            "task-1",
-            answer={"suppliers": ["동관컴퍼니"]},
-            answered_by="buyer",
-            expected_version=3,
-            case_id="case-1",
-            stage="RFQ_TARGET_SELECTION",
+    def _run_failure(self, **kwargs):
+        patches = self._failure_env(**kwargs)
+        mocks = [p.start() for p in patches]
+        try:
+            workflow_service._run_queued_task_answer(
+                "task-1",
+                answer={"suppliers": ["동관컴퍼니"]},
+                answered_by="buyer",
+                expected_version=3,
+                case_id="case-1",
+                stage="RFQ_TARGET_SELECTION",
+            )
+        finally:
+            for p in patches:
+                p.stop()
+        return mocks
+
+    def test_a_background_failure_becomes_visible_instead_of_staying_running(self):
+        *_, project, _get_case, _app, _interrupts, transition = self._run_failure(
+            task_status="PENDING"
         )
 
         transition.assert_called_once()
         recorded = transition.call_args[1]
+        # 체크포인트가 가리키는 실제 위치(사람 답 대기)에 이유를 붙인다.
         self.assertEqual(recorded["status"], "WAITING_INPUT")
         self.assertIn("ERPNext", recorded["last_error"])
+
+    def test_losing_a_race_to_auto_progress_does_not_rewind_the_case(self):
+        """⚠️ 자동 진행이 같은 작업을 먼저 처리했으면 오류가 아니다.
+
+        예전엔 진 쪽이 케이스를 '원래 단계의 대기'로 되돌려서, 이미 발주
+        단계로 넘어간 건을 견적 단계로 되감았다.
+        """
+        *_, project, _get_case, _app, _interrupts, transition = self._run_failure(
+            task_status="COMPLETED"
+        )
+
+        project.assert_called_once_with("case-1")
+        transition.assert_not_called()
+
+    def test_a_failure_mid_node_becomes_retryable(self):
+        *_, transition = self._run_failure(task_status="PENDING", waiting_on_person=False)
+
+        recorded = transition.call_args[1]
+        self.assertEqual(recorded["status"], "FAILED")
+        self.assertEqual(recorded["stage"], "HUMAN_REVIEW")
 
 
 class GraphWorkerIsolationTests(unittest.TestCase):

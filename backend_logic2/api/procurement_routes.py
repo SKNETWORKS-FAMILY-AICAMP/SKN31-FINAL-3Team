@@ -401,42 +401,29 @@ def set_automation_hold(
 
 
 @router.post("/cases/{case_id}/automation/scan")
-def run_automation_scan(case_id: str, current_user: CurrentUser):
-    """이 건의 자동 진행 판정을 지금 즉시 돌립니다.
+def run_automation_scan(case_id: str, current_user: CurrentUser, response: Response):
+    """이 건의 자동 진행 판정을 요청합니다. **즉시 돌아옵니다.**
 
-    평소에는 견적 마감 스캔(10분 주기)과 전원 회신 웹훅이 알아서 부르지만,
-    기다리지 않고 지금 확인하고 싶을 때 쓰는 경로입니다. 판정 규칙은 같아서
-    기록 모드에서는 판정만 남고 실제로 진행되지 않습니다.
+    ⚠️ 예전엔 여기서 판정(=그래프 실행)을 요청 안에서 그대로 돌렸다. 켜짐
+    모드에서는 판정이 통과하면 최종 선정 → 발주 → 수주 요청 메일까지 이어
+    돌아 몇 분이 걸렸고, nginx가 60초에 끊어 "구매 작업 API 요청에
+    실패했습니다"만 남았다. 끊긴 뒤에도 그래프는 케이스 잠금을 쥔 채 계속
+    돌아서 마감 스캔까지 그 뒤에 줄을 섰다.
+
+    지금은 바로 답할 수 있는 이유(보류·꺼짐·단계 아님·마감 전)만 그 자리에서
+    답하고, 실제 판정은 그래프 전용 스레드에 예약한다. 결과는 케이스 화면과
+    AI 판단 기록에 남는다.
     """
     case = _require_case_access(case_id, current_user)
     from backend_logic2.services import auto_progress_runner
 
     try:
-        outcome = auto_progress_runner.process_case(case)
+        result = auto_progress_runner.request_manual_check(case)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"자동 진행 판정에 실패했습니다: {exc}") from exc
-
-    refreshed = case_repository.get_case(case_id) or case
-    values = (refreshed.get("workflow_snapshot") or {}).get("values") or {}
-    reasons = {
-        "advanced": "조건을 통과해 다음 단계로 넘어갔습니다.",
-        "blocked": "조건에 걸려 멈췄습니다. 판정 내용을 확인하세요.",
-        "waiting": "규격 평가처럼 곧 끝날 일을 기다리는 중입니다. 잠시 뒤 다시 판정합니다.",
-        "recorded": "판정만 기록했습니다(기록 모드).",
-        "deadline_extended": "회신이 없어 마감을 자동으로 연장했습니다.",
-        "held": "담당자가 자동 진행을 보류해 둔 건입니다.",
-        "disabled": "회사 정책에서 자동 진행이 꺼져 있습니다.",
-        "unchanged": "지난 판정 이후 상황이 달라지지 않아 다시 판정하지 않았습니다.",
-        "no_task": "지금 깨울 대기 작업이 없습니다.",
-        "not_mine": "이 서버에 이 건의 워크플로 진행 상황이 없습니다.",
-        "failed": "판정 중 오류가 났습니다. 서버 로그를 확인하세요.",
-    }
-    return {
-        "outcome": outcome,
-        "message": reasons.get(outcome, outcome),
-        "stage": refreshed.get("stage"),
-        "auto_progress": values.get("auto_progress"),
-    }
+        raise HTTPException(status_code=502, detail=f"자동 진행 판정을 요청하지 못했습니다: {exc}") from exc
+    if result.get("queued"):
+        response.status_code = status.HTTP_202_ACCEPTED
+    return result
 
 
 @router.get("/cases/{case_id}/timeline")
@@ -906,8 +893,8 @@ def supplier_quotation_webhook(
             # 전원이 회신했으면 마감을 기다릴 이유가 없다. 순위를 갱신한
             # 직후에 이어서 자동 진행을 판정한다(배경 작업은 등록 순서대로
             # 실행된다).
+            # 판정 자체는 전용 스레드에 예약될 뿐이라 여기서는 가볍다.
             background_tasks.add_task(
-                workflow_service.submit_graph_work,
                 auto_progress_runner.trigger_on_full_response,
                 str(projection["case_id"]),
             )

@@ -181,7 +181,10 @@ async def _poll_substitute_decisions() -> None:
     interval = _mr_poll_interval_seconds()
     while True:
         try:
-            await asyncio.to_thread(process_substitute_replies)
+            # 댓글 답장을 찾으면 그래프를 이어 돌린다 - 그래프는 전용 스레드에서만.
+            await asyncio.to_thread(
+                workflow_service.run_on_graph_worker, process_substitute_replies
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -281,6 +284,14 @@ async def _recover_runpod_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 재시작 전에 처리 중이던 건(RUNNING/QUEUED/PROCESSING)을 되돌린다. 그래프
+    # 작업 큐는 메모리에만 있어서, 자동 배포로 재시작되면 표시만 남고 작업은
+    # 사라진다. 전용 스레드에 가장 먼저 예약하므로 뒤에 오는 스캔·폴러보다
+    # 먼저 끝나고, 서버 기동은 기다리지 않는다.
+    if os.getenv("BIDDINGFLOW_RECOVER_ON_STARTUP", "on").strip().lower() not in {
+        "off", "false", "0", "no",
+    }:
+        workflow_service.submit_graph_work(workflow_service.recover_interrupted_work)
     from backend_logic2.services.runpod_worker_control import reconciliation_loop
     worker_lease_task = asyncio.create_task(reconciliation_loop(), name="runpod-worker-lease-expiry")
     from backend_logic2.services.runpod_quotation_jobs import webhook_mode, callback_url
