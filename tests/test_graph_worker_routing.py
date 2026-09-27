@@ -304,13 +304,27 @@ def test_full_response_only_queues(monkeypatch):
 
 
 class _FakeConnection:
+    """진짜 연결처럼 **딕셔너리** 행을 돌려준다.
+
+    ⚠️ get_connection은 row_factory=dict_row다. 예전 가짜 연결은 튜플을 돌려줘서,
+    실제로는 KeyError(0)으로 죽는 fetchone()[0] 코드가 테스트에서는 멀쩡히
+    통과했다. 그 탓에 10분 주기 스캔이 한 번도 돌지 못한 걸 아무도 못 잡았다.
+    가짜는 진짜와 같은 모양이어야 한다.
+    """
+
     def __init__(self, acquired: bool):
         self.acquired = acquired
         self.statements: list[str] = []
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
     def execute(self, sql, params=None):
         self.statements.append(sql)
-        return SimpleNamespace(fetchone=lambda: (self.acquired,))
+        columns = [part.strip() for part in sql.upper().split(" AS ")[1:]]
+        name = columns[0].lower() if columns else "?column?"
+        return SimpleNamespace(fetchone=lambda: {name: self.acquired})
 
 
 def test_case_lock_gives_up_immediately_when_someone_else_holds_it(monkeypatch):
@@ -656,3 +670,67 @@ def test_run_on_graph_worker_does_not_deadlock_on_itself():
     name = workflow_service.submit_graph_work(inner).result(timeout=10)
 
     assert name.startswith("biddingflow-graph")
+
+
+def test_the_scan_lock_reads_its_result_the_way_the_real_driver_returns_it(monkeypatch):
+    """⚠️ 이 한 줄 때문에 10분 주기 스캔이 여태 한 번도 돌지 못했다.
+
+    dict_row 연결에서 fetchone()[0]은 KeyError(0)이고, 그 예외가 스캔 전체를
+    끝내버린다. 스케줄러는 로그만 남기고 10분 뒤 또 같은 자리에서 죽었다.
+    """
+    connection = _FakeConnection(acquired=True)
+
+    @contextmanager
+    def fake_get_connection(**kwargs):
+        yield connection
+
+    monkeypatch.setattr(runner, "get_connection", fake_get_connection)
+
+    with runner._scan_lock() as acquired:
+        assert acquired is True
+
+
+def test_the_scan_lock_reports_a_busy_job_instead_of_crashing(monkeypatch):
+    connection = _FakeConnection(acquired=False)
+
+    @contextmanager
+    def fake_get_connection(**kwargs):
+        yield connection
+
+    monkeypatch.setattr(runner, "get_connection", fake_get_connection)
+
+    with runner._scan_lock() as acquired:
+        assert acquired is False
+    # 못 잡았으면 풀지도 않는다.
+    assert not any("unlock" in sql for sql in connection.statements)
+
+
+def test_a_scan_whose_lock_is_free_actually_looks_at_cases(monkeypatch):
+    """잠금에서 죽지 않고 실제로 케이스를 훑는지 - 끝까지 한 번 돌려본다."""
+    connection = _FakeConnection(acquired=True)
+
+    @contextmanager
+    def fake_get_connection(**kwargs):
+        yield connection
+
+    queued: list[str] = []
+    monkeypatch.setattr(runner, "get_connection", fake_get_connection)
+    monkeypatch.setattr(runner, "enqueue_case", lambda case_id, **k: queued.append(case_id) or True)
+    monkeypatch.setattr(runner.case_repository, "record_automation_scan", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner.case_repository,
+        "list_cases_for_quotation_reconciliation",
+        lambda: [_case(case_id="DUE", quotation_deadline_at=datetime.now(timezone.utc) - timedelta(minutes=5))],
+    )
+
+    counts = runner.run_due_auto_progress()
+
+    assert queued == ["DUE"]
+    assert counts["queued"] == 1
+
+
+def test_scalar_refuses_an_empty_result():
+    empty = SimpleNamespace(fetchone=lambda: None)
+
+    with pytest.raises(RuntimeError):
+        runner._scalar(empty, "acquired")

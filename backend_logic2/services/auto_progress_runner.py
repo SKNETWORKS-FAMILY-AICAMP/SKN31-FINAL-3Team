@@ -62,6 +62,21 @@ class CaseBusy(Exception):
     """다른 인스턴스가 이 케이스를 처리 중이다."""
 
 
+def _scalar(result, column: str) -> Any:
+    """한 칸짜리 결과를 읽는다.
+
+    ⚠️ get_connection은 row_factory=dict_row라 fetchone()이 딕셔너리를 돌려준다.
+    여기서 예전처럼 fetchone()[0]으로 숫자 인덱스를 쓰면 KeyError(0)이 난다.
+    그 예외 때문에 10분 주기 스캔이 잠금을 잡는 첫 줄에서 매번 죽어서, 마감이
+    지나도 아무 건도 자동 진행되지 않았다(화면에는 "판정 중 오류가 났습니다. (0)"
+    로만 보였다). 컬럼 이름으로 읽는다.
+    """
+    row = result.fetchone()
+    if row is None:
+        raise RuntimeError(f"{column} 결과를 읽지 못했습니다.")
+    return row[column]
+
+
 @contextmanager
 def _scan_lock() -> Iterator[bool]:
     """잡이 겹쳐 도는 것을 막는다. 못 얻으면 이번 턴은 건너뛴다."""
@@ -70,9 +85,13 @@ def _scan_lock() -> Iterator[bool]:
     try:
         connection = get_connection().__enter__()
         acquired = bool(
-            connection.execute(
-                "SELECT pg_try_advisory_lock(%(key)s)", {"key": _SCAN_LOCK_KEY}
-            ).fetchone()[0]
+            _scalar(
+                connection.execute(
+                    "SELECT pg_try_advisory_lock(%(key)s) AS acquired",
+                    {"key": _SCAN_LOCK_KEY},
+                ),
+                "acquired",
+            )
         )
         yield acquired
     finally:
@@ -100,9 +119,14 @@ def case_lock(case_id: str) -> Iterator[None]:
     key = {"case_id": str(case_id)}
     with get_connection(autocommit=True) as connection:
         acquired = bool(
-            connection.execute(
-                "SELECT pg_try_advisory_lock(hashtextextended(%(case_id)s, 0))", key
-            ).fetchone()[0]
+            _scalar(
+                connection.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%(case_id)s, 0))"
+                    " AS acquired",
+                    key,
+                ),
+                "acquired",
+            )
         )
         if not acquired:
             raise CaseBusy(str(case_id))
