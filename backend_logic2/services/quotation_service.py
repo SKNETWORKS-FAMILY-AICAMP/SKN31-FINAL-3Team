@@ -36,6 +36,7 @@ from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import (
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.repositories import events as event_repository
 from backend_logic2.repositories import notifications as notification_repository
+from backend_logic2.repositories import quotation_submissions as submission_repository
 from backend_logic2.workflow.process_commands import to_checkpoint_data
 
 
@@ -253,6 +254,10 @@ def register_quotation_email_event(
                         supplier_name=supplier_name, supplier_id=supplier_id,
                         fallback_quotation_id=fallback_id, rfq_requirements=rfq_requirements,
                         message_id=communication_name, content_type=downloaded.get("content_type"),
+                        submitted_at=(
+                            communication.get("communication_date")
+                            or communication.get("creation")
+                        ),
                     ))
                     continue
                 with _EMAIL_EXTRACTION_LOCK:
@@ -297,6 +302,21 @@ def register_quotation_email_event(
             }
             event_repository.complete_event(str(event["event_id"]))
             return result, True
+
+        # ⚠️ refresh_case_quotations보다 먼저 기록해야 한다. 그쪽은 기록이
+        # 없는 견적을 SQ 생성 시각(= 첨부를 다 읽고 등록한 시각)으로 채우는데,
+        # 이메일 회신은 그 사이 몇 분이 걸릴 수 있다. 메일 시각을 먼저 박아두면
+        # 뒤늦은 기록이 그걸 덮지 못한다.
+        record_email_submissions(
+            rfq_name,
+            registrations,
+            submitted_at=(
+                communication.get("communication_date") or communication.get("creation")
+            ),
+            supplier_id=supplier_id,
+            supplier_name=supplier_name,
+            communication_name=communication_name,
+        )
 
         case = case_repository.get_case_by_rfq(rfq_name)
         projection = None
@@ -343,6 +363,46 @@ def register_quotation_email_event(
     else:
         event_repository.complete_event(str(event["event_id"]))
     return result, True
+
+
+def record_email_submissions(
+    rfq_name: str,
+    registrations: list[dict[str, Any]],
+    *,
+    submitted_at: Any,
+    supplier_id: str | None = None,
+    supplier_name: str | None = None,
+    communication_name: str | None = None,
+) -> int:
+    """이메일 회신으로 등록된 견적의 제출 시각을 메일 시각으로 기록한다.
+
+    포털이 아닌 경로로 들어온 견적은 SQ 생성 시각이 제출 시각이 아니다.
+    첨부를 읽는 데 걸린 시간만큼 뒤로 밀려 있어서, 마감 직전에 낸 견적이
+    마감 후 제출로 보일 수 있다. 그래서 메일 시각을 진실로 삼는다.
+
+    ⚠️ 여기서 예외가 새면 이메일 회신 처리 자체가 실패한다. 삼키고 로그만.
+    """
+    recorded = 0
+    try:
+        for registration in registrations:
+            if not isinstance(registration, dict):
+                continue
+            name = str(registration.get("name") or "").strip()
+            if not name:
+                continue
+            if submission_repository.record_submission(
+                quotation_name=name,
+                rfq_name=rfq_name,
+                source="email",
+                submitted_at=submitted_at,
+                supplier_id=supplier_id,
+                supplier_name=supplier_name,
+                communication_name=communication_name,
+            ) is not None:
+                recorded += 1
+    except Exception:
+        LOGGER.exception("이메일 견적 제출 시각 기록 실패: rfq=%s", rfq_name)
+    return recorded
 
 
 def _rfq_names(document: dict[str, Any]) -> list[str]:
@@ -410,6 +470,39 @@ def build_quotation_snapshot(case: dict[str, Any], rfq_name: str) -> dict[str, A
     }
 
 
+def record_portal_submissions(
+    rfq_name: str, quotations: list[dict[str, Any]]
+) -> int:
+    """아직 제출 시각이 없는 견적만 Supplier Quotation.creation으로 기록한다.
+
+    이미 기록이 있는 견적은 건너뛴다. 이메일로 들어온 건은 메일 시각이 먼저
+    기록돼 있고, 그게 SQ 생성 시각보다 항상 진실에 가깝다 - 폴링이 돌 때마다
+    덮어쓰려 들면 안 된다(기록된 시각은 뒤로 미루지 않는다).
+
+    ⚠️ 여기서 예외가 새면 견적 수신 자체가 실패한다. 제출 시각 기록은 견적을
+    받는 일보다 덜 중요하므로 삼키고 로그만 남긴다.
+    """
+    recorded = 0
+    try:
+        known = submission_repository.submitted_at_by_quotation([rfq_name])
+        for quotation in quotations:
+            name = str(quotation.get("name") or "").strip()
+            if not name or name in known:
+                continue
+            if submission_repository.record_submission(
+                quotation_name=name,
+                rfq_name=rfq_name,
+                source="portal",
+                submitted_at=quotation.get("creation"),
+                supplier_id=quotation.get("supplier"),
+                supplier_name=quotation.get("supplier_name"),
+            ) is not None:
+                recorded += 1
+    except Exception:
+        LOGGER.exception("견적 제출 시각 기록 실패: rfq=%s", rfq_name)
+    return recorded
+
+
 def refresh_case_quotations(
     case: dict[str, Any],
     *,
@@ -438,6 +531,7 @@ def refresh_case_quotations(
     previous = case.get("quotation_snapshot") or {}
     previous = previous if isinstance(previous, dict) else {}
     current = build_quotation_snapshot(case, resolved_rfq)
+    record_portal_submissions(resolved_rfq, current["quotations"])
     updated, changed = case_repository.update_quotation_snapshot(
         str(case["case_id"]), current
     )

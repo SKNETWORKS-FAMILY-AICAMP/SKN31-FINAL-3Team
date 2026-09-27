@@ -264,6 +264,8 @@ def get_quotations_for_rfq(
             "docstatus": detail.get("docstatus"),
             "status": detail.get("status"),
             "modified": detail.get("modified"),
+            # 포털 제출 시각의 근거. 이게 없으면 마감 판정이 기준을 잃는다.
+            "creation": detail.get("creation"),
             "transaction_date": detail.get("transaction_date"),
             "valid_till": detail.get("valid_till"),
             "currency": detail.get("currency") or "KRW",

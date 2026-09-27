@@ -56,7 +56,8 @@ def _parser(endpoint_id=None):
 
 
 def enqueue(data, filename, rfq_name, *, supplier_id, supplier_name,
-            fallback_quotation_id, rfq_requirements, message_id, content_type=None):
+            fallback_quotation_id, rfq_requirements, message_id, content_type=None,
+            submitted_at=None):
     url = callback_url()  # Validate configuration before recording/submitting work.
     parser = _parser()
     prepared = prepare_source_bytes(data, filename)
@@ -71,6 +72,9 @@ def enqueue(data, filename, rfq_name, *, supplier_id, supplier_name,
             'rfq_name': rfq_name, 'supplier_id': supplier_id, 'supplier_name': supplier_name,
             'source_filename': filename, 'fallback_quotation_id': fallback_quotation_id,
             'message_id': message_id, 'content_type': content_type,
+            # 회신 메일이 도착한 시각. SQ는 이 작업이 끝난 뒤에야 만들어지므로,
+            # 제출 시각은 여기서 들고 가지 않으면 되찾을 방법이 없다.
+            'submitted_at': submitted_at,
             'source_kind': prepared.kind.value, 'evidence': prepared.evidence,
             'document_fallbacks': document_fallbacks,
             'pipeline_version': parser.config.pipeline_version,
@@ -110,6 +114,9 @@ def _register(job):
     evidence = context.pop('evidence', [])
     document_fallbacks = context.pop('document_fallbacks', {})
     context.pop('pipeline_version', None)
+    # ⚠️ context는 그대로 _extract_prepared_quotation(**context)로 넘어간다.
+    # 여기서 빼지 않으면 예상치 못한 인자로 터진다.
+    submitted_at = context.pop('submitted_at', None)
     prepared = PreparedSource(kind=SourceKind(kind), text='', evidence=evidence)
     extraction = dict(job['result_json']['extraction'])
     apply_document_fallbacks(extraction, document_fallbacks)
@@ -136,7 +143,17 @@ def _register(job):
     quotation = _extract_prepared_quotation(
         prepared, model_parser=_RecordedParser(extraction), **context,
     )
-    return quotation_service.register_supplier_quotation(quotation)
+    registration = quotation_service.register_supplier_quotation(quotation)
+    # 마감 판정의 기준은 협력사가 낸 시각이다. 이 작업이 몇 분 걸렸어도
+    # 제출 시각은 메일이 도착한 그때다.
+    quotation_service.record_email_submissions(
+        context['rfq_name'], [registration],
+        submitted_at=submitted_at,
+        supplier_id=context.get('supplier_id'),
+        supplier_name=context.get('supplier_name'),
+        communication_name=context.get('message_id'),
+    )
+    return registration
 
 
 def _refresh(job):
