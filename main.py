@@ -279,8 +279,52 @@ async def _recover_runpod_jobs() -> None:
         await asyncio.sleep(60)
 
 
+def _case_resync_interval_seconds() -> float:
+    try:
+        configured = float(os.getenv("CASE_RESYNC_INTERVAL_SECONDS", "300"))
+    except ValueError:
+        configured = 300.0
+    return max(30.0, configured)
+
+
+async def _resync_waiting_cases() -> None:
+    """사람을 기다리는 건의 단계가 체크포인트와 어긋나면 맞춘다.
+
+    stage는 직전 노드가 남긴 값이라 경로에 따라 어긋날 수 있는데, 가만히
+    기다리는 건은 투영될 일이 없어 옛 값이 그대로 남는다. 실제로 그 때문에
+    화면 버튼이 막혀 아무것도 못 누르는 일이 있었다.
+    """
+    from backend_logic2.services import case_recovery, graph_worker
+
+    interval = _case_resync_interval_seconds()
+    while True:
+        try:
+            # 그래프 체크포인트를 읽으므로 전용 스레드에서 돈다.
+            await asyncio.to_thread(
+                graph_worker.run_and_wait, case_recovery.resync_waiting_cases
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("대기 단계 재동기화 실패; %.0f초 뒤 다시 시도", interval)
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 재시작 전에 처리 중이던 건(RUNNING/PROCESSING)을 되돌린다. 작업 큐는
+    # 메모리에만 있어서 재시작하면 표시만 남고 작업은 사라진다. 전용 스레드에
+    # 가장 먼저 예약하므로 뒤따르는 폴러보다 먼저 끝나고, 기동을 막지 않는다.
+    from backend_logic2.services import case_recovery, graph_worker
+
+    if os.getenv("BIDDINGFLOW_RECOVER_ON_STARTUP", "on").strip().lower() not in {
+        "off", "false", "0", "no",
+    }:
+        graph_worker.submit(case_recovery.recover_interrupted_work)
+        graph_worker.submit(case_recovery.resync_waiting_cases)
+    resync_task = asyncio.create_task(
+        _resync_waiting_cases(), name="case-waiting-stage-resync"
+    )
     from backend_logic2.services.runpod_worker_control import reconciliation_loop
     worker_lease_task = asyncio.create_task(reconciliation_loop(), name="runpod-worker-lease-expiry")
     from backend_logic2.services.runpod_quotation_jobs import webhook_mode, callback_url
@@ -332,6 +376,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        resync_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await resync_task
         worker_lease_task.cancel()
         with suppress(asyncio.CancelledError):
             await worker_lease_task
