@@ -28,6 +28,43 @@ class PurchasingRules(StrictModel):
     quotation_specification_weight: float = Field(default=30.0, ge=0, le=100, allow_inf_nan=False)
     quotation_scorecard_weight: float = Field(default=15.0, ge=0, le=100, allow_inf_nan=False)
 
+    # --- 자동 진행 ---
+    # 사람이 멈추는 곳을 줄이되, 조건에 하나라도 걸리면 그 자리에서 멈춰
+    # 담당자를 부른다. 판단이 애매하면 통과가 아니라 정지다.
+    #
+    # off    : 지금까지처럼 모든 지점에서 사람을 기다린다. **기본값이다.**
+    #          진행 중인 케이스에 고정된 옛 정책에는 이 키가 없어 자동으로
+    #          off가 된다 - 운영 중 서비스가 갑자기 움직이지 않는다.
+    # shadow : 조건을 평가해 "이렇게 진행했을 것"을 기록만 남기고 멈춘다.
+    #          임계값을 실제 데이터로 검증하는 단계.
+    # on     : 조건을 통과하면 사람 없이 진행한다.
+    automation_mode: Literal["off", "shadow", "on"] = "off"
+    # 단계별 스위치. automation_mode가 off이면 둘 다 의미가 없다.
+    auto_rfq_dispatch: bool = True
+    auto_final_selection: bool = True
+
+    # RFQ를 사람 확인 없이 보내려면 기존 협력사가 이만큼은 있어야 한다.
+    # ⚠️ min_competing_suppliers("몇 곳을 찾아 초대할까")와는 다른 질문이라
+    # 따로 둔다. 그 값은 신규 탐색 여부를 정하고, 이 값은 "사람 확인을
+    # 건너뛸 만큼 충분한가"를 정한다. 같은 값을 쓰면 한쪽을 조정할 때
+    # 다른 쪽이 조용히 따라 움직인다.
+    auto_rfq_min_existing_suppliers: int = Field(default=3, ge=1, le=20)
+    # 자동 발송 시 견적 마감일: 발송 시각 + 이 일수의 18:00(KST).
+    # 납기요청일이 있으면 min(이 값, 납기까지 남은 일수)를 쓴다.
+    auto_rfq_deadline_days: int = Field(default=5, ge=1, le=60)
+
+    # 자동 선정에 필요한 최소 경쟁 견적 수. 최솟값이 2라서 어떤 설정으로도
+    # 단독 응찰은 자동 선정되지 않는다.
+    auto_selection_min_quotations: int = Field(default=2, ge=2, le=20)
+    # 1순위와 2순위의 종합점수 차이가 이보다 작으면 박빙으로 보고 사람에게.
+    auto_selection_score_gap: float = Field(default=10.0, ge=0, le=100, allow_inf_nan=False)
+    # 선정 금액이 이 값을 넘으면 금액만으로 사람 확인 대상이 된다.
+    auto_selection_max_amount: int = Field(default=50_000_000, ge=1, le=1_000_000_000_000)
+    # 1순위에게 이 기간 안의 확정 발주 이력이 없으면 "처음 거래하는 협력사"로
+    # 보고 사람을 부른다. supplier_refresh_years(공급사 풀 갱신 주기)와는
+    # 다른 질문이라 따로 둔다.
+    auto_known_supplier_years: int = Field(default=3, ge=1, le=20)
+
     @model_validator(mode="before")
     @classmethod
     def drop_legacy_quotation_weights(cls, value):
