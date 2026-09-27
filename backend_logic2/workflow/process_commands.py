@@ -21,7 +21,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, TypedDict
@@ -54,12 +54,7 @@ class PurchaseProcessState(TypedDict, total=False):
     # 화면이 이 건에 사람 손이 닿았는지 보여주는 데 쓴다.
     selection_mode: str
     selection_evidence: dict[str, Any]
-    # 마지막 자동 진행 판정(통과 항목까지 포함). 예외 결정 화면이 이걸
-    # 체크리스트로 그린다.
-    auto_progress: dict[str, Any]
     existing_supplier_candidates: list[dict[str, Any]]
-    # resolve_supplier_pool의 판정(기존 풀만 쓸지 / 신규를 찾아야 할지).
-    supplier_pool_decision: dict[str, Any]
     supplier_candidates: list[dict[str, Any]]
     supplier_registration_results: list[dict[str, Any]]
     supplier_document_review: dict[str, Any]
@@ -511,16 +506,6 @@ def resolve_suppliers_choice_command(state: PurchaseProcessState) -> Command:
     return Command(
         update={
             "existing_supplier_candidates": result["existing_candidates"],
-            # 이 판정이 곧 "신규 협력사 없이 기존 풀만으로 경쟁이 되는가"다.
-            # RFQ 자동 발송이 같은 판단을 다시 하지 않고 이걸 그대로 쓴다.
-            "supplier_pool_decision": {
-                "needs_search": bool(result["needs_search"]),
-                "reasons": [
-                    str(decision.get("reason") or "")
-                    for decision in (result.get("item_decisions") or {}).values()
-                    if isinstance(decision, dict) and decision.get("reason")
-                ],
-            },
             "status": "resolving_supplier_pool",
         },
         goto="search_new_suppliers" if result["needs_search"] else "select_rfq_targets",
@@ -570,44 +555,6 @@ def search_new_suppliers_command(state: PurchaseProcessState) -> Command:
     )
 
 
-def _default_quotation_deadline(mr_name: str) -> str | None:
-    """자동 발송용 기본 견적 마감 시각.
-
-    화면이 쓰는 기본값과 같은 규칙이다 - 납기요청일 3일 전 18시(KST).
-    납기가 빠듯하면 최소 하루는 주고, 납기요청일 자체가 지났으면 자동으로
-    보내지 않는다(None).
-    """
-    from zoneinfo import ZoneInfo
-
-    from backend_logic2.integrations.erp_client import erp_get_one
-
-    seoul = ZoneInfo("Asia/Seoul")
-    try:
-        material_request = erp_get_one("Material Request", mr_name) or {}
-    except Exception:  # noqa: BLE001 - 조회 실패는 자동 발송 포기 사유일 뿐이다
-        return None
-    raw = str(material_request.get("schedule_date") or "").strip()
-    if not raw:
-        return None
-    try:
-        required_by = date.fromisoformat(raw[:10])
-    except ValueError:
-        return None
-
-    now = datetime.now(seoul)
-    if required_by <= now.date():
-        return None
-    target = datetime.combine(
-        required_by - timedelta(days=3), time(hour=18), tzinfo=seoul
-    )
-    minimum = now + timedelta(days=1)
-    if target < minimum:
-        target = minimum.replace(minute=0, second=0, microsecond=0)
-    if target <= now:
-        return None
-    return target.isoformat()
-
-
 def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
     """[5단계-대기] RFQ 보낼 대상 선택. existing_pool_sufficient로 바로
     온 경우엔 supplier_candidates가 아직 안 채워져 있을 수 있어서,
@@ -618,63 +565,17 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
         for candidate in raw_candidates
     ]
 
-    # 자동 진행: 후보가 전부 기존 거래처이고 연락처가 확인되며 최소 경쟁
-    # 수를 채우면 사람 확인 없이 그대로 보낸다. 신규 협력사가 한 곳이라도
-    # 섞이면 여기서 멈춘다(거래한 적 없는 곳을 자동으로 입찰에 넣는 건
-    # 성격이 다른 결정이다).
-    from backend_logic2.services import auto_progress as auto_progress_module
-    from backend_logic2.services.auto_progress import evaluate_rfq_dispatch
-
-    auto = evaluate_rfq_dispatch(
-        candidates, pool_decision=state.get("supplier_pool_decision")
-    )
-    # ⚠️ 재비딩(2차 이상)은 자동으로 보내지 않는다. 사람이 재비딩을 고른 건
-    # 1차에서 뭔가 잘못됐기 때문인데, 같은 후보 목록에 같은 조건으로 다시
-    # 자동 발송하면 그 잘못을 그대로 반복한다. 협력사와 마감일을 사람이
-    # 직접 정하는 기존 팝업으로 돌아간다.
-    if state.get("rfq_rounds"):
-        auto.checks.append({
-            "code": "REBID_ROUND",
-            "label": "재비딩 차수",
-            "detail": "재비딩은 협력사와 마감일을 담당자가 직접 정합니다.",
-            "status": "blocked",
-        })
-        auto.allowed = False
-
-    auto_answer: dict[str, Any] | None = None
-    if auto.should_proceed:
-        auto_deadline = _default_quotation_deadline(str(state.get("mr_name") or ""))
-        if auto_deadline:
-            auto_answer = {
-                "suppliers": [row["name"] for row in candidates],
-                "quotation_deadline": auto_deadline,
-            }
-        else:
-            auto.checks.append({
-                "code": "DEADLINE_UNAVAILABLE",
-                "label": "기본 마감일 계산",
-                "detail": "납기요청일을 확인할 수 없거나 이미 지나 마감일을 정할 수 없습니다.",
-                "status": "blocked",
-            })
-            auto.allowed = False
-
-    auto_progress_module.record_decision(state.get("case_id"), "auto_rfq_dispatch", auto)
-    if auto_answer is not None:
-        print(f"[RFQ 대상 자동 확정] {len(candidates)}곳 · 마감 {auto_answer['quotation_deadline']}")
-        answer = auto_answer
-    else:
-        answer = interrupt({
-            "type": "select_rfq_targets",
-            "mr_name": state["mr_name"],
-            "candidates": candidates,
-            "missing_email": [row["name"] for row in candidates if not row.get("email")],
-            "auto_progress": auto.as_payload(),
-            "input_schema": {
-                "suppliers": ["선택할 업체명"],
-                "supplier_updates": [{"name": "업체명", "email": "contact@example.com"}],
-                "dismiss": ["제외할 업체명"],
-            },
-        })
+    answer = interrupt({
+        "type": "select_rfq_targets",
+        "mr_name": state["mr_name"],
+        "candidates": candidates,
+        "missing_email": [row["name"] for row in candidates if not row.get("email")],
+        "input_schema": {
+            "suppliers": ["선택할 업체명"],
+            "supplier_updates": [{"name": "업체명", "email": "contact@example.com"}],
+            "dismiss": ["제외할 업체명"],
+        },
+    })
     if not isinstance(answer, dict):
         answer = {"action": _decision_value(answer)}
 
@@ -770,7 +671,6 @@ def select_rfq_targets_command(state: PurchaseProcessState) -> Command:
             "quotation_deadline": str(answer.get("quotation_deadline") or "").strip(),
             "supplier_candidates": candidates,
             "supplier_registration_results": registrations,
-            "auto_progress": auto.as_payload(),
             "status": "creating_rfq",
             "error": "",
         },
@@ -853,13 +753,11 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
         "message": "제출된 견적을 확인하시겠습니까? "
                     "(check: 지금 조회만 하고 계속 대기 / later: 그냥 대기 / "
                     "finalize: 지금까지 견적으로 최종선정 단계로 진행 / "
-                    "rebid: 현재 견적을 후보로 유지한 채 새 RFQ 차수 진행 / "
-                    "auto: 조건을 보고 통과하면 자동 선정 - 마감 스캔 잡과 "
-                    "전원 회신 웹훅이 쓰는 값이라 사람은 고르지 않는다)",
+                    "rebid: 현재 견적을 후보로 유지한 채 새 RFQ 차수 진행)",
         "allowed": ["check", "later", "finalize", "rebid"],
     })
     choice = _decision_value(answer)
-    if choice not in ("check", "later", "finalize", "rebid", "auto"):
+    if choice not in ("check", "later", "finalize", "rebid"):
         return Command(
             update={"status": "awaiting_quotation_check", "error": "check, later, finalize, rebid 중 선택하세요."},
             goto="check_quotations",
@@ -891,11 +789,6 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
                 "selected_suppliers": [],
                 "supplier_registration_results": [],
                 "quotation_deadline": "",
-                # ⚠️ 지난 차수의 자동 진행 판정을 반드시 비운다. 남겨두면 화면이
-                # "자동 선정이 조건에 걸려 멈췄다"로 계속 읽어서, 재비딩을 눌러도
-                # 협력사 선정 화면이 아니라 예외 결정 화면에 갇힌다(자동 진행을
-                # 보류하면 그 표시가 꺼져서 정상으로 보이는 게 같은 원인이다).
-                "auto_progress": {},
                 "status": "awaiting_supplier_approval",
                 "error": "",
             },
@@ -977,65 +870,6 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
                 "error": fallback_message,
             },
             goto="check_quotations",
-        )
-
-    if choice == "auto":
-        # 마감 스캔 잡 또는 전원 회신 웹훅이 부른 경로. 조건을 통과하면
-        # 사람 없이 1순위로 확정하고, 하나라도 걸리면 그 자리에 멈춘 채
-        # 판정 결과를 남겨 화면이 "무엇이 걸렸는지"를 보여주게 한다.
-        from backend_logic2.services import auto_progress as auto_progress_module
-        from backend_logic2.services.auto_progress import evaluate_final_selection
-
-        trigger = str(answer.get("trigger") or "deadline") if isinstance(answer, dict) else "deadline"
-        known_suppliers = {
-            str(row.get("name") or "").strip()
-            for row in (state.get("existing_supplier_candidates") or [])
-            if isinstance(row, dict)
-        }
-        decision = evaluate_final_selection(
-            result,
-            deadline_passed=trigger != "all_responded",
-            all_responded=trigger == "all_responded",
-            known_supplier_names=known_suppliers,
-        )
-        shared_update = {
-            "quotation_ranking": result["ranking"],
-            "quotation_excluded": result.get("excluded") or [],
-            "quotation_ranking_meta": {
-                "competition_count": result.get("competition_count", 0),
-                "single_bid": bool(result.get("single_bid")),
-                "specification_evaluation": result.get("specification_evaluation") or {},
-            },
-            "auto_progress": decision.as_payload(),
-        }
-        auto_progress_module.record_decision(state.get("case_id"), "auto_final_selection", decision)
-        print(f"[자동 선정 판정] {decision.summary()}")
-        if not decision.should_proceed:
-            return Command(
-                update={
-                    **shared_update,
-                    "status": "awaiting_quotation_check",
-                    "error": "" if decision.allowed else decision.summary(),
-                },
-                goto="check_quotations",
-            )
-
-        top = result["ranking"][0]
-        submit_finalized_quotations(result["ranking"])
-        return Command(
-            update={
-                **shared_update,
-                "requested_supplier": str(top.get("supplier") or top.get("supplier_name") or "").strip(),
-                "requested_quotation": str(top.get("quotation_id") or top.get("name") or "").strip(),
-                "selection_mode": "auto",
-                "selection_evidence": decision.as_payload(),
-                # 자동 선정은 곧 수주 접수 요청 발송까지다. PO 발송 전
-                # 사람 승인(po_approval)이 마지막 안전망으로 남는다.
-                "auto_pr_dispatch": True,
-                "status": "awaiting_final_selection",
-                "error": "",
-            },
-            goto="final_selection",
         )
 
     if choice == "check":
@@ -1499,8 +1333,6 @@ def handle_pr_rejection_command(state: PurchaseProcessState) -> Command:
                 "pr_id": "", "pr_status": "", "pr_supplier_email": "",
                 "rfq_name": "", "quotation_ranking": [], "requested_supplier": "",
                 "selected_suppliers": [], "supplier_registration_results": [], "quotation_deadline": "",
-                # 지난 차수 판정을 비운다 - 위 재비딩 경로와 같은 이유다.
-                "auto_progress": {},
                 "status": "awaiting_supplier_approval", "error": "",
             },
             goto="select_rfq_targets",

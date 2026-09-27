@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 
 from . import repository, service
@@ -30,37 +29,29 @@ def response_form(token: str, decision: str = Query(..., pattern="^(accept|rejec
 
 @public_router.post("/respond/{token}", response_class=HTMLResponse)
 async def submit_response(token: str, request: Request):
-    # ⚠️ 이 라우트는 async다. 여기서 동기 함수를 그대로 부르면 스레드 하나가
-    # 아니라 이벤트 루프 전체가 멈춘다 - 로그인·목록 조회까지 서버 전체가
-    # 먹통이 된다. 예전엔 여기서 그래프 잠금을 잡는 응답 반영을 직접 불러서,
-    # 자동 진행이 그래프를 몇 분 돌리는 동안 협력사가 버튼을 누르면 서버가
-    # 통째로 멈출 수 있었다. DB 작업은 스레드로 넘기고, 그래프 실행은 전용
-    # 스레드에 예약만 한다.
     # The page sends application/x-www-form-urlencoded. Parsing it directly
     # avoids adding the optional python-multipart package for a two-field form.
     fields = parse_qs((await request.body()).decode("utf-8"), keep_blank_values=True)
     decision = (fields.get("decision") or [""])[0]
     reason = (fields.get("reason") or [None])[0]
     try:
-        pr = await run_in_threadpool(service.respond, token, decision, reason)
+        pr = service.respond(token, decision, reason)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         return HTMLResponse(render_result("처리할 수 없음", str(exc)), status_code=409)
-    from backend_logic2.services.workflow_service import (
-        check_supplier_pr_response_ready,
-        submit_graph_work,
-    )
+    from backend_logic2.services.workflow_service import resume_supplier_pr_response
 
-    case_id = str(pr["case_id"])
-    pr_id = str(pr["pr_id"])
     try:
-        await run_in_threadpool(
-            check_supplier_pr_response_ready, case_id=case_id, pr_id=pr_id
+        projected = resume_supplier_pr_response(
+            case_id=str(pr["case_id"]),
+            pr_id=str(pr["pr_id"]),
+            decision=decision,
+            reason=reason,
         )
     except (ValueError, LookupError) as exc:
-        await run_in_threadpool(
-            repository.record_processing_error, pr_id, stage="validation", error=str(exc)
+        repository.record_processing_error(
+            str(pr["pr_id"]), stage="validation", error=str(exc)
         )
         return HTMLResponse(
             render_result(
@@ -69,46 +60,24 @@ async def submit_response(token: str, request: Request):
             ),
             status_code=409,
         )
+    except RuntimeError:
+        # The workflow service records whether invoke or projection failed.
+        return HTMLResponse(
+            render_result(
+                "응답 접수 완료",
+                "응답이 접수되었습니다. 처리 결과는 담당자가 확인 후 반영합니다.",
+            ),
+            status_code=202,
+        )
 
-    submit_graph_work(
-        _apply_supplier_response,
-        case_id=case_id,
-        pr_id=pr_id,
-        decision=decision,
-        reason=reason,
-    )
     if pr["status"] == "REJECTED":
         return HTMLResponse(render_result("수주 거절 완료", "거절 사유가 BiddingFlow 담당자에게 전달되었습니다."))
-    return HTMLResponse(
-        render_result(
-            "수주 접수 완료",
-            "응답이 전달되었습니다. 담당자 승인 후 발주서가 발행됩니다.",
-        )
+    po_name = (
+        projected.get("workflow_snapshot", {}).get("values", {}).get("po_name")
     )
-
-
-def _apply_supplier_response(
-    *, case_id: str, pr_id: str, decision: str, reason: str | None
-) -> None:
-    """그래프 전용 스레드에서 협력사 응답을 반영한다. 실패하면 담당자가 볼 수 있게 남긴다."""
-    from backend_logic2.services.workflow_service import resume_supplier_pr_response
-
-    try:
-        resume_supplier_pr_response(
-            case_id=case_id, pr_id=pr_id, decision=decision, reason=reason
-        )
-    except Exception as exc:  # noqa: BLE001 - 응답 자체는 이미 접수됐다
-        repository.record_processing_error(pr_id, stage="background", error=str(exc))
-        try:
-            from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
-
-            log_ai_decision(
-                case_id,
-                "supplier_pr_response",
-                f"협력사 수주 응답({decision})을 반영하지 못했습니다: {exc}",
-            )
-        except Exception:  # noqa: BLE001
-            pass
+    if po_name:
+        return HTMLResponse(render_result("수주 접수 완료", f"응답이 반영되었으며 발주서 {po_name}가 생성되었습니다."))
+    return HTMLResponse(render_result("수주 접수 완료", "응답은 반영되었으나 PO 생성 확인이 필요합니다."), status_code=202)
 
 
 @internal_router.get("")

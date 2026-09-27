@@ -181,11 +181,6 @@ async def _poll_substitute_decisions() -> None:
     interval = _mr_poll_interval_seconds()
     while True:
         try:
-            # ⚠️ 스캔(ERPNext 댓글 조회) 자체는 전용 스레드에 올리지 않는다.
-            # 이 폴러는 5초마다 도는데, 스캔까지 전용 스레드에서 하면 그래프
-            # 작업 줄을 계속 차지해서 사람이 누른 선정·승인이 뒤에서 한참
-            # 기다리게 된다. 그래프를 실제로 돌리는 부분만 안에서 전용
-            # 스레드로 넘긴다(substitute_reply_watcher.process_mr).
             await asyncio.to_thread(process_substitute_replies)
         except asyncio.CancelledError:
             raise
@@ -286,34 +281,12 @@ async def _recover_runpod_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 재시작 전에 처리 중이던 건(RUNNING/QUEUED/PROCESSING)을 되돌린다. 그래프
-    # 작업 큐는 메모리에만 있어서, 자동 배포로 재시작되면 표시만 남고 작업은
-    # 사라진다. 전용 스레드에 가장 먼저 예약하므로 뒤에 오는 스캔·폴러보다
-    # 먼저 끝나고, 서버 기동은 기다리지 않는다.
-    if os.getenv("BIDDINGFLOW_RECOVER_ON_STARTUP", "on").strip().lower() not in {
-        "off", "false", "0", "no",
-    }:
-        workflow_service.submit_graph_work(workflow_service.recover_interrupted_work)
     from backend_logic2.services.runpod_worker_control import reconciliation_loop
     worker_lease_task = asyncio.create_task(reconciliation_loop(), name="runpod-worker-lease-expiry")
     from backend_logic2.services.runpod_quotation_jobs import webhook_mode, callback_url
     if webhook_mode():
         callback_url()
     runpod_task = asyncio.create_task(_recover_runpod_jobs(), name="runpod-quotation-recovery")
-    # 견적 마감이 지난 케이스를 깨우는 스캔. 워크플로는 사람의 답을
-    # 기다리며 꺼져 있고 "마감 시각이 됐다"는 사건이 아니라, 아무도
-    # 깨우지 않으면 영원히 멈춰 있다. 회사 정책이 꺼짐이면 스캔이 돌아도
-    # 아무 건도 건드리지 않는다.
-    from backend_logic2.services.auto_progress_scheduler import (
-        auto_progress_loop,
-        scheduler_enabled,
-    )
-
-    auto_progress_task: asyncio.Task[None] | None = None
-    if scheduler_enabled():
-        auto_progress_task = asyncio.create_task(
-            auto_progress_loop(), name="auto-progress-scan"
-        )
     ingest_mode = _mr_ingest_mode()
     polling_task: asyncio.Task[None] | None = None
     startup_reconciliation_task: asyncio.Task[None] | None = None
@@ -390,11 +363,6 @@ async def lifespan(app: FastAPI):
             item_task.cancel()
         with suppress(asyncio.CancelledError):
             await item_task
-        if auto_progress_task is not None:
-            if not auto_progress_task.done():
-                auto_progress_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await auto_progress_task
 
 
 app = FastAPI(title="SKN31 Purchasing Agent API", lifespan=lifespan)

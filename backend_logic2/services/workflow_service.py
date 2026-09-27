@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import logging
-import threading
-from contextlib import contextmanager
-from concurrent.futures import Future, ThreadPoolExecutor
 from threading import RLock
-from typing import Any, Iterator
+from typing import Any
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks
@@ -39,100 +36,6 @@ from .workflow_projection import (
 logger = logging.getLogger(__name__)
 
 _GRAPH_LOCK = RLock()
-
-# ⚠️ 그래프는 전용 스레드 하나에서만 돈다. 예외 없음.
-#
-# 그래프 한 번은 몇 분이 걸릴 수 있다(ERPNext 쓰기, 메일 발송, 공급사 검색,
-# AI 호출). 그리고 _GRAPH_LOCK 때문에 한 번에 하나씩만 돈다. 이 둘이 겹치면
-# 그래프를 부르는 쪽은 앞 실행이 끝날 때까지 몇 분이고 기다리게 되는데,
-# 그 "부르는 쪽"이 어디냐에 따라 사고의 종류가 달랐다.
-#
-#   - HTTP 요청 안에서 부르면 nginx /api/ 제한(60초)에 걸려 504가 나고,
-#     화면에는 "구매 작업 API 요청에 실패했습니다"만 남는다. 그래프는
-#     서버에서 계속 돌아서 케이스는 "...중"에 갇힌다.
-#   - BackgroundTasks에서 부르면 동기 엔드포인트와 같은 anyio 스레드풀을
-#     먹어서, 쌓이면 로그인까지 스레드를 못 받는다.
-#   - async 라우트에서 부르면 이벤트 루프 자체가 멈춰 서버 전체가 먹통이 된다.
-#   - 폴러·스케줄러 스레드에서 부르면 _GRAPH_LOCK과 케이스 잠금을 몇 분씩
-#     쥔 채로 다른 경로를 줄 세운다.
-#
-# 자동 진행을 켜면 사람 말고도 그래프를 부르는 주체(마감 스캔, 전원 회신
-# 감지)가 생겨서 이 경합이 실제로 일어났다. 그래서 규칙을 하나로 정한다:
-# **그래프를 부르는 모든 경로는 여기에 예약만 하고 즉시 돌아온다.**
-# 결과는 케이스 상태·AI 판단 기록·알림으로 화면에 반영된다.
-_GRAPH_WORKER_PREFIX = "biddingflow-graph"
-_GRAPH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix=_GRAPH_WORKER_PREFIX
-)
-
-
-def on_graph_worker() -> bool:
-    """지금 그래프 전용 스레드 위에서 돌고 있는가."""
-    return threading.current_thread().name.startswith(_GRAPH_WORKER_PREFIX)
-
-
-def submit_graph_work(work: Any, *args: Any, **kwargs: Any) -> Future:
-    """그래프를 돌리는 작업을 전용 스레드에 예약하고 즉시 돌아온다.
-
-    예외는 여기서 삼키고 남긴다 - 한 건의 실패가 뒤에 선 작업을 막으면 안
-    된다. 각 작업은 실패를 스스로 케이스·기록에 남겨야 한다.
-    """
-
-    def _run() -> Any:
-        try:
-            return work(*args, **kwargs)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "[graph worker] %s 실패", getattr(work, "__name__", work)
-            )
-            return None
-
-    return _GRAPH_EXECUTOR.submit(_run)
-
-
-_IN_FLIGHT_LOCK = threading.Lock()
-_IN_FLIGHT: set[str] = set()
-_STALE_RUNNING_MESSAGE = (
-    "진행 중이던 처리가 끝나지 못한 채 남아 있었습니다. 상태를 다시 맞췄습니다."
-)
-
-
-@contextmanager
-def graph_case_in_flight(case_id: str) -> Iterator[None]:
-    """이 케이스의 그래프가 지금 돌고 있다고 표시한다."""
-    key = str(case_id)
-    with _IN_FLIGHT_LOCK:
-        _IN_FLIGHT.add(key)
-    try:
-        yield
-    finally:
-        with _IN_FLIGHT_LOCK:
-            _IN_FLIGHT.discard(key)
-
-
-def is_graph_case_in_flight(case_id: str) -> bool:
-    """지금 실제로 도는 중인가.
-
-    ⚠️ 케이스의 RUNNING 표시만 보고 "처리 중"이라고 막으면 안 된다. 그 표시는
-    DB에 남고 실제 작업은 메모리에만 있어서, 재시작이나 예외로 작업이 사라지면
-    표시만 영원히 남는다. 그러면 사용자는 "이미 처리가 진행 중입니다"만 보고
-    아무것도 못 하게 된다(실제로 그렇게 막혔다). 진짜 기준은 이 등록부다.
-    """
-    with _IN_FLIGHT_LOCK:
-        return str(case_id) in _IN_FLIGHT
-
-
-def run_on_graph_worker(work: Any, *args: Any, **kwargs: Any) -> Any:
-    """전용 스레드에서 돌리고 끝날 때까지 기다린다(폴러처럼 기다려도 되는 쪽 전용).
-
-    이미 전용 스레드 위라면 그대로 부른다 - 스레드가 하나뿐이라 자기 자신을
-    기다리면 영원히 멈춘다. 요청 처리 중에는 절대 쓰지 말 것(기다리는 동안
-    요청이 60초 제한에 걸린다).
-    """
-    if on_graph_worker():
-        return work(*args, **kwargs)
-    return _GRAPH_EXECUTOR.submit(work, *args, **kwargs).result()
-
 
 _TASK_STAGE = {
     "substitute_selection": "SUBSTITUTE_DECISION",
@@ -169,7 +72,7 @@ def _run_queued_quotation_analysis(
         if case is None:
             raise LookupError(case_id)
         app = get_process_app()
-        with graph_case_in_flight(case_id), _GRAPH_LOCK:
+        with _GRAPH_LOCK:
             config = _config(case["thread_id"] or case["mr_name"])
             snapshot = app.get_state(config)
             active_task_types = {
@@ -214,139 +117,6 @@ def _run_queued_quotation_analysis(
             )
 
 
-def _run_queued_task_answer(
-    task_id: str,
-    *,
-    answer: dict[str, Any],
-    answered_by: str,
-    expected_version: int,
-    case_id: str,
-    stage: str,
-) -> None:
-    """HTTP 요청이 끝난 뒤에 실제 그래프를 돌린다.
-
-    resume_task를 그대로 부른다 - 작업 종류별 처리(점수카드 등)와 잠금·검증이
-    전부 그 안에 있어서, 여기서 다시 구현하면 두 경로가 갈라진다.
-    """
-    try:
-        with graph_case_in_flight(case_id):
-            resume_task(
-                task_id,
-                answer=answer,
-                answered_by=answered_by,
-                expected_version=expected_version,
-            )
-    except Exception as exc:  # noqa: BLE001 - 배경 실패는 화면에 보여야 한다
-        # RUNNING으로 영원히 남겨두면 사용자는 "멈췄다"만 보고 이유를 모른다.
-        try:
-            task = task_repository.get_task(task_id)
-            if task and task["status"] in {"COMPLETED", "SUPERSEDED", "CANCELLED"}:
-                # 다른 경로(자동 진행 등)가 같은 작업을 먼저 처리했다. 오류가
-                # 아니라 경합에서 진 것뿐이니, 케이스를 실제 위치에 맞추기만 한다.
-                project_case_from_checkpoint(case_id)
-                return
-            _settle_case_after_failure(
-                case_id,
-                error=str(exc),
-                actor=answered_by,
-                fallback_stage=stage,
-            )
-        except Exception as projection_exc:  # noqa: BLE001
-            logger.exception(
-                "[task answer] 실패 상태 저장 오류: %s; original=%s",
-                projection_exc,
-                exc,
-            )
-
-
-def queue_task_answer(
-    task_id: str,
-    *,
-    answer: dict[str, Any],
-    answered_by: str,
-    expected_version: int | None,
-    background_tasks: BackgroundTasks,
-) -> dict[str, Any]:
-    """대기 작업에 답하고, 그래프는 HTTP 소켓을 잡지 않은 채로 돌린다.
-
-    ⚠️ 왜 이래야 하는가: 사람이 답하면 그래프가 이어 도는데, 그 안에서
-    ERPNext 쓰기·메일 발송·공급사 검색·AI 호출이 일어난다. 이걸 요청 안에서
-    그대로 기다리면 nginx의 /api/ 기본 제한(60초)을 넘기고, nginx가 504를
-    HTML로 돌려준다. 프론트는 JSON detail을 못 찾아 "구매 작업 API 요청에
-    실패했습니다"만 띄우는데, 정작 그래프는 서버에서 계속 돌기 때문에
-    케이스는 실패도 아닌 "...중" 상태로 남는다. 사용자가 다시 누르면 같은
-    thread_id에서 실행이 겹쳐 상태가 더 꼬인다.
-    (견적 분석 경로는 같은 문제를 먼저 겪어서 이미 이 방식으로 고쳐져 있었다.
-    나머지 답변 경로 전부에 같은 처방을 한다.)
-
-    검증은 동기로 한다 - 버전 충돌이나 단계 불일치는 사용자가 즉시 알아야
-    하고, 배경에서 조용히 실패하면 안 된다.
-    """
-    if expected_version is None:
-        raise ValueError("작업 버전이 필요합니다. 목록을 새로고침한 뒤 다시 시도해 주세요.")
-    task = task_repository.get_task(task_id)
-    if task is None:
-        raise LookupError(task_id)
-    if task["status"] != "PENDING":
-        raise ValueError("이미 처리 중이거나 완료된 작업입니다.")
-    case_id = str(task["case_id"])
-    case = case_repository.get_case(case_id)
-    if case is None:
-        raise LookupError(case_id)
-    if case["status"] in _TERMINAL_CASE_STATUSES:
-        raise ValueError("이미 종료된 구매 작업에는 응답할 수 없습니다.")
-    if case["status"] == "RUNNING":
-        if is_graph_case_in_flight(case_id):
-            raise ValueError("이미 처리가 진행 중입니다. 잠시 뒤 화면을 확인해 주세요.")
-        # 도는 일이 없는데 RUNNING이면 남겨진 표시다. 체크포인트 기준으로
-        # 되돌려서 사용자가 다시 시도할 수 있게 한다.
-        logger.warning("남겨진 RUNNING 표시를 정리합니다: case_id=%s", case_id)
-        _settle_case_after_failure(
-            case_id, error=_STALE_RUNNING_MESSAGE, actor=answered_by
-        )
-        case = case_repository.get_case(case_id) or case
-        if case["status"] in _TERMINAL_CASE_STATUSES:
-            raise ValueError("이미 종료된 구매 작업에는 응답할 수 없습니다.")
-        if case["status"] == "FAILED":
-            raise ValueError(
-                "진행 중이던 처리가 중단된 지점에 멈춰 있습니다. "
-                "'다시 시도'로 그 지점부터 이어서 진행해 주세요."
-            )
-
-    expected_stage = _TASK_STAGE.get(str(task["task_type"]))
-    if expected_stage and case["stage"] != expected_stage:
-        raise ValueError(
-            f"현재 단계({case['stage']})와 작업 종류({task['task_type']})가 일치하지 않습니다. "
-            "목록을 새로고침해 주세요."
-        )
-
-    stage = str(case.get("stage") or expected_stage or "")
-    case_repository.transition_case(
-        case_id,
-        status="RUNNING",
-        stage=stage,
-        reason="작업을 처리하고 있습니다.",
-        triggered_by=answered_by,
-        last_error=None,
-    )
-    background_tasks.add_task(
-        submit_graph_work,
-        _run_queued_task_answer,
-        task_id,
-        answer=answer,
-        answered_by=answered_by,
-        expected_version=expected_version,
-        case_id=case_id,
-        stage=stage,
-    )
-    return {
-        "accepted": True,
-        "case_id": case_id,
-        "task_id": task_id,
-        "status": "RUNNING",
-    }
-
-
 def queue_quotation_analysis(
     task_id: str,
     *,
@@ -371,15 +141,7 @@ def queue_quotation_analysis(
     if case is None:
         raise LookupError(case_id)
     if case["status"] == "RUNNING":
-        if is_graph_case_in_flight(case_id):
-            raise ValueError("이미 견적 AI 분석이 진행 중입니다.")
-        logger.warning("남겨진 RUNNING 표시를 정리합니다: case_id=%s", case_id)
-        _settle_case_after_failure(
-            case_id, error=_STALE_RUNNING_MESSAGE, actor=answered_by
-        )
-        case = case_repository.get_case(case_id) or case
-        if case["status"] in _TERMINAL_CASE_STATUSES:
-            raise ValueError("이미 종료된 구매 건입니다.")
+        raise ValueError("이미 견적 AI 분석이 진행 중입니다.")
     if case["status"] in _TERMINAL_CASE_STATUSES:
         raise ValueError("이미 종료된 구매 건입니다.")
 
@@ -406,7 +168,6 @@ def queue_quotation_analysis(
         )
         raise
     background_tasks.add_task(
-        submit_graph_work,
         _run_queued_quotation_analysis,
         task_id,
         answer=answer,
@@ -959,11 +720,6 @@ def queue_case_start(case_id: str, *, triggered_by: str) -> dict[str, Any]:
 def run_queued_case(case_id: str, *, triggered_by: str) -> None:
     """Background-safe graph runner.  Failures are persisted for recovery."""
 
-    with graph_case_in_flight(case_id):
-        _run_queued_case(case_id, triggered_by=triggered_by)
-
-
-def _run_queued_case(case_id: str, *, triggered_by: str) -> None:
     case = case_repository.get_case(case_id)
     if case is None:
         return
@@ -1275,26 +1031,6 @@ def project_substitute_decision(
             },
         )
     return projected
-
-
-def check_supplier_pr_response_ready(*, case_id: str, pr_id: str) -> None:
-    """협력사 응답을 반영할 수 있는 상태인지 읽기만 해서 확인한다(잠금 없음).
-
-    협력사 화면에 바로 "처리할 수 없음"을 보여줄 수 있게, 실제 반영(그래프
-    실행)을 예약하기 전에 같은 기준으로 먼저 본다. 최종 확인은
-    resume_supplier_pr_response가 잠금 안에서 다시 한다.
-    """
-    case = case_repository.get_case(case_id)
-    if case is None:
-        raise LookupError(case_id)
-    if case["status"] in _TERMINAL_CASE_STATUSES:
-        raise ValueError("이미 종료된 구매 건입니다.")
-    snapshot = get_process_app().get_state(_config(case["thread_id"] or case["mr_name"]))
-    values = to_checkpoint_data(snapshot.values or {})
-    if values.get("status") != "awaiting_supplier_pr_response":
-        raise ValueError("현재 구매 건은 공급사 PR 응답 대기 상태가 아닙니다.")
-    if str(values.get("pr_id") or "") != str(pr_id):
-        raise ValueError("현재 구매 건의 PR 번호와 응답 PR 번호가 일치하지 않습니다.")
 
 
 def resume_supplier_pr_response(
@@ -1612,155 +1348,3 @@ def extend_quotation_deadline(
         payload={"mr_name": case["mr_name"], "deadline_at": deadline_at, "changed_by": changed_by},
     )
     return updated
-
-
-_RESTART_RECOVERY_MESSAGE = (
-    "서버가 재시작되면서 진행 중이던 처리가 중단되었습니다. 다시 시도해 주세요."
-)
-_RESTART_RECOVERY_ACTOR = "system:restart-recovery"
-
-
-def _settle_case_after_failure(
-    case_id: str,
-    *,
-    error: str,
-    actor: str,
-    fallback_stage: str | None = None,
-) -> None:
-    """실패하거나 끊긴 건을 그래프 체크포인트의 실제 위치에 맞추고 이유를 남긴다.
-
-    ⚠️ 실패했다고 무조건 '원래 단계의 대기'로 되돌리면 안 된다. 같은 건을
-    다른 경로(자동 진행)가 이미 진행시켰을 수 있고, 그러면 되돌리는 순간
-    넘어간 건을 과거 단계로 되감게 된다. 기준은 언제나 체크포인트다.
-    """
-    try:
-        projected = project_case_from_checkpoint(case_id)
-    except Exception:  # noqa: BLE001 - 체크포인트를 못 읽으면 최소한 이유라도 남긴다
-        logger.exception("체크포인트 투영 실패: case_id=%s", case_id)
-        case = case_repository.get_case(case_id)
-        if case and case["status"] not in _TERMINAL_CASE_STATUSES:
-            case_repository.transition_case(
-                case_id,
-                status="WAITING_INPUT",
-                stage=fallback_stage or case.get("stage"),
-                reason="처리 중 오류가 발생했습니다.",
-                triggered_by=actor,
-                last_error=error,
-            )
-        return
-    if projected.get("status") in _TERMINAL_CASE_STATUSES:
-        return
-    case = case_repository.get_case(case_id) or projected
-    snapshot = get_process_app().get_state(_config(case["thread_id"] or case["mr_name"]))
-    waiting_on_person = bool(_interrupt_payloads(snapshot))
-    if projected.get("status") in {"RUNNING", "QUEUED"} or (
-        snapshot.next and not waiting_on_person
-    ):
-        # 노드 한가운데서 멈췄다. FAILED로 두면 '다시 시도'가 체크포인트부터
-        # 이어서 돈다(queue_case_start의 재시도 경로).
-        case_repository.transition_case(
-            case_id,
-            status="FAILED",
-            stage="HUMAN_REVIEW",
-            reason="중단된 처리를 복구했습니다.",
-            triggered_by=actor,
-            last_error=error,
-        )
-        return
-    # 사람의 답을 기다리는 지점이다. 그 상태 그대로 두되 무슨 일이 있었는지 남긴다.
-    case_repository.transition_case(
-        case_id,
-        status=str(projected.get("status")),
-        stage=projected.get("stage"),
-        reason="처리 중 오류가 발생했습니다.",
-        triggered_by=actor,
-        last_error=error,
-    )
-
-
-def _recover_case_after_restart(case_id: str) -> None:
-    """재시작으로 끊긴 건을 체크포인트 기준으로 되돌린다."""
-    _settle_case_after_failure(
-        case_id,
-        error=_RESTART_RECOVERY_MESSAGE,
-        actor=_RESTART_RECOVERY_ACTOR,
-    )
-
-
-def recover_interrupted_work() -> dict[str, int]:
-    """재시작 전에 처리 중이던 건을 사람이 다시 누를 수 있는 상태로 되돌린다.
-
-    ⚠️ 그래프 작업 큐는 메모리에만 있다. 서버가 재시작되면(자동 배포는 푸시마다
-    재시작한다) 예약·진행 중이던 작업은 사라지는데 DB에는 RUNNING / QUEUED /
-    PROCESSING 표시만 남는다. 그러면 "이미 처리가 진행 중입니다"에 막혀 재시도조차
-    못 하고 영원히 멈춘다. 시작할 때 전용 스레드에서 가장 먼저 한 번 되돌린다.
-
-    데이터베이스는 다른 인스턴스(개발 PC)와 같이 보므로, 그래프가 한 번이라도
-    돈 건은 이 인스턴스에 체크포인트가 있을 때만 건드린다.
-    """
-    from backend_logic2.services.auto_progress_runner import has_local_checkpoint
-
-    counts = {"tasks_released": 0, "cases_recovered": 0, "queued_reverted": 0}
-    touched: set[str] = set()
-
-    # 1) 그래프를 돌리던 중에 끊긴 작업 답변 - 다시 답할 수 있게 되돌린다.
-    for task in task_repository.list_tasks(status="PROCESSING"):
-        case = case_repository.get_case(str(task["case_id"]))
-        if case is None or not has_local_checkpoint(case):
-            continue
-        if task_repository.release_claimed_task(
-            str(task["task_id"]), claimed_version=int(task["version"])
-        ):
-            counts["tasks_released"] += 1
-        touched.add(str(case["case_id"]))
-
-    # 2) RUNNING으로 남은 건.
-    for case in case_repository.list_cases(status="RUNNING", include_closed=True, limit=200):
-        if has_local_checkpoint(case):
-            touched.add(str(case["case_id"]))
-
-    for case_id in sorted(touched):
-        try:
-            _recover_case_after_restart(case_id)
-            counts["cases_recovered"] += 1
-        except Exception:  # noqa: BLE001 - 한 건 실패가 나머지 복구를 막으면 안 된다
-            logger.exception("재시작 복구 실패: case_id=%s", case_id)
-
-    # 3) '처리 시작'을 눌렀지만 그래프가 돌기 전에 끊긴 건.
-    for case in case_repository.list_cases(status="QUEUED", include_closed=True, limit=200):
-        case_id = str(case["case_id"])
-        snapshot_flags = case.get("workflow_snapshot") or {}
-        was_retry = bool(
-            snapshot_flags.get("retry_from_checkpoint")
-            or snapshot_flags.get("restart_from_bidding")
-        )
-        try:
-            if has_local_checkpoint(case):
-                case_repository.transition_case(
-                    case_id,
-                    status="FAILED",
-                    stage="HUMAN_REVIEW",
-                    reason="서버 재시작으로 시작되지 못한 처리를 복구했습니다.",
-                    triggered_by=_RESTART_RECOVERY_ACTOR,
-                    last_error=_RESTART_RECOVERY_MESSAGE,
-                )
-            elif not was_retry:
-                # 그래프가 한 번도 돈 적 없는 새 건 - 어느 인스턴스 것이든
-                # 처음 상태로 되돌려도 잃는 게 없다.
-                case_repository.transition_case(
-                    case_id,
-                    status="AWAITING_MR_REVIEW",
-                    stage="MR_REVIEW",
-                    reason="서버 재시작으로 시작되지 못한 처리를 되돌렸습니다.",
-                    triggered_by=_RESTART_RECOVERY_ACTOR,
-                    last_error=_RESTART_RECOVERY_MESSAGE,
-                )
-            else:
-                continue
-            counts["queued_reverted"] += 1
-        except Exception:  # noqa: BLE001
-            logger.exception("재시작 복구 실패(QUEUED): case_id=%s", case_id)
-
-    if any(counts.values()):
-        logger.warning("재시작 복구: %s", counts)
-    return counts

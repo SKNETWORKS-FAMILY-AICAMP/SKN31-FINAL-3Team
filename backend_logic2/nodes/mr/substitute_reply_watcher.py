@@ -154,18 +154,6 @@ def _parse_reply(content: str, flattened_candidates: list):
     return None
 
 
-def _resume_substitute_decision(mr_name: str, parsed: dict) -> None:
-    """그래프 전용 스레드에서만 부른다."""
-    from backend_logic2.services.workflow_service import _GRAPH_LOCK
-
-    app = get_process_app()
-    with _GRAPH_LOCK:
-        current = (app.get_state(_config(mr_name)).values) or {}
-        if current.get("status") != "awaiting_substitute_selection":
-            return
-        app.invoke(Command(resume=parsed), config=_config(mr_name))
-
-
 def process_mr(mr_name: str) -> None:
     app = get_process_app()
     snapshot = app.get_state(_config(mr_name))
@@ -193,10 +181,7 @@ def process_mr(mr_name: str) -> None:
         return
 
     print(f"  [{mr_name}] 답장 파싱 결과: {parsed} -> resume 호출")
-    # 그래프는 전용 스레드에서만 돈다. 여기까지의 조회는 폴러 스레드에서 했다.
-    from backend_logic2.services.workflow_service import run_on_graph_worker
-
-    run_on_graph_worker(_resume_substitute_decision, mr_name, parsed)
+    app.invoke(Command(resume=parsed), config=_config(mr_name))
 
     # resume 후에도 여전히 대기중이면(그래프 자체 검증 실패) 그 사유를 안내
     new_values = (app.get_state(_config(mr_name)).values) or {}

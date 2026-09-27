@@ -29,7 +29,6 @@ from backend_logic2.nodes.item.item_spec_validation import (
     ItemSpecificationPolicyError,
     get_or_create_group_requirements,
 )
-from backend_logic2.services import auto_progress_runner
 from backend_logic2.services import quotation_service
 from procurement_db.config import require_database_url
 from backend_logic2.integrations.assignment_config import (
@@ -282,14 +281,7 @@ def start_case(case_id: str, background_tasks: BackgroundTasks, current_user: Cu
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ERPNextAPIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    # 그래프 전체를 도는 작업은 요청 스레드풀이 아니라 전용 스레드에서 돈다
-    # (workflow_service.submit_graph_work 주석 참고).
-    background_tasks.add_task(
-        workflow_service.submit_graph_work,
-        workflow_service.run_queued_case,
-        case_id,
-        triggered_by=actor,
-    )
+    background_tasks.add_task(workflow_service.run_queued_case, case_id, triggered_by=actor)
     return {"accepted": True, "case": queued}
 
 
@@ -364,81 +356,6 @@ def get_case_quotation_validation(
     }
 
 
-class AutomationHoldRequest(BaseModel):
-    hold: bool
-    reason: str | None = None
-
-
-@router.post("/cases/{case_id}/automation-hold")
-def set_automation_hold(
-    case_id: str,
-    body: AutomationHoldRequest,
-    current_user: CurrentUser,
-):
-    """자동 진행을 잠시 멈추거나 다시 풉니다.
-
-    그래프 state가 아니라 케이스 테이블에 두는 이유는, 워크플로가 멈춰
-    있는 동안에도 보류를 걸 수 있어야 하기 때문입니다(state에 두면 보류를
-    걸려고 워크플로를 깨워야 하는 모순이 생깁니다).
-    """
-    _require_case_access(case_id, current_user)
-    try:
-        case = case_repository.set_automation_hold(
-            case_id,
-            hold=body.hold,
-            reason=(body.reason or "").strip() or None,
-            actor=_user_id(current_user),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="구매 작업을 찾을 수 없습니다.") from exc
-    return {
-        "case_id": case["case_id"],
-        "automation_hold": case["automation_hold"],
-        "automation_hold_reason": case.get("automation_hold_reason"),
-        "automation_hold_by": case.get("automation_hold_by"),
-        "automation_hold_at": case.get("automation_hold_at"),
-    }
-
-
-@router.post("/cases/{case_id}/automation/scan")
-def run_automation_scan(case_id: str, current_user: CurrentUser, response: Response):
-    """이 건의 자동 진행 판정을 요청합니다. **즉시 돌아옵니다.**
-
-    ⚠️ 예전엔 여기서 판정(=그래프 실행)을 요청 안에서 그대로 돌렸다. 켜짐
-    모드에서는 판정이 통과하면 최종 선정 → 발주 → 수주 요청 메일까지 이어
-    돌아 몇 분이 걸렸고, nginx가 60초에 끊어 "구매 작업 API 요청에
-    실패했습니다"만 남았다. 끊긴 뒤에도 그래프는 케이스 잠금을 쥔 채 계속
-    돌아서 마감 스캔까지 그 뒤에 줄을 섰다.
-
-    지금은 바로 답할 수 있는 이유(보류·꺼짐·단계 아님·마감 전)만 그 자리에서
-    답하고, 실제 판정은 그래프 전용 스레드에 예약한다. 결과는 케이스 화면과
-    AI 판단 기록에 남는다.
-    """
-    case = _require_case_access(case_id, current_user)
-    from backend_logic2.services import auto_progress_runner
-
-    try:
-        result = auto_progress_runner.request_manual_check(case)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"자동 진행 판정을 요청하지 못했습니다: {exc}") from exc
-    if result.get("queued"):
-        response.status_code = status.HTTP_202_ACCEPTED
-    return result
-
-
-@router.get("/cases/{case_id}/timeline")
-def get_case_timeline(case_id: str, current_user: CurrentUser):
-    """이 건에 무슨 일이 언제 있었는지 - 단계 전환·사람 응답·AI 판단을 합친 이력."""
-    _require_case_access(case_id, current_user)
-    from backend_logic2.repositories import case_timeline
-
-    try:
-        items = case_timeline.list_case_timeline(case_id)
-    except psycopg.Error as exc:
-        raise HTTPException(status_code=503, detail="이력 저장소에 연결할 수 없습니다.") from exc
-    return {"items": items, "count": len(items)}
-
-
 @router.get("/cases/{case_id}/quotation-deadline/history")
 def get_quotation_deadline_history(case_id: str, current_user: CurrentUser):
     """견적 마감일 연장 이력(오래된 순).
@@ -502,19 +419,12 @@ def answer_task(
             )
             response.status_code = status.HTTP_202_ACCEPTED
             return queued
-        # 나머지 답변도 전부 같은 이유로 배경에서 돌린다. 사람이 답하면
-        # 그래프가 ERPNext 쓰기·메일 발송·공급사 검색까지 이어 도는데, 그걸
-        # 요청 안에서 기다리면 nginx /api/ 기본 제한(60초)을 넘겨 504가 나고,
-        # 화면에는 정체불명의 "구매 작업 API 요청에 실패했습니다"만 남는다.
-        queued = workflow_service.queue_task_answer(
+        return workflow_service.resume_task(
             task_id,
             answer=body.answer,
             answered_by=_user_id(current_user),
             expected_version=body.version,
-            background_tasks=background_tasks,
         )
-        response.status_code = status.HTTP_202_ACCEPTED
-        return queued
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="대기 작업을 찾을 수 없습니다.") from exc
     except (ValueError, RuntimeError) as exc:
@@ -889,14 +799,6 @@ def supplier_quotation_webhook(
                 quotation_service.refresh_live_ranking,
                 str(projection["case_id"]),
                 str(projection["rfq_name"]),
-            )
-            # 전원이 회신했으면 마감을 기다릴 이유가 없다. 순위를 갱신한
-            # 직후에 이어서 자동 진행을 판정한다(배경 작업은 등록 순서대로
-            # 실행된다).
-            # 판정 자체는 전용 스레드에 예약될 뿐이라 여기서는 가볍다.
-            background_tasks.add_task(
-                auto_progress_runner.trigger_on_full_response,
-                str(projection["case_id"]),
             )
     return {"accepted": True, "duplicate": not created, "items": projections}
 
