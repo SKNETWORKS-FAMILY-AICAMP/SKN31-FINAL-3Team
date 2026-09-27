@@ -382,27 +382,23 @@ def record_email_submissions(
 
     ⚠️ 여기서 예외가 새면 이메일 회신 처리 자체가 실패한다. 삼키고 로그만.
     """
-    recorded = 0
     try:
-        for registration in registrations:
-            if not isinstance(registration, dict):
-                continue
-            name = str(registration.get("name") or "").strip()
-            if not name:
-                continue
-            if submission_repository.record_submission(
-                quotation_name=name,
-                rfq_name=rfq_name,
-                source="email",
-                submitted_at=submitted_at,
-                supplier_id=supplier_id,
-                supplier_name=supplier_name,
-                communication_name=communication_name,
-            ) is not None:
-                recorded += 1
+        return submission_repository.record_submissions([
+            {
+                "quotation_name": str(registration.get("name") or "").strip(),
+                "rfq_name": rfq_name,
+                "source": "email",
+                "submitted_at": submitted_at,
+                "supplier_id": supplier_id,
+                "supplier_name": supplier_name,
+                "communication_name": communication_name,
+            }
+            for registration in registrations
+            if isinstance(registration, dict)
+        ])
     except Exception:
         LOGGER.exception("이메일 견적 제출 시각 기록 실패: rfq=%s", rfq_name)
-    return recorded
+        return 0
 
 
 def _rfq_names(document: dict[str, Any]) -> list[str]:
@@ -473,34 +469,35 @@ def build_quotation_snapshot(case: dict[str, Any], rfq_name: str) -> dict[str, A
 def record_portal_submissions(
     rfq_name: str, quotations: list[dict[str, Any]]
 ) -> int:
-    """아직 제출 시각이 없는 견적만 Supplier Quotation.creation으로 기록한다.
+    """포털 제출 시각(Supplier Quotation.creation)을 기록한다.
 
-    이미 기록이 있는 견적은 건너뛴다. 이메일로 들어온 건은 메일 시각이 먼저
-    기록돼 있고, 그게 SQ 생성 시각보다 항상 진실에 가깝다 - 폴링이 돌 때마다
-    덮어쓰려 들면 안 된다(기록된 시각은 뒤로 미루지 않는다).
+    ⚠️ 이 함수는 견적 폴러 안에서 **10초마다** 케이스마다 불린다. 그래서 건수와
+    무관하게 DB 연결 하나, 문장 하나로 끝낸다. 예전에는 "이미 기록된 건"을
+    먼저 조회하고 건당 한 번씩 기록해서 케이스마다 연결을 1+N개 열었는데,
+    이 프로젝트에는 커넥션 풀이 없어서 그게 그대로 부하가 됐다.
+
+    이미 기록이 있는 견적을 다시 넣어도 안전하다 - 기록된 시각은 뒤로 밀리지
+    않고(LEAST), 이메일로 들어온 건의 메일 시각은 SQ 생성 시각에 덮이지
+    않는다(email이 이긴다). 그래서 미리 조회할 필요가 없다.
 
     ⚠️ 여기서 예외가 새면 견적 수신 자체가 실패한다. 제출 시각 기록은 견적을
     받는 일보다 덜 중요하므로 삼키고 로그만 남긴다.
     """
-    recorded = 0
     try:
-        known = submission_repository.submitted_at_by_quotation([rfq_name])
-        for quotation in quotations:
-            name = str(quotation.get("name") or "").strip()
-            if not name or name in known:
-                continue
-            if submission_repository.record_submission(
-                quotation_name=name,
-                rfq_name=rfq_name,
-                source="portal",
-                submitted_at=quotation.get("creation"),
-                supplier_id=quotation.get("supplier"),
-                supplier_name=quotation.get("supplier_name"),
-            ) is not None:
-                recorded += 1
+        return submission_repository.record_submissions([
+            {
+                "quotation_name": str(quotation.get("name") or "").strip(),
+                "rfq_name": rfq_name,
+                "source": "portal",
+                "submitted_at": quotation.get("creation"),
+                "supplier_id": quotation.get("supplier"),
+                "supplier_name": quotation.get("supplier_name"),
+            }
+            for quotation in quotations
+        ])
     except Exception:
         LOGGER.exception("견적 제출 시각 기록 실패: rfq=%s", rfq_name)
-    return recorded
+        return 0
 
 
 def refresh_case_quotations(

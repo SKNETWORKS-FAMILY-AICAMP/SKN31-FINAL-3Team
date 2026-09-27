@@ -69,36 +69,87 @@ def _read_any_format(text: str) -> datetime | None:
     return None
 
 
-def record_submission(
-    *,
-    quotation_name: str,
-    rfq_name: str,
-    source: str,
-    submitted_at: Any,
-    supplier_id: str | None = None,
-    supplier_name: str | None = None,
-    communication_name: str | None = None,
-) -> datetime | None:
-    """제출 시각을 기록하고, 기록 후 남은 값을 돌려준다.
+def merge_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    """쓸 수 있는 행만 남기고, 같은 견적은 하나로 합친다.
 
-    이미 더 이른 시각이 기록돼 있으면 그 값을 유지한다(LEAST). source는
-    email이 이긴다 - 이메일로 들어온 건은 SQ 생성 시각보다 메일 시각이 항상
-    진실에 가깝다.
+    ⚠️ 한 문장 안에 같은 견적이 두 번 들어가면 Postgres가 거부한다
+    (ON CONFLICT는 한 행을 두 번 못 고친다). 폴링과 이메일 처리가 겹치면
+    실제로 그런 입력이 만들어진다.
+
+    합치는 규칙은 ON CONFLICT와 같아야 한다 - 더 이른 시각을 남기고, source는
+    email이 이긴다. 두 곳이 어긋나면 한 문장에 들어온 경우와 두 번에 나눠 들어온
+    경우의 결과가 달라진다.
     """
-    name = str(quotation_name or "").strip()
-    rfq = str(rfq_name or "").strip()
-    moment = parse_erp_datetime(submitted_at)
-    if not name or not rfq or source not in SOURCES or moment is None:
-        return None
+    merged: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("quotation_name") or "").strip()
+        rfq = str(row.get("rfq_name") or "").strip()
+        source = str(row.get("source") or "")
+        moment = parse_erp_datetime(row.get("submitted_at"))
+        if not name or not rfq or source not in SOURCES or moment is None:
+            continue
+        candidate = {
+            "quotation_name": name,
+            "rfq_name": rfq,
+            "supplier_id": row.get("supplier_id") or None,
+            "supplier_name": row.get("supplier_name") or None,
+            "source": source,
+            "submitted_at": moment,
+            "communication_name": row.get("communication_name") or None,
+        }
+        previous = merged.get(name)
+        if previous is None:
+            merged[name] = candidate
+            continue
+        previous["submitted_at"] = min(previous["submitted_at"], moment)
+        if source == "email":
+            previous["source"] = "email"
+            previous["communication_name"] = (
+                candidate["communication_name"] or previous["communication_name"]
+            )
+        previous["supplier_id"] = previous["supplier_id"] or candidate["supplier_id"]
+        previous["supplier_name"] = (
+            previous["supplier_name"] or candidate["supplier_name"]
+        )
+    return list(merged.values())
+
+
+def record_submissions(rows: list[Any]) -> int:
+    """여러 건의 제출 시각을 **연결 하나, 문장 하나**로 기록한다.
+
+    ⚠️ 이 프로젝트에는 커넥션 풀이 없다. get_connection은 부를 때마다 새
+    Postgres 연결을 연다. 이 함수를 부르는 곳이 10초마다 도는 폴러 안이라,
+    건당 한 번씩 부르면 그만큼 연결이 새로 열린다 - 실제로 그것 때문에 화면이
+    느려졌다. 그래서 건수와 무관하게 왕복 한 번으로 끝낸다.
+
+    규칙은 한 건일 때와 같다.
+      - 이미 더 이른 시각이 기록돼 있으면 그 값을 유지한다(LEAST).
+      - source는 email이 이긴다. 이메일로 들어온 건은 SQ 생성 시각보다 메일
+        시각이 항상 진실에 가깝다.
+
+    쓸 수 없는 행을 버리고 같은 견적을 합치는 일은 merge_rows가 한다.
+    """
+    values = merge_rows(rows)
+    if not values:
+        return 0
+
     with get_connection() as connection:
-        row = connection.execute(
+        written = connection.execute(
             """
             INSERT INTO procurement.quotation_submission (
                 quotation_name, rfq_name, supplier_id, supplier_name,
                 source, submitted_at, communication_name
-            ) VALUES (
-                %(quotation_name)s, %(rfq_name)s, %(supplier_id)s, %(supplier_name)s,
-                %(source)s, %(submitted_at)s, %(communication_name)s
+            )
+            SELECT * FROM UNNEST(
+                %(quotation_names)s::text[],
+                %(rfq_names)s::text[],
+                %(supplier_ids)s::text[],
+                %(supplier_names)s::text[],
+                %(sources)s::text[],
+                %(submitted_ats)s::timestamptz[],
+                %(communication_names)s::text[]
             )
             ON CONFLICT (quotation_name) DO UPDATE SET
                 submitted_at = LEAST(
@@ -118,22 +169,42 @@ def record_submission(
                     EXCLUDED.communication_name, quotation_submission.communication_name
                 ),
                 updated_at = now()
-            RETURNING submitted_at
+            RETURNING quotation_name, submitted_at
             """,
             {
-                "quotation_name": name,
-                "rfq_name": rfq,
-                "supplier_id": supplier_id or None,
-                "supplier_name": supplier_name or None,
-                "source": source,
-                "submitted_at": moment,
-                "communication_name": communication_name or None,
+                "quotation_names": [row["quotation_name"] for row in values],
+                "rfq_names": [row["rfq_name"] for row in values],
+                "supplier_ids": [row["supplier_id"] for row in values],
+                "supplier_names": [row["supplier_name"] for row in values],
+                "sources": [row["source"] for row in values],
+                "submitted_ats": [row["submitted_at"] for row in values],
+                "communication_names": [row["communication_name"] for row in values],
             },
-        ).fetchone()
+        ).fetchall()
     # ⚠️ dict_row 연결이다. row[0]은 KeyError(0)이 된다.
-    if not row or "submitted_at" not in row:
-        return None
-    return row["submitted_at"]
+    return len([row for row in written if "submitted_at" in row])
+
+
+def record_submission(
+    *,
+    quotation_name: str,
+    rfq_name: str,
+    source: str,
+    submitted_at: Any,
+    supplier_id: str | None = None,
+    supplier_name: str | None = None,
+    communication_name: str | None = None,
+) -> int:
+    """한 건짜리 편의 함수. 기록한 건수를 돌려준다."""
+    return record_submissions([{
+        "quotation_name": quotation_name,
+        "rfq_name": rfq_name,
+        "source": source,
+        "submitted_at": submitted_at,
+        "supplier_id": supplier_id,
+        "supplier_name": supplier_name,
+        "communication_name": communication_name,
+    }])
 
 
 def submitted_at_by_quotation(rfq_names: list[str]) -> dict[str, datetime]:
@@ -181,6 +252,8 @@ __all__ = [
     "SOURCES",
     "list_submissions",
     "parse_erp_datetime",
+    "merge_rows",
     "record_submission",
+    "record_submissions",
     "submitted_at_by_quotation",
 ]
