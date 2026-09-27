@@ -169,7 +169,9 @@ class QueuedTaskAnswerTests(unittest.TestCase):
         # 그래프는 예약만 되고, 이 호출 안에서는 돌지 않는다.
         background.add_task.assert_called_once()
         queued = background.add_task.call_args
-        self.assertIs(queued[0][0], workflow_service._run_queued_task_answer)
+        # 전용 그래프 스레드로 넘긴다 - 요청 스레드풀을 붙잡으면 안 된다.
+        self.assertIs(queued[0][0], workflow_service.submit_graph_work)
+        self.assertIs(queued[0][1], workflow_service._run_queued_task_answer)
         self.assertEqual(queued[1]["expected_version"], 3)
         transition.assert_called_once()
         self.assertEqual(transition.call_args[1]["status"], "RUNNING")
@@ -229,3 +231,56 @@ class QueuedTaskAnswerTests(unittest.TestCase):
         recorded = transition.call_args[1]
         self.assertEqual(recorded["status"], "WAITING_INPUT")
         self.assertIn("ERPNext", recorded["last_error"])
+
+
+class GraphWorkerIsolationTests(unittest.TestCase):
+    """그래프 작업이 요청 스레드풀을 굶기면 로그인까지 막힌다.
+
+    Starlette의 BackgroundTasks와 동기 엔드포인트는 같은 anyio 스레드풀(기본
+    40개)을 쓴다. 그래프 한 번이 몇 분씩 걸리는데 그걸 배경 작업으로 돌리면
+    워커 스레드를 그 시간 내내 붙잡고, _GRAPH_LOCK 때문에 뒤따르는 건들도
+    스레드를 쥔 채 락을 기다린다. 40개가 차면 로그인이 무한 로딩에 걸린다.
+    """
+
+    def test_graph_work_runs_on_a_single_dedicated_thread(self):
+        seen: list[str] = []
+
+        def slow_graph_work(label):
+            import threading
+            seen.append(threading.current_thread().name)
+
+        for label in ("a", "b", "c"):
+            workflow_service.submit_graph_work(slow_graph_work, label)
+        workflow_service._GRAPH_EXECUTOR.submit(lambda: None).result(timeout=10)
+
+        self.assertEqual(len(seen), 3)
+        # 전부 같은 전용 스레드에서, 요청 스레드풀 밖에서 돌았다.
+        self.assertEqual(len(set(seen)), 1)
+        self.assertTrue(seen[0].startswith("biddingflow-graph"))
+
+    def test_submitting_returns_immediately_without_running_the_work(self):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_work():
+            started.set()
+            release.wait(timeout=10)
+
+        workflow_service.submit_graph_work(blocking_work)
+        started.wait(timeout=10)
+        # 제출한 쪽은 이미 돌아와 있다. 작업이 끝나길 기다리지 않는다.
+        self.assertTrue(started.is_set())
+        release.set()
+        workflow_service._GRAPH_EXECUTOR.submit(lambda: None).result(timeout=10)
+
+    def test_a_failing_job_does_not_kill_the_worker(self):
+        """한 건이 터져도 다음 건은 계속 돌아야 한다."""
+        done = []
+
+        workflow_service.submit_graph_work(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        workflow_service.submit_graph_work(lambda: done.append(True))
+        workflow_service._GRAPH_EXECUTOR.submit(lambda: None).result(timeout=10)
+
+        self.assertEqual(done, [True])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from threading import RLock
 from typing import Any
 from datetime import datetime, timezone
@@ -36,6 +37,35 @@ from .workflow_projection import (
 logger = logging.getLogger(__name__)
 
 _GRAPH_LOCK = RLock()
+
+# ⚠️ 그래프 실행은 전용 스레드 하나에서 순서대로 돈다. 요청 스레드풀을 쓰면
+# 안 된다.
+#
+# Starlette의 BackgroundTasks와 동기(def) 엔드포인트는 **같은** anyio
+# 스레드풀(기본 40개)을 공유한다. 그래프 한 번 도는 데 몇 분이 걸리는데
+# (ERPNext 쓰기, 메일 발송, 공급사 검색, AI 호출) 그걸 배경 작업으로 돌리면
+# 작업 하나가 워커 스레드 하나를 그 시간 내내 붙잡는다. 게다가 _GRAPH_LOCK이
+# 그래프를 직렬화하므로, 여러 건이 들어오면 스레드들이 전부 락을 기다리며
+# 쌓인다. 40개가 차면 로그인까지 포함해 모든 동기 엔드포인트가 스레드를
+# 못 받아 무한 대기한다(실제로 로그인이 무한 로딩에 걸렸다).
+#
+# 어차피 _GRAPH_LOCK 때문에 한 번에 하나씩만 도니까, 스레드도 하나만 쓰고
+# 나머지는 큐에 세운다. 스레드를 굶기는 대신 순서를 기다리게 한다.
+_GRAPH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="biddingflow-graph"
+)
+
+
+def submit_graph_work(work: Any, *args: Any, **kwargs: Any) -> None:
+    """그래프를 돌리는 작업을 전용 스레드에 넘기고 즉시 돌아온다."""
+
+    def _run() -> None:
+        try:
+            work(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - 각 작업이 자기 실패를 기록하지만
+            print(f"[graph worker] {getattr(work, '__name__', work)} 실패: {exc}")
+
+    _GRAPH_EXECUTOR.submit(_run)
 
 _TASK_STAGE = {
     "substitute_selection": "SUBSTITUTE_DECISION",
@@ -214,6 +244,7 @@ def queue_task_answer(
         last_error=None,
     )
     background_tasks.add_task(
+        submit_graph_work,
         _run_queued_task_answer,
         task_id,
         answer=answer,
@@ -281,6 +312,7 @@ def queue_quotation_analysis(
         )
         raise
     background_tasks.add_task(
+        submit_graph_work,
         _run_queued_quotation_analysis,
         task_id,
         answer=answer,

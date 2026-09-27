@@ -282,7 +282,14 @@ def start_case(case_id: str, background_tasks: BackgroundTasks, current_user: Cu
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ERPNextAPIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    background_tasks.add_task(workflow_service.run_queued_case, case_id, triggered_by=actor)
+    # 그래프 전체를 도는 작업은 요청 스레드풀이 아니라 전용 스레드에서 돈다
+    # (workflow_service.submit_graph_work 주석 참고).
+    background_tasks.add_task(
+        workflow_service.submit_graph_work,
+        workflow_service.run_queued_case,
+        case_id,
+        triggered_by=actor,
+    )
     return {"accepted": True, "case": queued}
 
 
@@ -900,6 +907,7 @@ def supplier_quotation_webhook(
             # 직후에 이어서 자동 진행을 판정한다(배경 작업은 등록 순서대로
             # 실행된다).
             background_tasks.add_task(
+                workflow_service.submit_graph_work,
                 auto_progress_runner.trigger_on_full_response,
                 str(projection["case_id"]),
             )
