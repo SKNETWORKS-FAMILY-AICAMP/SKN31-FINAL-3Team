@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -41,7 +42,22 @@ class AutoDecision:
 
     @property
     def blockers(self) -> list[dict[str, Any]]:
+        """사람을 불러야 하는 이유."""
         return [row for row in self.checks if row.get("status") == "blocked"]
+
+    @property
+    def waiting(self) -> list[dict[str, Any]]:
+        """시간이 해결하는 이유(규격 평가가 아직 도는 중 등).
+
+        ⚠️ 이걸 blocked와 섞으면 안 된다. 아직 안 끝난 것뿐인데 사람을 부르면
+        담당자는 할 일도 없이 불려 나오고, 진짜 멈춘 건과 구분이 안 된다.
+        """
+        return [row for row in self.checks if row.get("status") == "waiting"]
+
+    @property
+    def needs_person(self) -> bool:
+        """지금 사람을 불러야 하는가. 기다리는 중이면 아직 아니다."""
+        return bool(self.blockers)
 
     @property
     def should_proceed(self) -> bool:
@@ -61,6 +77,9 @@ class AutoDecision:
             if self.mode == "shadow":
                 return f"조건 {passed}개를 모두 통과했습니다 (기록만, 실제 진행은 안 함)."
             return f"조건 {passed}개를 모두 통과해 자동으로 진행합니다."
+        if not self.blockers and self.waiting:
+            reasons = "; ".join(row["detail"] for row in self.waiting)
+            return f"아직 판정할 때가 아닙니다 - {reasons}"
         reasons = "; ".join(row["detail"] for row in self.blockers)
         return f"자동 진행을 멈췄습니다 - {reasons}"
 
@@ -72,6 +91,7 @@ class AutoDecision:
             "node": self.node,
             "checks": self.checks,
             "evidence": self.evidence,
+            "needs_person": self.needs_person,
             "summary": self.summary(),
         }
 
@@ -208,6 +228,208 @@ def evaluate_rfq_dispatch(
             "minimum_suppliers": minimum,
             "deadline": deadline,
             "is_rebid": is_rebid,
+        },
+    )
+
+
+def _amount(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _score(row: dict[str, Any]) -> float | None:
+    value = row.get("overall_score")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def score_gap(ranking: list[dict[str, Any]]) -> float | None:
+    """1순위와 2순위의 종합점수 차이. 비교 대상이 없으면 None."""
+    if len(ranking) < 2:
+        return None
+    first, second = _score(ranking[0]), _score(ranking[1])
+    if first is None or second is None:
+        return None
+    return round(first - second, 2)
+
+
+def evaluate_final_selection(
+    result: dict[str, Any],
+    *,
+    ready: bool,
+    not_ready_reason: str = "",
+    known_supplier_names: set[str] | None = None,
+    today: date | None = None,
+) -> AutoDecision:
+    """1순위를 사람 확인 없이 선정해도 되는가.
+
+    ready는 "판정을 시작해도 되는가"다 - 마감이 지났고 마감 전 제출분이 전부
+    처리(파싱 + 규격 평가)됐는지. 그 판단은 호출하는 쪽이 하고, 여기서는
+    "그래서 자동으로 골라도 되는가"만 본다.
+
+    ⚠️ 여기서 걸리면 견적을 확정(Submit)하면 안 된다. 확정은 되돌리기 어렵다.
+    """
+    rules = _rules()
+    mode = str(rules.automation_mode)
+    enabled = bool(rules.auto_final_selection)
+    checks: list[dict[str, Any]] = []
+
+    ranking = [row for row in (result.get("ranking") or []) if isinstance(row, dict)]
+    parse_failed = list(result.get("parse_failed") or [])
+    spec = result.get("specification_evaluation") or {}
+    now_date = today or datetime.now(KST).date()
+
+    # 0) 판정할 때가 됐는가. 아직이면 사람을 부르는 게 아니라 그냥 기다린다.
+    if not ready:
+        checks.append(_check(
+            "READY", "판정 시점",
+            not_ready_reason or "아직 판정할 때가 아닙니다",
+            status="waiting",
+        ))
+    else:
+        checks.append(_passed("READY", "판정 시점", "마감이 지났고 견적 처리가 끝났습니다"))
+
+    # 1) 회신이 있는가.
+    if not ranking:
+        checks.append(_blocked(
+            "HAS_RANKING", "순위 산정",
+            "순위를 매길 수 있는 견적이 없습니다" if parse_failed or result.get("excluded")
+            else "회신한 협력사가 없습니다",
+        ))
+    else:
+        checks.append(_passed("HAS_RANKING", "순위 산정", f"{len(ranking)}건의 순위가 매겨졌습니다"))
+
+    # 2) 읽지 못한 견적이 있으면 비교가 공정하지 않다.
+    if parse_failed:
+        checks.append(_blocked(
+            "PARSE_FAILED", "견적 읽기",
+            f"읽지 못한 견적이 {len(parse_failed)}건 있습니다",
+        ))
+    else:
+        checks.append(_passed("PARSE_FAILED", "견적 읽기", "모든 견적을 읽었습니다"))
+
+    # 3) 경쟁이 성립하는가. 하한이 2라 단독 응찰은 어떤 설정으로도 못 지나간다.
+    minimum = int(rules.auto_selection_min_quotations)
+    competition = int(result.get("competition_count") or len(ranking))
+    if result.get("single_bid") or competition < minimum:
+        checks.append(_blocked(
+            "MIN_COMPETITION", "경쟁 견적",
+            f"비교 가능한 견적이 {competition}건입니다 (기준 {minimum}건)",
+        ))
+    else:
+        checks.append(_passed(
+            "MIN_COMPETITION", "경쟁 견적", f"{competition}건 (기준 {minimum}건)",
+        ))
+
+    # 4) 규격 평가가 끝났는가. 안 끝났으면 기다린다(사람을 부르지 않는다).
+    spec_status = str(spec.get("status") or "")
+    if spec_status == "completed":
+        checks.append(_passed("SPEC_EVALUATION", "규격 평가", f"{spec.get('model') or 'AI'} 평가 완료"))
+    elif spec_status:
+        checks.append(_check(
+            "SPEC_EVALUATION", "규격 평가",
+            f"규격 평가가 끝나지 않았습니다 (미평가 {len(spec.get('unevaluated') or [])}건)",
+            status="waiting",
+        ))
+    else:
+        checks.append(_blocked("SPEC_EVALUATION", "규격 평가", "규격 평가 상태를 확인할 수 없습니다"))
+
+    top = ranking[0] if ranking else {}
+    top_supplier = str(top.get("supplier") or top.get("supplier_name") or "").strip()
+
+    # 5) 1순위에 확인이 필요한 감점이 있는가.
+    blocking = [
+        row for row in (top.get("penalties") or [])
+        if isinstance(row, dict) and row.get("requires_confirmation")
+    ]
+    if blocking:
+        labels = ", ".join(str(row.get("label") or row.get("code")) for row in blocking)
+        checks.append(_blocked("TOP_PENALTY", "1순위 감점", f"확인이 필요한 감점이 있습니다 ({labels})"))
+    else:
+        checks.append(_passed("TOP_PENALTY", "1순위 감점", "확인이 필요한 감점 없음"))
+
+    # 6) 유효기간이 지난 견적을 자동으로 고르면 안 된다.
+    valid_till_raw = str(top.get("valid_till") or "").strip()
+    if not valid_till_raw:
+        checks.append(_passed("QUOTATION_VALIDITY", "견적 유효기간", "유효기간이 지정되지 않았습니다"))
+    else:
+        try:
+            valid_till = date.fromisoformat(valid_till_raw[:10])
+        except ValueError:
+            checks.append(_blocked(
+                "QUOTATION_VALIDITY", "견적 유효기간",
+                f"유효기간을 읽을 수 없습니다({valid_till_raw})",
+            ))
+        else:
+            if valid_till < now_date:
+                checks.append(_blocked(
+                    "QUOTATION_VALIDITY", "견적 유효기간",
+                    f"1순위 견적의 유효기간({valid_till})이 지났습니다",
+                ))
+            else:
+                checks.append(_passed("QUOTATION_VALIDITY", "견적 유효기간", f"{valid_till}까지 유효합니다"))
+
+    # 7) 1순위와 2순위가 붙어 있으면 사람이 본다.
+    gap = score_gap(ranking)
+    threshold = float(rules.auto_selection_score_gap)
+    if gap is None:
+        checks.append(_blocked("SCORE_GAP", "1·2순위 점수차", "점수차를 계산할 수 없습니다"))
+    elif gap < threshold:
+        checks.append(_blocked(
+            "SCORE_GAP", "1·2순위 점수차",
+            f"1·2순위 점수차가 {gap}점으로 기준({threshold}점)보다 작습니다",
+        ))
+    else:
+        checks.append(_passed("SCORE_GAP", "1·2순위 점수차", f"{gap}점 (기준 {threshold}점)"))
+
+    # 8) 금액 상한.
+    amount = _amount(top.get("total_amount") or top.get("grand_total"))
+    limit = Decimal(str(rules.auto_selection_max_amount))
+    if amount is None:
+        checks.append(_blocked("AMOUNT_LIMIT", "자동 선정 금액", "1순위 견적 금액을 확인할 수 없습니다"))
+    elif amount > limit:
+        checks.append(_blocked(
+            "AMOUNT_LIMIT", "자동 선정 금액",
+            f"선정 금액 {amount:,.0f}원이 상한({limit:,.0f}원)을 넘습니다",
+        ))
+    else:
+        checks.append(_passed("AMOUNT_LIMIT", "자동 선정 금액", f"{amount:,.0f}원 (상한 {limit:,.0f}원)"))
+
+    # 9) 처음 거래하는 협력사인가.
+    if not top_supplier:
+        checks.append(_blocked("KNOWN_SUPPLIER", "거래 이력", "1순위 협력사 이름을 확인할 수 없습니다"))
+    elif known_supplier_names is None:
+        checks.append(_blocked("KNOWN_SUPPLIER", "거래 이력", "거래 이력을 확인할 수 없습니다"))
+    elif top_supplier not in known_supplier_names:
+        years = int(rules.auto_known_supplier_years)
+        checks.append(_blocked(
+            "KNOWN_SUPPLIER", "거래 이력",
+            f"{top_supplier}은(는) 최근 {years}년 내 확정 발주 이력이 없는 신규 협력사입니다",
+        ))
+    else:
+        checks.append(_passed("KNOWN_SUPPLIER", "거래 이력", f"{top_supplier} 거래 이력 확인됨"))
+
+    allowed = not any(row["status"] != "passed" for row in checks)
+    return AutoDecision(
+        allowed=allowed,
+        mode=mode,
+        enabled=enabled,
+        node="auto_final_selection",
+        checks=checks,
+        evidence={
+            "competition_count": competition,
+            "score_gap": gap,
+            "top_supplier": top_supplier or None,
+            "top_quotation_id": str(top.get("quotation_id") or top.get("name") or "") or None,
+            "top_amount": float(amount) if amount is not None else None,
+            "parse_failed_count": len(parse_failed),
+            "specification_status": spec_status or None,
         },
     )
 
