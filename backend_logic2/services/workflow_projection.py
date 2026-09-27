@@ -72,6 +72,53 @@ def project_graph_status(graph_status: str | None) -> tuple[str, str]:
     return "RUNNING", stage
 
 
+# 인터럽트(사람을 기다리는 지점)별 단계. 멈춰 선 지점이 곧 단계다.
+INTERRUPT_TASK_STAGE = {
+    "substitute_selection": "SUBSTITUTE_DECISION",
+    "supplier_approval": "RFQ_TARGET_SELECTION",
+    "rfq_target_selection": "RFQ_TARGET_SELECTION",
+    "select_rfq_targets": "RFQ_TARGET_SELECTION",
+    "quotation_check": "QUOTATION_COLLECTION",
+    "check_quotations": "QUOTATION_COLLECTION",
+    "final_selection": "SUPPLIER_SELECTION",
+    "supplier_document_review": "SUPPLIER_DOCUMENT_REVIEW",
+    "order_start": "ORDER_START",
+    "po_approval": "PRE_PO_APPROVAL",
+    "pr_request": "PR_REQUEST",
+    "supplier_pr_response": "PR_RESPONSE_WAITING",
+    "pr_rejection_review": "PR_REJECTED",
+    "po_creation_failed": "PO_CREATION_FAILED",
+}
+
+
+def project_waiting_point(interrupt_payloads: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """멈춰 선 지점에서 (케이스 상태, 단계)를 도출한다. 기다리는 게 없으면 None.
+
+    ⚠️ 왜 values["status"]를 믿지 않는가: status는 **직전 노드가 남긴 값**이다.
+    사람을 기다리는 노드는 interrupt()로 멈추는데, LangGraph는 노드가 Command를
+    반환할 때만 state를 갱신하므로 그 노드는 자기 상태를 남길 방법이 없다.
+    그래서 "어떤 경로로 이 지점에 왔는지"에 따라 status가 달라졌다.
+
+    실제로: 기존 협력사 풀로 충분해서 select_rfq_targets로 바로 오면 status가
+    resolving_supplier_pool(단계: 협력사 탐색)에 머문 채 사람을 기다렸다.
+    화면은 RFQ_TARGET_SELECTION에서만 버튼을 열기 때문에, 그래프는 답을
+    기다리는데 화면은 막혀 있었다. 신규 탐색 경로는 search_new_suppliers가
+    status를 남겨서 멀쩡했고, 그래서 한쪽 경로에서만 재현됐다.
+
+    호출하는 쪽마다 status를 세우게 하면 경로가 늘 때마다 같은 실수가 반복된다.
+    멈춰 선 지점 자체에서 도출하면 경로와 무관하게 맞는다.
+    """
+    for payload in interrupt_payloads:
+        if not isinstance(payload, dict):
+            continue
+        task_type = str(payload.get("type") or "")
+        stage = INTERRUPT_TASK_STAGE.get(task_type)
+        if stage:
+            # 인터럽트가 걸려 있다는 건 사람의 답을 기다린다는 뜻이다.
+            return "WAITING_INPUT", stage
+    return None
+
+
 def task_presentation(payload: dict[str, Any]) -> dict[str, Any]:
     task_type = str(payload.get("type") or "workflow_input")
     presentations = {

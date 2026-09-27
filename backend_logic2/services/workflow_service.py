@@ -29,6 +29,7 @@ from backend_logic2.workflow.process_graph import delete_thread_checkpoints, get
 
 from .workflow_projection import (
     project_graph_status,
+    project_waiting_point,
     task_input_schema,
     task_presentation,
 )
@@ -848,6 +849,11 @@ def project_case_from_checkpoint(case_id: str) -> dict[str, Any]:
     values = to_checkpoint_data(snapshot.values or {})
     graph_status = values.get("status")
     case_status, stage = project_graph_status(graph_status)
+    # 사람을 기다리며 멈춰 있으면, 직전 노드가 남긴 status가 아니라 멈춰 선
+    # 지점에서 단계를 도출한다(project_waiting_point 주석 참고).
+    waiting_point = project_waiting_point(_interrupt_payloads(snapshot))
+    if waiting_point is not None:
+        case_status, stage = waiting_point
     projection_error = values.get("error") or None
     if graph_status == "catalog_purchase_required" and not projection_error:
         projection_error = (
