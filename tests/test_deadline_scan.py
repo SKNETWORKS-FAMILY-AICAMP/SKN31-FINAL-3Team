@@ -1,4 +1,9 @@
-"""마감 스캔과 자동 선정 경로 - 자동화 v2의 5단계 c.
+"""마감 판정과 자동 선정 경로 - 자동화 v2의 5단계 c.
+
+⚠️ **주기 스케쥴러는 빼놨다.** 60초마다 도는 스윕이 마감 지난 케이스마다
+ERPNext를 N+1로 조회해서 RFQ 전송 버튼이 504로 죽었다. 지금은 사람이 건별로
+버튼을 눌러 판정을 시작한다. 스윕은 서버에 접속해서 부하를 볼 수 있을 때
+다시 넣는다 - 안 보고 다시 넣으면 같은 일이 반복된다.
 
 이 파일이 지키는 것은 전부 v1에서 **실제로 터진 것**이다.
 
@@ -510,3 +515,22 @@ def test_only_late_quotations_means_no_ranking_with_an_honest_reason(monkeypatch
     assert result["ranking"] == []
     assert "마감 후에 제출된 견적 1건" in result["message"]
     assert result["excluded"][0]["kind"] == "late_submission"
+
+
+# ---------------------------------------------------------------------------
+# 주기 스케쥴러가 다시 들어오지 않게
+# ---------------------------------------------------------------------------
+
+
+def test_no_periodic_sweep_runs_in_the_background() -> None:
+    """⚠️ 60초마다 도는 스윕이 마감 지난 케이스마다 ERPNext를 N+1로 조회해서
+    RFQ 전송 버튼이 504로 죽었다. 서버 부하를 볼 수 있게 되기 전까지는 주기
+    실행을 붙이지 않는다 - 안 보고 다시 넣으면 같은 일이 반복된다."""
+    import inspect
+
+    import main
+
+    source = inspect.getsource(main)
+
+    assert "scan_due_cases" not in source, "마감 스윕이 다시 배경으로 돌고 있다"
+    assert "deadline_scan" not in source
