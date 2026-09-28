@@ -625,6 +625,8 @@ def transition_case(
                 "triggered_by": triggered_by,
             },
         )
+        from backend_logic2.repositories.work_progress import notify_progress
+        notify_progress(connection, case_id)
     return dict(row)
 
 

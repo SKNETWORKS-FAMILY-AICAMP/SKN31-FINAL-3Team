@@ -121,6 +121,8 @@ def log_status_change(case_id, to_status, reason=None, from_status=None):
                 """,
                 {"case_id": case_id, "from_status": from_status, "to_status": to_status, "reason": reason},
             )
+            from backend_logic2.repositories.work_progress import notify_progress
+            notify_progress(conn, case_id)
         print(f"    [케이스 상태] {case_id[:8]}... {from_status} -> '{to_status}'" + (f" ({reason})" if reason else ""))
     except Exception as e:
         print(f"    [case_logging] 상태기록 실패, 무시하고 진행: {e}")
@@ -151,5 +153,8 @@ def log_ai_decision(case_id, node, reason=None):
                 """,
                 {"case_id": case_id, "node": node, "reason": reason},
             )
+            if case_id:
+                from backend_logic2.repositories.work_progress import notify_progress
+                notify_progress(conn, case_id)
     except Exception as e:
         print(f"    [case_logging] AI판단 기록 실패, 무시하고 진행: {e}")

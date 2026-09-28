@@ -9,6 +9,7 @@ import secrets
 from contextlib import suppress
 from datetime import datetime
 from typing import Any, Literal, Optional
+from uuid import UUID
 from urllib.parse import quote
 
 import psycopg
@@ -184,6 +185,27 @@ def get_cases(
         "offset": offset,
         "assigned_to_me": assigned_to_me,
     }
+
+@router.get("/progress")
+def get_work_progress(current_user: CurrentUser):
+    from backend_logic2.repositories.work_progress import list_progress
+    actor = _user_id(current_user)
+    try:
+        return list_progress(actor, admin=is_super_admin(actor))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "진행 현황을 불러오지 못했습니다.") from exc
+
+
+@router.get("/cases/{case_id}/decisions")
+def get_case_decisions(case_id: UUID, current_user: CurrentUser,
+                       limit: int = Query(default=30, ge=1, le=100),
+                       offset: int = Query(default=0, ge=0)):
+    # Do not expose the administrator's global audit log to every buyer.
+    _require_case_access(str(case_id), current_user)
+    from backend_logic2.repositories.ai_decisions import list_decisions
+    items, count = list_decisions(case_id=str(case_id), limit=limit, offset=offset)
+    return {'items': items, 'count': count}
+
 
 @router.get("/cases/{case_id}")
 def get_case(case_id: str, current_user: CurrentUser):
@@ -634,6 +656,12 @@ async def stream_procurement_events(current_user: CurrentUser):
                 except (TypeError, json.JSONDecodeError):
                     continue
                 target = payload.get("recipient_id")
+                if payload.get("event_type") == "progress":
+                    # Unassigned work is admin-only. No MR identifiers or reasons
+                    # are broadcast; the follow-up read applies case permissions.
+                    if is_super_admin(recipient_id) or is_same_user(target, recipient_id):
+                        yield 'event: progress\ndata: {}\n\n'
+                    continue
                 if target and target != recipient_id:
                     continue
                 yield "event: notification\n" + (

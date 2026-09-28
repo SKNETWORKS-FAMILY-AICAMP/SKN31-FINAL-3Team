@@ -128,6 +128,9 @@ def finish(job: dict[str, Any], status: str, reason: str, *, prepared=None, metr
         """, (status, reason, Jsonb(prepared) if prepared is not None else None,
               Jsonb(metrics) if metrics is not None else None,
               retry_seconds, str(job['case_id']), job['claim_token']))
+        if result.rowcount == 1:
+            from backend_logic2.repositories.work_progress import notify_progress
+            notify_progress(conn, str(job['case_id']))
         return result.rowcount == 1
 
 
