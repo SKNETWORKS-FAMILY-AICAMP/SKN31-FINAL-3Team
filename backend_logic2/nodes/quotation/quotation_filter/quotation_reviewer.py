@@ -83,6 +83,8 @@ def _html_to_text(value: Any) -> str:
     raw = html.unescape(str(value or ""))
     raw = re.sub(r"(?i)<br\s*/?>|</(?:p|div|li|tr)\s*>", "\n", raw)
     raw = re.sub(r"(?s)<[^>]+>", " ", raw)
+    from backend_logic2.integrations.specification_text import remove_item_template_notice
+    raw = remove_item_template_notice(raw)
     lines = [re.sub(r"\s+", " ", line).strip() for line in raw.splitlines()]
     return "\n".join(line for line in lines if line)
 

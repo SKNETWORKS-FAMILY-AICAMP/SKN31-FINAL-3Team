@@ -44,7 +44,8 @@ def _strip_html(text: str) -> str:
         return ""
     plain = re.sub(r"<[^>]+>", " ", text)
     plain = re.sub(r"\s+", " ", plain)
-    return plain.strip()
+    from backend_logic2.integrations.specification_text import remove_item_template_notice
+    return remove_item_template_notice(plain)
 
 
 def _get_core_keyword(item_name: str) -> str:

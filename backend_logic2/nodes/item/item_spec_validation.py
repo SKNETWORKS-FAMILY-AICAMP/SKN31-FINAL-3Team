@@ -36,6 +36,7 @@ DB 테이블: migrations/010_create_item_group_spec_requirements.sql로 관리.
 from __future__ import annotations
 
 import json
+from backend_logic2.integrations.specification_text import remove_item_template_notice
 from collections.abc import Mapping, Sequence
 from urllib.parse import quote
 
@@ -275,7 +276,7 @@ def check_item_spec_completeness(item_group: str, description: str) -> dict:
     requirements = get_or_create_group_requirements(item_group)
     required_specs = requirements["required_specs"]
 
-    description = (description or "").strip()
+    description = remove_item_template_notice(description or "")
     if len(description) < EMPTY_DESCRIPTION_MIN_LENGTH:
         print(f"    [규격확인] 설명이 너무 짧음({len(description)}자) - AI 호출 없이 전부 미기재 처리")
         return {
