@@ -45,6 +45,8 @@ def test_signal_failure_cannot_break_workflow():
 
 
 def test_other_buyers_cannot_read_case_reasoning(monkeypatch):
+    # Role lookup was added by item-group assignment; keep this unit test offline.
+    monkeypatch.setattr(routes, 'read_policy_access', lambda _: {'can_manage': False})
     monkeypatch.setattr(routes.case_repository, 'get_case', lambda _: {'assigned_user_id': 'other@example.com'})
     with pytest.raises(HTTPException) as error:
         routes.get_case_decisions(UUID(CASE), {'email': 'buyer@example.com'}, 30, 0)
@@ -52,6 +54,7 @@ def test_other_buyers_cannot_read_case_reasoning(monkeypatch):
 
 
 def test_case_reasoning_checks_access_and_scopes_query(monkeypatch):
+    monkeypatch.setattr(routes, 'read_policy_access', lambda _: {'can_manage': False})
     from backend_logic2.repositories import ai_decisions
     monkeypatch.setattr(routes.case_repository, 'get_case', lambda _: {'assigned_user_id': 'buyer@example.com'})
     query = MagicMock(return_value=([{'reason': '규격 확인'}], 1))
