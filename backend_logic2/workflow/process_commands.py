@@ -989,8 +989,19 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
                 },
                 goto="check_quotations",
             )
-        # 통과했다. 사람이 finalize를 누른 것과 같은 경로를 탄다.
-        answer = {**(answer if isinstance(answer, dict) else {}), "start_order": True}
+        # Carry the exact evaluated winner across the next graph boundary.
+        # start_order alone would interrupt again in final_selection because
+        # requested_supplier remained empty despite an approved auto decision.
+        top = result["ranking"][0]
+        supplier = str(top.get("supplier") or "").strip()
+        quotation_id = str(top.get("quotation_id") or top.get("name") or "").strip()
+        if not supplier or not quotation_id:
+            return Command(update={
+                "status": "awaiting_quotation_check", "auto_pr_dispatch": False,
+                "error": "자동 선정 대상의 공급사 또는 견적 문서 번호를 확인할 수 없습니다.",
+            }, goto="check_quotations")
+        answer = {**(answer if isinstance(answer, dict) else {}),
+                  "start_order": True, "supplier": supplier, "quotation_id": quotation_id}
 
     # 포털 견적은 Draft로 생성된다. 사용자가 명시적으로 최종 선정을
     # 시작할 때만 순위에 포함된 견적을 Submit하여 이후 변경을 막는다.
@@ -1008,6 +1019,7 @@ def check_quotations_command(state: PurchaseProcessState) -> Command:
     return Command(
         update={
             "auto_pr_dispatch": _auto_pr_dispatch_requested(answer),
+            "selection_mode": "auto" if choice == "auto" else "manual",
             "quotation_ranking": result["ranking"],
             "quotation_excluded": result.get("excluded") or [],
             "quotation_ranking_meta": {
