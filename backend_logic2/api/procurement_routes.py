@@ -36,7 +36,7 @@ from backend_logic2.integrations.assignment_config import (
     is_super_admin,
     is_same_user,
 )
-from backend_logic2.policies.access import read_policy_access, PolicyAccessUnavailable
+from backend_logic2.policies.access import read_policy_access, can_approve_po, PolicyAccessUnavailable
 
 
 router = APIRouter(prefix="/api/procurement", tags=["Procurement Workflow"])
@@ -117,6 +117,16 @@ def _require_mr_access(mr_name: str, current_user: dict[str, Any]) -> dict[str, 
     if not _can_access_case(case, current_user):
         raise HTTPException(status_code=403, detail="이 구매 요청의 담당자가 아닙니다.")
     return case
+
+
+def _require_po_approval_access(current_user: dict[str, Any]) -> None:
+    """Live role lookup; fail closed without changing workflow or task state."""
+    try:
+        access = read_policy_access(_user_id(current_user))
+    except PolicyAccessUnavailable as exc:
+        raise HTTPException(503, "ERPNext 발주 승인 권한을 확인할 수 없습니다.") from exc
+    if not can_approve_po(access):
+        raise HTTPException(403, "PO 승인은 Purchase Manager 또는 Purchase Master Manager 역할이 필요합니다.")
 
 @router.post("/cases/sync-drafts")
 def sync_draft_cases(
@@ -315,7 +325,10 @@ def download_material_request_attachment(
 @router.post("/cases/{case_id}/start", status_code=status.HTTP_202_ACCEPTED)
 def start_case(case_id: str, background_tasks: BackgroundTasks, current_user: CurrentUser):
     
-    _require_case_access(case_id, current_user)
+    case = _require_case_access(case_id, current_user)
+    # A failed checkpoint can resume PO creation through start/retry as well.
+    if case.get("stage") in {"PRE_PO_APPROVAL", "PO_CREATION"}:
+        _require_po_approval_access(current_user)
     actor = _user_id(current_user)
     
     try:
@@ -455,6 +468,12 @@ def answer_task(
         str(task["case_id"]),
         current_user,
     )
+
+    # Check the live ERP role before resuming anything that can release a PO.
+    # Browser claims and a previously opened approval dialog are not authority.
+    # Retrying a failed creation can also send a PO, so protect that path too.
+    if task["task_type"] in {"po_approval", "po_creation_failed"}:
+        _require_po_approval_access(current_user)
 
     try:
         # Qwen serverless cold starts can exceed nginx's ordinary request
