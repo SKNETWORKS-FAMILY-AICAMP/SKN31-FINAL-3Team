@@ -14,7 +14,9 @@ from backend_logic2.services import runpod_worker_control as worker_control
 from backend_logic2.repositories import ai_decisions
 from backend_logic2.repositories import deadline_jobs
 from backend_logic2.services import deadline_scheduler
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
+from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_get
+from backend_logic2.repositories import item_group_assignments
 
 router = APIRouter(prefix="/api/company-policy", tags=["Company policy"])
 logger = logging.getLogger(__name__)
@@ -23,6 +25,83 @@ logger = logging.getLogger(__name__)
 class DeadlineSchedulerCommand(BaseModel):
     enabled: StrictBool
     reason: str = Field(min_length=3, max_length=300)
+
+
+class ItemGroupAssignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_group: StrictStr = Field(min_length=1, max_length=140)
+    manager_user_id: StrictStr = Field(min_length=1, max_length=140)
+
+
+class ItemGroupAssignmentsCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    assignments: list[ItemGroupAssignment] = Field(max_length=500)
+
+
+def _load_item_group_assignment_options():
+    groups = erp_get("Item Group", fields=["name"], order_by="name asc", limit=500) or []
+    users = erp_get(
+        "User",
+        filters=[["enabled", "=", 1], ["user_type", "=", "System User"]],
+        fields=["name", "full_name", "email"],
+        order_by="full_name asc",
+        limit=1000,
+    ) or []
+    return (
+        {str(row.get("name") or "").strip() for row in groups if row.get("name")},
+        {str(row.get("name") or "").strip() for row in users if row.get("name")},
+        [{"id": str(row["name"]), "name": row.get("full_name") or row.get("email") or row["name"],
+          "email": row.get("email") or ""} for row in users if row.get("name")],
+    )
+
+
+@router.get("/category-assignments")
+def read_category_assignments(user: CurrentUser):
+    _require_admin(user)
+    try:
+        group_ids, _user_ids, users = _load_item_group_assignment_options()
+        revision, assignments = item_group_assignments.get_assignments()
+    except ERPNextAPIError as exc:
+        raise HTTPException(502, "ERPNext 아이템 그룹 또는 사용자를 불러오지 못했습니다.") from exc
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        raise HTTPException(503, "아이템 그룹 담당자 설정을 조회할 수 없습니다.") from exc
+    return {
+        "revision": revision,
+        "groups": sorted(group_ids),
+        "users": users,
+        "assignments": assignments,
+    }
+
+
+@router.post("/category-assignments")
+def save_category_assignments(body: ItemGroupAssignmentsCommand, user: CurrentUser):
+    actor = _require_admin(user)
+    try:
+        group_ids, user_ids, _users = _load_item_group_assignment_options()
+    except ERPNextAPIError as exc:
+        raise HTTPException(502, "ERPNext 아이템 그룹 또는 사용자를 확인하지 못했습니다.") from exc
+    assignments = [row.model_dump() for row in body.assignments]
+    groups = [row["item_group"] for row in assignments]
+    if len(groups) != len(set(groups)):
+        raise HTTPException(422, "아이템 그룹은 한 번만 지정할 수 있습니다.")
+    if any(row["item_group"] not in group_ids for row in assignments):
+        raise HTTPException(422, "ERPNext에서 확인되지 않은 아이템 그룹이 포함되어 있습니다. 새로고침해 주세요.")
+    if any(row["manager_user_id"] not in user_ids for row in assignments):
+        raise HTTPException(422, "활성 ERPNext 시스템 사용자만 담당자로 지정할 수 있습니다.")
+    try:
+        revision, saved = item_group_assignments.replace_assignments(
+            assignments,
+            expected_revision=body.expected_revision,
+            actor=actor,
+        )
+        return {"revision": revision, "assignments": saved}
+    except item_group_assignments.AssignmentConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        raise HTTPException(503, "아이템 그룹 담당자 설정을 저장할 수 없습니다.") from exc
 
 
 @router.get('/deadline-scheduler')
