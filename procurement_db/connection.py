@@ -8,6 +8,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .config import require_database_url
+from .operation_metrics import current as operation_metrics
 
 
 @contextmanager
@@ -19,6 +20,9 @@ def get_connection(*, autocommit: bool = False) -> Iterator[Connection]:
     holding this connection while waiting for AI or external API responses.
     """
 
+    metrics = operation_metrics.get()
+    if metrics is not None:
+        metrics.db_connections += 1
     with psycopg.connect(
         require_database_url(),
         row_factory=dict_row,

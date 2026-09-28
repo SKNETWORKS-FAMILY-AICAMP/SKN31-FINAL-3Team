@@ -623,6 +623,14 @@ def register_supplier_quotation_event(
                 f"Supplier Quotation {quotation_name}에서 RFQ 연결 정보를 찾지 못했습니다."
             )
 
+        # Record changes in ALL RFQ rounds, not just the visible current-round
+        # snapshot. Dedupe above prevents duplicate webhook deliveries waking jobs.
+        # Missing optional migration must not break the existing SQ ingest path.
+        try:
+            from backend_logic2.repositories.deadline_jobs import bump_rfqs
+            bump_rfqs(rfq_names)
+        except Exception:
+            LOGGER.warning('견적 마감 예약 입력 변경 기록 실패', exc_info=True)
         projections: list[dict[str, Any]] = []
         for rfq_name in rfq_names:
             case = case_repository.get_case_by_rfq(rfq_name)
@@ -664,7 +672,7 @@ def register_supplier_quotation_event(
 _PREWARM_STAGES = {"QUOTATION_COLLECTION", "SUPPLIER_SELECTION"}
 
 
-def validate_case_quotations(case: dict[str, Any]) -> dict[str, Any]:
+def validate_case_quotations(case: dict[str, Any], *, strict: bool = False) -> dict[str, Any]:
     """이 케이스 견적들이 순위에서 어떤 대우를 받는지 즉시 판정한다.
 
     RunPod 규격 평가나 LangGraph 실행 없이, 결정적 검증을 다시 돌려 견적별로
@@ -736,11 +744,15 @@ def validate_case_quotations(case: dict[str, Any]) -> dict[str, Any]:
             try:
                 cached.update(load_matching(name, fingerprints, evaluator.model_name))
             except Exception:  # noqa: BLE001
+                if strict:
+                    raise
                 LOGGER.warning("규격 평가 캐시 조회 실패: rfq=%s", name)
         spec_evaluated = {
             quotation_id: quotation_id in cached for quotation_id in fingerprints
         }
     except Exception:  # noqa: BLE001
+        if strict:
+            raise
         evaluator_available = False
         LOGGER.warning("규격 평가기를 만들 수 없어 평가 여부를 확인하지 못했습니다.", exc_info=True)
 
@@ -802,6 +814,8 @@ def validate_case_quotations(case: dict[str, Any]) -> dict[str, Any]:
                 "received_at": row.get("created_at"),
             })
     except Exception:  # noqa: BLE001
+        if strict:
+            raise
         LOGGER.warning("견적 읽기 실패 기록 조회 실패", exc_info=True)
 
     return {"items": items, "intake_failures": intake_failures}

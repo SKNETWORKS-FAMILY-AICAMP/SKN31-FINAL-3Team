@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 from threading import RLock
+from threading import BoundedSemaphore
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any
 from datetime import datetime, timezone
 
@@ -37,6 +40,34 @@ from .workflow_projection import (
 logger = logging.getLogger(__name__)
 
 _GRAPH_LOCK = RLock()
+_QUOTATION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix='quotation-manual')
+_QUOTATION_SLOTS = BoundedSemaphore(8)
+
+
+@contextmanager
+def _graph_lock_without_wait():
+    """An HTTP action must not spend 60s waiting behind background graph work."""
+    if not _GRAPH_LOCK.acquire(blocking=False):
+        raise RuntimeError('다른 구매 작업을 처리 중입니다. 잠시 후 다시 시도해 주세요. 요청은 실행되지 않았습니다.')
+    try:
+        yield
+    finally:
+        _GRAPH_LOCK.release()
+
+
+def _submit_queued_quotation_analysis(*args, **kwargs):
+    # BackgroundTasks only dispatches and returns. The AnyIO request pool is not
+    # occupied by ERP/RunPod waits. Slots cap both queued and active manual work.
+    try:
+        future = _QUOTATION_EXECUTOR.submit(_run_queued_quotation_analysis, *args, **kwargs)
+    except Exception:
+        _QUOTATION_SLOTS.release()
+        task_repository.release_claimed_task(args[0], claimed_version=kwargs['claimed_version'])
+        case_repository.transition_case(kwargs['case_id'], status='WAITING_INPUT',
+            stage=kwargs['stage'], reason='견적 분석 실행기에 예약하지 못했습니다.',
+            triggered_by=kwargs['answered_by'], last_error='작업 실행기 예약 실패')
+        raise
+    future.add_done_callback(lambda _: _QUOTATION_SLOTS.release())
 
 _TASK_STAGE = {
     "substitute_selection": "SUBSTITUTE_DECISION",
@@ -172,6 +203,20 @@ def _run_queued_quotation_analysis(
 
 
 def queue_quotation_analysis(
+    task_id: str, *, answer: dict[str, Any], answered_by: str,
+    expected_version: int | None, background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    if not _QUOTATION_SLOTS.acquire(blocking=False):
+        raise RuntimeError('견적 분석 대기열이 가득 찼습니다. 잠시 후 다시 시도해 주세요.')
+    try:
+        return _reserve_quotation_analysis(task_id, answer=answer, answered_by=answered_by,
+            expected_version=expected_version, background_tasks=background_tasks)
+    except BaseException:
+        _QUOTATION_SLOTS.release()
+        raise
+
+
+def _reserve_quotation_analysis(
     task_id: str,
     *,
     answer: dict[str, Any],
@@ -222,7 +267,7 @@ def queue_quotation_analysis(
         )
         raise
     background_tasks.add_task(
-        _run_queued_quotation_analysis,
+        _submit_queued_quotation_analysis,
         task_id,
         answer=answer,
         answered_by=answered_by,
@@ -1203,7 +1248,7 @@ def resume_task(
         )
 
     app = get_process_app()
-    with _GRAPH_LOCK:
+    with _graph_lock_without_wait():
         snapshot = app.get_state(_config(case["thread_id"] or case["mr_name"]))
         active_task_types = {
             task_presentation(payload)["task_type"]

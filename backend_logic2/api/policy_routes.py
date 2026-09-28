@@ -12,9 +12,39 @@ from procurement_db.config import ProcurementDatabaseConfigurationError
 from backend_logic2.policies import allowlist
 from backend_logic2.services import runpod_worker_control as worker_control
 from backend_logic2.repositories import ai_decisions
+from backend_logic2.repositories import deadline_jobs
+from backend_logic2.services import deadline_scheduler
+from pydantic import BaseModel, Field, StrictBool
 
 router = APIRouter(prefix="/api/company-policy", tags=["Company policy"])
 logger = logging.getLogger(__name__)
+
+
+class DeadlineSchedulerCommand(BaseModel):
+    enabled: StrictBool
+    reason: str = Field(min_length=3, max_length=300)
+
+
+@router.get('/deadline-scheduler')
+def read_deadline_scheduler(user: CurrentUser):
+    _require_admin(user)
+    try:
+        return {'control': deadline_jobs.control(), 'runtime': deadline_scheduler.runtime_status(),
+                **deadline_jobs.status()}
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        raise HTTPException(503, '마감 예약 저장소를 확인할 수 없습니다. 마이그레이션 상태를 확인하세요.') from exc
+
+
+@router.post('/deadline-scheduler')
+def change_deadline_scheduler(body: DeadlineSchedulerCommand, user: CurrentUser):
+    actor = _require_admin(user)
+    if len(body.reason.strip()) < 3:
+        raise HTTPException(422, '변경 사유를 3자 이상 입력하세요.')
+    try:
+        control = deadline_jobs.set_enabled(body.enabled, actor=actor, reason=body.reason.strip())
+        return {'control': control, 'runtime': deadline_scheduler.runtime_status()}
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        raise HTTPException(503, '설정 결과를 다시 조회해 확인하세요.') from exc
 
 
 @router.get('/ai-decisions')

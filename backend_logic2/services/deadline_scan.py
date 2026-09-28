@@ -1,5 +1,8 @@
 """견적 마감 스캔 - 자동화 v2의 5단계 c.
 
+Legacy compatibility only. Do not register this whole-case sweep as a periodic
+task again; the opt-in durable replacement is services.deadline_scheduler.
+
 마감이 지났는데 아무 일도 일어나지 않는 건을 찾아 판정을 시작한다.
 
 v1에서 이 자리가 가장 많이 터졌다. 그래서 지키는 것:

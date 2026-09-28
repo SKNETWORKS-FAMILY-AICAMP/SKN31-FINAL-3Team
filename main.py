@@ -325,6 +325,11 @@ async def lifespan(app: FastAPI):
     resync_task = asyncio.create_task(
         _resync_waiting_cases(), name="case-waiting-stage-resync"
     )
+    from backend_logic2.services import deadline_scheduler
+    # Opt-in instance + DB admin switch. This is NOT the old graph-lane sweep.
+    deadline_task = None
+    if deadline_scheduler.process_enabled():
+        deadline_task = asyncio.create_task(deadline_scheduler.run(), name='quotation-deadline-dispatcher')
     from backend_logic2.services.runpod_worker_control import reconciliation_loop
     worker_lease_task = asyncio.create_task(reconciliation_loop(), name="runpod-worker-lease-expiry")
     from backend_logic2.services.runpod_quotation_jobs import webhook_mode, callback_url
@@ -376,6 +381,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if deadline_task is not None:
+            deadline_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await deadline_task
         resync_task.cancel()
         with suppress(asyncio.CancelledError):
             await resync_task

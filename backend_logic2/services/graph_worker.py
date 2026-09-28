@@ -35,6 +35,40 @@ _WORKER_PREFIX = "biddingflow-graph"
 # 하나씩만 돌게 하므로, 스레드를 여러 개 두면 락을 기다리며 스레드만 먹는다.
 # 스레드를 굶기는 대신 순서를 기다리게 한다.
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix=_WORKER_PREFIX)
+_DISPATCH_LOCK = threading.RLock()
+_OUTSTANDING = 0
+
+
+def _dispatch(work: Any, *args: Any, **kwargs: Any) -> Future:
+    """Count queued AND executing work, so automatic jobs cannot build a backlog."""
+    global _OUTSTANDING
+    with _DISPATCH_LOCK:
+        _OUTSTANDING += 1
+        try:
+            future = _EXECUTOR.submit(work, *args, **kwargs)
+        except BaseException:
+            _OUTSTANDING -= 1
+            raise
+
+        def finished(_future):
+            global _OUTSTANDING
+            with _DISPATCH_LOCK:
+                _OUTSTANDING -= 1
+        future.add_done_callback(finished)
+        return future
+
+
+def try_submit_idle(work: Any, *args: Any, **kwargs: Any) -> Future | None:
+    """Low-priority automatic work: only admit ONE when the graph lane is idle."""
+    with _DISPATCH_LOCK:
+        if _OUTSTANDING:
+            return None
+        return _dispatch(work, *args, **kwargs)
+
+
+def queued_count() -> int:
+    with _DISPATCH_LOCK:
+        return _OUTSTANDING
 
 _IN_FLIGHT_LOCK = threading.Lock()
 _IN_FLIGHT: set[str] = set()
@@ -63,7 +97,7 @@ def submit(work: Any, *args: Any, **kwargs: Any) -> Future:
             LOGGER.exception("[graph worker] %s 실패", getattr(work, "__name__", work))
             return None
 
-    return _EXECUTOR.submit(_run)
+    return _dispatch(_run)
 
 
 def run_and_wait(work: Any, *args: Any, **kwargs: Any) -> Any:
@@ -75,7 +109,7 @@ def run_and_wait(work: Any, *args: Any, **kwargs: Any) -> Any:
     """
     if on_graph_worker():
         return work(*args, **kwargs)
-    return _EXECUTOR.submit(work, *args, **kwargs).result()
+    return _dispatch(work, *args, **kwargs).result()
 
 
 @contextmanager

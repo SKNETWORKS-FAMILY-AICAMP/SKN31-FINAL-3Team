@@ -77,6 +77,16 @@ class _TimeoutEnforcingSession(requests.Session):
     def request(self, method, url, **kwargs):  # type: ignore[override]
         if kwargs.get("timeout") is None:
             kwargs["timeout"] = _DEFAULT_TIMEOUT
+        # Only scheduler preparation opts in. Existing document downloads and
+        # user workflows retain their current timeout contracts.
+        from procurement_db.operation_metrics import current as operation_metrics
+        metrics = operation_metrics.get()
+        if metrics is not None:
+            remaining = metrics.before_erp()
+            timeout = kwargs['timeout']
+            connect, read = timeout if isinstance(timeout, tuple) else (timeout, timeout)
+            kwargs['timeout'] = (min(connect or remaining, max(0.01, remaining / 2)),
+                                 min(read or remaining, max(0.01, remaining / 2)))
         try:
             return super().request(method, url, **kwargs)
         except requests.Timeout as exc:
