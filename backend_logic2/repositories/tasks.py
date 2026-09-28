@@ -73,21 +73,26 @@ def list_tasks(
     case_id: str | None = None,
     audience: str | None = None,
     status: str = "PENDING",
+    assigned_user_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    conditions = ["status = %(status)s"]
+    conditions = ["ht.status = %(status)s"]
     params: dict[str, Any] = {"status": status}
     if case_id:
-        conditions.append("case_id = %(case_id)s")
+        conditions.append("ht.case_id = %(case_id)s")
         params["case_id"] = case_id
     if audience:
-        conditions.append("audience = %(audience)s")
+        conditions.append("ht.audience = %(audience)s")
         params["audience"] = audience
+    if assigned_user_id:
+        conditions.append("LOWER(pc.assigned_user_id) = LOWER(%(assigned_user_id)s)")
+        params["assigned_user_id"] = assigned_user_id
     with get_connection() as connection:
         rows = connection.execute(
             f"""
-            SELECT * FROM procurement.human_task
+            SELECT ht.* FROM procurement.human_task AS ht
+            JOIN procurement.procurement_case AS pc ON pc.case_id = ht.case_id
             WHERE {' AND '.join(conditions)}
-            ORDER BY created_at DESC
+            ORDER BY ht.created_at DESC
             """,
             params,
         ).fetchall()

@@ -18,7 +18,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth_service.dependencies import CurrentUser
-from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_download_file, erp_get
+from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_download_file, erp_get, erp_get_one
 from backend_logic2.repositories import cases as case_repository
 from backend_logic2.repositories import tasks as task_repository
 from backend_logic2.repositories import deliveries as delivery_repository
@@ -36,6 +36,7 @@ from backend_logic2.integrations.assignment_config import (
     is_super_admin,
     is_same_user,
 )
+from backend_logic2.policies.access import read_policy_access, PolicyAccessUnavailable
 
 
 router = APIRouter(prefix="/api/procurement", tags=["Procurement Workflow"])
@@ -69,8 +70,7 @@ def _can_access_case(
 ) -> bool:
     actor = _user_id(current_user)
 
-    # 관리자
-    if is_super_admin(actor):
+    if _is_global_case_admin(actor):
         return True
 
     # 해당 Case 담당자
@@ -78,6 +78,15 @@ def _can_access_case(
         case.get("assigned_user_id"),
         actor,
     )
+
+
+def _is_global_case_admin(actor: str) -> bool:
+    if is_super_admin(actor):
+        return True
+    try:
+        return bool(read_policy_access(actor)["can_manage"])
+    except PolicyAccessUnavailable as exc:
+        raise HTTPException(status_code=503, detail="ERPNext 권한을 확인할 수 없습니다.") from exc
 
 
 def _require_case_access(
@@ -100,6 +109,15 @@ def _require_case_access(
 
     return case
 
+
+def _require_mr_access(mr_name: str, current_user: dict[str, Any]) -> dict[str, Any]:
+    case = case_repository.get_case_by_mr(mr_name)
+    if case is None:
+        raise HTTPException(status_code=404, detail="구매 작업을 찾을 수 없습니다.")
+    if not _can_access_case(case, current_user):
+        raise HTTPException(status_code=403, detail="이 구매 요청의 담당자가 아닙니다.")
+    return case
+
 @router.post("/cases/sync-drafts")
 def sync_draft_cases(
     current_user: CurrentUser,
@@ -112,9 +130,13 @@ def sync_draft_cases(
         purchase_documents = receipt_service.reconcile_purchase_documents()
     except (ERPNextAPIError, psycopg.Error) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    is_admin = _is_global_case_admin(_user_id(current_user))
+    visible_rows = rows if is_admin else [
+        row for row in rows if is_same_user(row.get("assigned_user_id"), _user_id(current_user))
+    ]
     return {
-        "items": rows,
-        "count": len(rows),
+        "items": visible_rows,
+        "count": len(visible_rows),
         "purchase_documents": purchase_documents,
         "requested_by": _user_id(current_user),
     }
@@ -150,11 +172,13 @@ def get_cases(
 ):
     actor = _user_id(current_user)
 
-    # 관리자 또는 "내 담당" 필터 해제 시 전체 조회
-    if is_super_admin(actor) or not assigned_to_me:
+    admin = _is_global_case_admin(actor)
+    # 일반 사용자는 query parameter로 담당자 필터를 해제할 수 없다.
+    if admin:
         assigned_user_id = None
     else:
         assigned_user_id = actor
+        assigned_to_me = True
 
     try:
         rows = case_repository.list_cases(
@@ -209,13 +233,7 @@ def get_case_decisions(case_id: UUID, current_user: CurrentUser,
 
 @router.get("/cases/{case_id}")
 def get_case(case_id: str, current_user: CurrentUser):
-    row = case_repository.get_case(case_id)
-
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail="구매 작업을 찾을 수 없습니다.",
-        )
+    row = _require_case_access(case_id, current_user)
 
     row["tasks"] = task_repository.list_tasks(case_id=case_id)
     row["delivery"] = delivery_repository.get_delivery_by_case(case_id)
@@ -266,12 +284,17 @@ def download_material_request_attachment(
     ERPNext API 자격증명은 서버에만 두며, 다른 DocType에 붙은 파일을 File ID만
     추측해 다운로드하지 못하도록 Material Request 첨부 여부를 재검증합니다.
     """
-    del current_user  # FastAPI 의존성 검증 자체가 이 엔드포인트의 접근 제어입니다.
     try:
+        file_document = erp_get_one("File", file_id)
+        if not file_document or file_document.get("attached_to_doctype") != "Material Request":
+            raise HTTPException(status_code=403, detail="Material Request 첨부파일만 다운로드할 수 있습니다.")
+        _require_mr_access(str(file_document.get("attached_to_name") or ""), current_user)
         downloaded = erp_download_file(
             file_id,
             expected_attached_to_doctype="Material Request",
         )
+    except HTTPException:
+        raise
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ERPNextAPIError as exc:
@@ -402,7 +425,13 @@ def get_tasks(
     case_id: str | None = None,
     task_status: str = Query(default="PENDING", alias="status"),
 ):
-    rows = task_repository.list_tasks(case_id=case_id, audience="BUYER", status=task_status)
+    assigned_user_id = None if _is_global_case_admin(_user_id(current_user)) else _user_id(current_user)
+    rows = task_repository.list_tasks(
+        case_id=case_id,
+        audience="BUYER",
+        status=task_status,
+        assigned_user_id=assigned_user_id,
+    )
     return {"items": rows, "count": len(rows)}
 
 
