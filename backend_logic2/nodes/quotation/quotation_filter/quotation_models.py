@@ -105,6 +105,10 @@ class RFQItemRequirement(StrictModel):
 
 class RFQRequirements(StrictModel):
     rfq_name: str
+    # Earliest permitted delivery: first RFQ email, falling back to RFQ creation.
+    # Never use transaction_date: send_rfq copies that from the original MR.
+    delivery_not_before: date | None = None
+    delivery_reference: str = "RFQ 발송일"
     # 과거 JSON 입력 호환용이다. ERPNext RFQ에는 통화 제약이 없으며 검토에도 사용하지 않는다.
     currency: str | None = None
     items: list[RFQItemRequirement] = Field(min_length=1)

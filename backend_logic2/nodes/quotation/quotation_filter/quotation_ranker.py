@@ -286,6 +286,7 @@ def rank_quotations_with_spec_scores(
     supplier_scorecards: dict[str, dict[str, Any]] | None = None,
     weights: dict[str, float] | None = None,
     evaluation_source: str = DEFAULT_SPEC_EVALUATION_SOURCE,
+    rfq_contexts: dict[str, RFQRequirements] | None = None,
 ) -> RankingResult:
     """가격·납기·규격·협력사 평가이력 4항목 가중합에서 페널티를 빼 순위를 매긴다.
 
@@ -348,12 +349,24 @@ def rank_quotations_with_spec_scores(
         delivery, late_days = _delivery_metrics(row["review"], rfq)
         row["delivery"] = delivery
         row["late_days"] = late_days
+        # Check every item, not just the latest date (which can hide a bad row).
+        # Older rebid quotations must not be compared with the latest RFQ date.
+        row["invalid_delivery"] = False
+        context = (rfq_contexts or {}).get(quotation.rfq_name) or (rfq if quotation.rfq_name == rfq.rfq_name else None)
+        row["delivery_context"] = context
+        if context and context.delivery_not_before:
+            for item in quotation.items:
+                promised = item.expected_delivery_date
+                if promised is None and quotation.quotation_date and item.lead_time_days is not None:
+                    promised = quotation.quotation_date + timedelta(days=item.lead_time_days)
+                if promised and promised < context.delivery_not_before:
+                    row["invalid_delivery"] = True
 
     priced = [row["amount"] for row in candidates if row["amount"] is not None]
     lowest_amount = min(priced) if priced else None
     competition_count = len(candidates)
     price_factor = PRICE_COMPETITION_FACTOR.get(competition_count, 1.0)
-    dated = [row["delivery"] for row in candidates if row["delivery"] is not None]
+    dated = [row["delivery"] for row in candidates if row["delivery"] is not None and not row["invalid_delivery"]]
     earliest_delivery = min(dated) if dated else None
 
     for row in candidates:
@@ -376,7 +389,9 @@ def rank_quotations_with_spec_scores(
             factor_multipliers["price"] = price_factor
 
         # 납기
-        if row["late_days"] is not None:
+        if row["invalid_delivery"]:
+            factors["delivery"] = 0.0
+        elif row["late_days"] is not None:
             factors["delivery"] = round(
                 max(0.0, min(100.0, 100.0 - row["late_days"] * DELIVERY_POINTS_PER_LATE_DAY)), 2
             )
@@ -390,7 +405,28 @@ def rank_quotations_with_spec_scores(
         # 규격(AI)
         assessment = spec_assessments.get(review.quotation_id)
         warnings = list(row["classified"]["warnings"])
-        if assessment is None:
+        if row["invalid_delivery"]:
+            context = row["delivery_context"]
+            warnings.append(f"[납기 확인] 제시 납기일이 {context.delivery_reference}({context.delivery_not_before})보다 빠릅니다. 납기 0점 · 공급사에 날짜를 확인해 주세요.")
+        # Deterministic guards override even a previously cached AI full score.
+        # No buyer criteria != supplier noncompliance: exclude that factor instead.
+        has_requirements = any(str(value).strip() for item in rfq.items for value in item.specifications.values())
+        has_submitted_specs = any(str(value).strip() for item in quotation.items for value in item.specifications.values())
+        has_notes = bool(str(quotation.notes or "").strip())
+        specification_reason = assessment.reason if assessment is not None else None
+        if not has_requirements:
+            factors["specification"] = None
+            specification_reason = "RFQ에 규격 기준이 없어 규격 점수를 계산할 수 없습니다."
+            missing.append({"factor": "specification", "reason": specification_reason})
+            warnings.append(f"[규격 확인] {specification_reason}")
+            assessment = None
+        elif not has_submitted_specs and not has_notes:
+            factors["specification"] = 0.0
+            factor_multipliers["specification"] = 1.0
+            specification_reason = "제출된 규격 정보가 없습니다. 규격 0점 · 공급사에 규격 보완을 요청해 주세요."
+            warnings.append(f"[규격 확인] {specification_reason}")
+            assessment = None
+        elif assessment is None:
             factors["specification"] = None
             missing.append({"factor": "specification", "reason": "AI 규격 평가 미완료"})
         else:
@@ -441,6 +477,7 @@ def rank_quotations_with_spec_scores(
             "overall": overall,
             "numeric_score": numeric_score,
             "assessment": assessment,
+            "specification_reason": specification_reason,
             "card_count": card_count,
             "warnings": warnings,
         })
@@ -481,7 +518,7 @@ def rank_quotations_with_spec_scores(
             if row["classified"]["penalties"]
             else ""
         )
-        spec_reason = f" {assessment.reason}" if assessment is not None else ""
+        spec_reason = f" {row['specification_reason']}" if row["specification_reason"] else ""
         reason = (
             f"종합 {row['overall']:.2f}점 = 가격 {_fmt('price')} · 납기 {_fmt('delivery')} · "
             f"규격 {_fmt('specification')} · 평가이력 {_fmt('scorecard')}.{penalty_text}{spec_reason} "
@@ -502,7 +539,7 @@ def rank_quotations_with_spec_scores(
             numeric_score=row["numeric_score"],
             specification_score=factors.get("specification"),
             overall_score=row["overall"],
-            specification_reason=assessment.reason if assessment is not None else None,
+            specification_reason=row["specification_reason"],
             specification_items=(
                 [item.model_dump(mode="json") for item in assessment.items]
                 if assessment is not None
@@ -518,7 +555,7 @@ def rank_quotations_with_spec_scores(
             penalties=row["classified"]["penalties"],
             applied_weights=row["applied"],
             missing_factors=row["missing"],
-            requires_confirmation=row["classified"]["requires_confirmation"],
+            requires_confirmation=row["classified"]["requires_confirmation"] or row["invalid_delivery"] or any(w.startswith("[규격 확인]") for w in row["warnings"]),
             warnings=row["warnings"],
         ))
 
@@ -813,6 +850,11 @@ def evaluate_quotations(
         if str(name).strip()
     }
     rfq_names = list(dict.fromkeys(_rfq_names or [rfq_name]))
+    rfq_contexts = {rfq.rfq_name: rfq}
+    for name in rfq_names:
+        if name != rfq.rfq_name:
+            # At most once per round. Never compare older quotes to a newer RFQ.
+            rfq_contexts[name] = load_rfq_requirements(name)
     all_quotations = _attach_supplier_scorecards(
         get_quotations_for_rfqs(rfq_names)
         if _rfq_names is not None
@@ -975,6 +1017,7 @@ def evaluate_quotations(
             supplier_scorecards=scorecards,
             weights=factor_weights,
             evaluation_source=model_name,
+            rfq_contexts=rfq_contexts,
         )
     except ValueError as exc:
         return {

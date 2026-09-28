@@ -309,7 +309,7 @@ def start_case(case_id: str, background_tasks: BackgroundTasks, current_user: Cu
 
 @router.post("/cases/{case_id}/reject")
 def reject_case(case_id: str, body: RejectCaseRequest, current_user: CurrentUser):
-    
+    from backend_logic2.services.graph_worker import CaseBusy
     _require_case_access(case_id, current_user)
 
     try:
@@ -320,6 +320,10 @@ def reject_case(case_id: str, body: RejectCaseRequest, current_user: CurrentUser
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="구매 작업을 찾을 수 없습니다.") from exc
+    except CaseBusy as exc:
+        raise HTTPException(status_code=409, detail="이 MR의 작업이 실행 중입니다. 완료 후 다시 반려해 주세요.") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ERPNextAPIError as exc:

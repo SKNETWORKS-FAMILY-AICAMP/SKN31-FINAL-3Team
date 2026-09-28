@@ -149,14 +149,38 @@ def load_rfq_requirements_from_erp(
     rfq_name: str,
     *,
     get_one: GetOne | None = None,
+    get_many: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> RFQRequirements:
     """ERPNext Request for Quotation을 reviewer 공통 RFQ 모델로 변환한다."""
+    # One bounded metadata query per RFQ, never one query per quotation/item.
+    if get_one is None and get_many is None:
+        from backend_logic2.integrations.erp_client import erp_get
+        get_many = erp_get
     get_one = get_one or _erp_get_one()
     rfq = get_one("Request for Quotation", rfq_name)
     if not rfq:
         raise ValueError(f"ERPNext에서 RFQ '{rfq_name}'를 찾을 수 없습니다.")
     if int(rfq.get("docstatus") or 0) == 2:
         raise ValueError(f"ERPNext RFQ '{rfq_name}'는 취소된 문서입니다.")
+
+    def calendar_date(value: Any) -> date | None:
+        try:
+            return date.fromisoformat(str(value)[:10]) if value else None
+        except ValueError:
+            return None
+
+    start = calendar_date(rfq.get("creation"))
+    reference = "RFQ 생성일"
+    if get_many is not None:
+        # Communication creation is server-owned, unlike editable business dates.
+        sent = get_many("Communication", filters={
+            "reference_doctype": "Request for Quotation", "reference_name": rfq_name,
+            "sent_or_received": "Sent", "communication_medium": "Email",
+        }, fields=["creation"], order_by="creation asc", limit=1)
+        sent_date = calendar_date(sent[0].get("creation")) if sent else None
+        if sent_date is not None:
+            start = max(start, sent_date) if start else sent_date
+            reference = "RFQ 최초 발송 기록일"
 
     items = []
     for row in rfq.get("items") or []:
@@ -170,6 +194,8 @@ def load_rfq_requirements_from_erp(
         })
     return RFQRequirements.model_validate({
         "rfq_name": rfq.get("name") or rfq_name,
+        "delivery_not_before": start,
+        "delivery_reference": reference,
         "items": items,
     })
 

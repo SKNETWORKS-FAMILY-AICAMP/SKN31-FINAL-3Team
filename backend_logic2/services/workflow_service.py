@@ -1374,29 +1374,23 @@ def _cancel_or_discard_erp_doc(doctype: str, name: str) -> None:
 
 
 def reject_case(case_id: str, *, reason: str, rejected_by: str) -> dict[str, Any]:
+    from . import graph_worker
+    # Same locks as automatic progress; never wait behind a long model request.
+    with _graph_lock_without_wait(), graph_worker.case_lock(case_id), graph_worker.case_in_flight(case_id):
+        return _reject_case_locked(case_id, reason=reason, rejected_by=rejected_by)
+
+
+def _reject_case_locked(case_id: str, *, reason: str, rejected_by: str) -> dict[str, Any]:
+    from .mr_cancellation import cancel_linked_rfq_documents
+    if not reason.strip():
+        raise ValueError("MR 반려 사유를 입력해 주세요.")
     case = case_repository.get_case(case_id)
     if case is None:
         raise LookupError(case_id)
 
-    # ERPNext는 MR이 RFQ에, RFQ가 다시 그 RFQ로 제출된 Supplier Quotation에
-    # 링크되어 있으면 상위 문서를 취소/삭제하지 못하게 막는다(LinkExistsError).
-    # 비딩이 견적 수집 단계까지 진행됐던 케이스(예: 공급사 PR 거절 후 취소)는
-    # 문서 링크의 말단(Supplier Quotation)부터 거슬러 올라가며 정리해야
-    # MR까지 취소할 수 있다.
-    snapshot = case.get("workflow_snapshot") or {}
-    values = snapshot.get("values") if isinstance(snapshot, dict) else {}
-    rfq_name = str((values or {}).get("rfq_name") or "").strip()
-    if rfq_name:
-        try:
-            for quotation in get_quotations_for_rfq(rfq_name):
-                sq_name = str(quotation.get("name") or "").strip()
-                if sq_name:
-                    _cancel_or_discard_erp_doc("Supplier Quotation", sq_name)
-            _cancel_or_discard_erp_doc("Request for Quotation", rfq_name)
-        except ERPNextAPIError as exc:
-            raise ERPNextAPIError(
-                f"MR 취소 실패: 연결된 RFQ({rfq_name})/견적을 먼저 취소하지 못했습니다. {exc}"
-            ) from exc
+    if case.get("status") in {"CANCELLED", "REJECTED"}:
+        return case
+    cancel_linked_rfq_documents(case)
 
     reject_material_request(case["mr_name"], reason, reason_code="BUYER_REJECTED")
     task_repository.cancel_pending_tasks(case_id, reason=reason)

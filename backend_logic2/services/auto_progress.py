@@ -359,8 +359,12 @@ def evaluate_final_selection(
         row for row in (top.get("penalties") or [])
         if isinstance(row, dict) and row.get("requires_confirmation")
     ]
-    if blocking:
+    if blocking or top.get("requires_confirmation"):
+        # Integrity guards (past delivery / no specifications) carry no extra
+        # penalty: the factor is already zero. Still require a human decision.
         labels = ", ".join(str(row.get("label") or row.get("code")) for row in blocking)
+        if not labels:
+            labels = " / ".join(str(w) for w in top.get("warnings") or []) or "견적 정보 확인 필요"
         checks.append(_blocked("TOP_PENALTY", "1순위 감점", f"확인이 필요한 감점이 있습니다 ({labels})"))
     else:
         checks.append(_passed("TOP_PENALTY", "1순위 감점", "확인이 필요한 감점 없음"))

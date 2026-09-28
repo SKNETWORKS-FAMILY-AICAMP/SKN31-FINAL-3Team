@@ -67,6 +67,15 @@ def test_a_clean_ranking_is_selected_without_a_person() -> None:
     assert decision.needs_person is False
 
 
+def test_integrity_warning_without_double_penalty_requires_a_person() -> None:
+    result = _result()
+    result["ranking"][0].update(requires_confirmation=True, warnings=["[납기 확인] RFQ 이전 납기 · 0점"])
+    decision = _evaluate(result=result)
+    assert decision.should_proceed is False
+    assert decision.needs_person is True
+    assert "RFQ 이전 납기" in decision.summary()
+
+
 def test_recording_mode_evaluates_but_never_selects() -> None:
     decision = _evaluate(_policy(automation_mode="shadow"))
 
