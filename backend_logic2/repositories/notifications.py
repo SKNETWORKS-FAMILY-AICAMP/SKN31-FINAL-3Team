@@ -9,6 +9,11 @@ from psycopg.types.json import Jsonb
 
 from procurement_db import get_connection
 
+# Two-int advisory locks have a separate PostgreSQL key space from the bigint
+# case lock in graph_worker. Never reuse that case lock here: notification
+# writes use a second connection while the workflow still owns its case lock.
+_INBOX_LOCK_NAMESPACE = 727001
+
 
 def create_notification(
     *,
@@ -20,6 +25,9 @@ def create_notification(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with get_connection() as connection:
+        # Notifications must not stall a purchase workflow indefinitely. This
+        # also bounds row-lock waits; failures roll back the entire replacement.
+        connection.execute("SET LOCAL lock_timeout = '3s'")
         if case_id:
             # ``notification`` is an actionable inbox, not the audit log. Keep
             # only the latest notice for one procurement case while the full
@@ -27,8 +35,8 @@ def create_notification(
             # transaction-scoped advisory lock also prevents two concurrent
             # webhook workers from inserting duplicate inbox rows.
             connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%(case_id)s, 0))",
-                {"case_id": case_id},
+                "SELECT pg_advisory_xact_lock(%(namespace)s, hashtext(%(case_id)s))",
+                {"namespace": _INBOX_LOCK_NAMESPACE, "case_id": case_id},
             )
             connection.execute(
                 "DELETE FROM procurement.notification WHERE case_id = %(case_id)s",
