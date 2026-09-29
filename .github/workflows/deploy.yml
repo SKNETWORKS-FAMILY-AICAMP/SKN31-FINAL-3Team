@@ -90,17 +90,33 @@ jobs:
           echo "Timed out waiting for $DEPLOY_COMPONENT deployment: $DEPLOY_SHA"
           exit 1
 
+  notify:
+    # A step inside deploy cannot run when the whole job is skipped by CI failure.
+    # Keep deployment gated, but report every main push outcome independently.
+    needs: [deploy]
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: production
+    steps:
       - name: Notify Discord
-        if: always()
-        continue-on-error: true
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
-          DEPLOY_JOB_STATUS: ${{ job.status }}
+          DEPLOY_JOB_STATUS: ${{ needs.deploy.result }}
+          CI_RESULT: ${{ github.event.workflow_run.conclusion }}
+          CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          PUSH_ACTOR: ${{ github.event.workflow_run.actor.login || github.actor }}
           GH_TOKEN: ${{ github.token }}
         run: |
           if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
-            echo "Discord deployment webhook is not configured; skipping notification."
-            exit 0
+            echo "::error::Discord deployment webhook is not configured. Deployment result remains in the deploy job."
+            exit 1
           fi
 
           deploy_sha="${DEPLOY_SHA:-unknown}"
@@ -123,10 +139,19 @@ jobs:
             changed_files="${changed_files:0:950}"
           fi
 
-          if [[ "$DEPLOY_JOB_STATUS" == "success" ]]; then
+          if [[ -n "$CI_RESULT" && "$CI_RESULT" != "success" ]]; then
+            title="❌ BiddingFlow CI 미통과 · 배포하지 않음"
+            description="CI 결과: ${CI_RESULT}. 테스트·빌드 검증을 통과하지 못해 이번 커밋은 배포하지 않았습니다. 기존 운영 버전은 유지됩니다."
+            run_url="$CI_RUN_URL"
+            color=15548997
+          elif [[ "$DEPLOY_JOB_STATUS" == "success" ]]; then
             title="✅ BiddingFlow 백엔드 배포 완료"
             description=$'운영 서버에 최신 main이 반영되었습니다. 작업을 이어가기 전에 로컬 저장소를 pull해 주세요.\n\n`git pull --ff-only origin main`'
             color=5763719
+          elif [[ "$DEPLOY_JOB_STATUS" == "cancelled" || "$DEPLOY_JOB_STATUS" == "skipped" ]]; then
+            title="⚠️ BiddingFlow 배포 중단 · 완료 여부 확인 필요"
+            description="배포 작업 상태: ${DEPLOY_JOB_STATUS}. 운영 반영 여부는 배포 상태 페이지와 Actions 로그에서 확인해 주세요."
+            color=16753920
           else
             title="❌ BiddingFlow 백엔드 배포 실패"
             description="운영 배포를 완료하지 못했습니다. GitHub Actions 실행 로그를 확인해 주세요."
@@ -138,7 +163,7 @@ jobs:
             --arg description "$description" \
             --arg status "$DEPLOY_JOB_STATUS" \
             --arg commit "$short_sha" \
-            --arg actor "$GITHUB_ACTOR" \
+            --arg actor "$PUSH_ACTOR" \
             --arg changed_files "$changed_files" \
             --arg run_url "$run_url" \
             --arg timestamp "$timestamp" \

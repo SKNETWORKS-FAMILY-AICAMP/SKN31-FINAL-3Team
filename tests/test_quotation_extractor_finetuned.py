@@ -68,7 +68,11 @@ def test_finetuned_defaults_match_uploaded_adapter(monkeypatch) -> None:
     assert parser.vision_max_pixels == 802816
     assert parser.vision_max_new_tokens == 512
     assert "expected_delivery_date" in FINETUNED_USER_PROMPT
-    assert "문서 하단" in FINETUNED_USER_PROMPT
+    # The classified contract covers all pages, not just a fixed footer location.
+    assert "전체 페이지" in FINETUNED_USER_PROMPT
+    assert "규격사항" in FINETUNED_USER_PROMPT
+    assert "그 외 사항" in FINETUNED_USER_PROMPT
+    assert "notes 키는 반드시 출력" in FINETUNED_USER_PROMPT
     assert "유효기간" in FINETUNED_USER_PROMPT
     assert "확대 이미지" in FINETUNED_USER_PROMPT
 
