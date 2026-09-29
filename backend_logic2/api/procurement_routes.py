@@ -545,7 +545,9 @@ def delete_all_notifications(current_user: CurrentUser):
     return {"success": True, "deleted_count": deleted_count}
 
 
-@router.get("/item-groups/{item_group}/required-specs")
+# Item Group names can contain '/' (e.g. copier/printing paper). ASGI decodes
+# %2F before routing, so a regular string parameter would incorrectly return 404.
+@router.get("/item-groups/{item_group:path}/required-specs")
 def get_item_group_required_specs_for_frontend(
     item_group: str,
     current_user: CurrentUser,
@@ -940,7 +942,7 @@ def payment_entry_webhook(
     return {"accepted": True, "duplicate": not created, "items": projections}
 
 
-@webhook_router.get("/item-groups/{item_group}/required-specs")
+@webhook_router.get("/item-groups/{item_group:path}/required-specs")
 def get_item_group_required_specs(
     item_group: str,
     x_erpnext_webhook_secret: Optional[str] = Header(default=None),
