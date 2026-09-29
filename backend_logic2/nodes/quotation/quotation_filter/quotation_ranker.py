@@ -526,7 +526,14 @@ def rank_quotations_with_spec_scores(
             # These clauses were deliberately omitted from the spec-only AI
             # input. Its "clear / no terms" result cannot approve them.
             terms_review = "review_required"
-            terms_reason = "규격 점수와 별개로 그 외 사항의 거래·특약 조건을 담당자가 확인해야 합니다."
+            # Extraction already used Qwen to summarize/classify these clauses.
+            # Reuse that persisted summary, rather than another paid inference
+            # or an approval from the spec-only assessment. Do not truncate
+            # quantities, percentages, exclusions or conditional terms.
+            other_terms = "; ".join(
+                line.strip() for line in str(quotation.notes).splitlines() if line.strip()
+            )
+            terms_reason = f"{other_terms} (담당자 확인 필요)"
         if has_terms and (terms_review != "clear" or not terms_reason.strip()):
             terms_review = "review_required" if terms_review == "review_required" else "unknown"
             row["warnings"].append("[특약 확인] " + (terms_reason or "특약 판단이 완료되지 않았습니다."))
