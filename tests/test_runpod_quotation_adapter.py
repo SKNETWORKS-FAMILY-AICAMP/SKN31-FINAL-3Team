@@ -139,7 +139,7 @@ def test_submit_then_poll_returns_extraction(monkeypatch) -> None:
     assert "secret-test-key" not in str(request["json"])
 
 
-def test_completed_output_fills_missing_fields_from_document_text() -> None:
+def test_legacy_output_fills_missing_fields_from_document_text() -> None:
     session = _Session({
         "status": "COMPLETED",
         "output": {
@@ -155,11 +155,43 @@ def test_completed_output_fills_missing_fields_from_document_text() -> None:
     })
     parser = RunPodQuotationParser(_config(), session=session)
 
+    # Old, unclassified jobs retain the original raw-section recovery contract.
+    parser.content_sections_separated = False
+
     result = parser(_prepared(), "RFQ-1", "Supplier", [])
 
     assert result["valid_until"] == "2026-09-30"
     assert result["items"][0]["expected_delivery_date"] == "2026-09-30"
     assert "특약사항: 지정 장소 도착도" in result["notes"]
+
+
+def test_classified_output_preserves_commercial_notes_without_reinserting_specs() -> None:
+    extraction = _extraction()
+    extraction['notes'] = '지정 장소 도착도'
+    extraction['items'][0]['specifications'] = {'재질': 'ABS'}
+    parser = RunPodQuotationParser(_config(), session=_Session({
+        'status': 'COMPLETED', 'output': {
+            'status': 'success', 'worker_version': 'document-text-v1', 'extraction': extraction,
+            'document_text': '유효기간: 2026-09-30\n특약사항: 재질 ABS, 지정 장소 도착도',
+        },
+    }))
+    result = parser(_prepared(), 'RFQ-1', 'Supplier', [])
+    assert result['valid_until'] == '2026-09-30'
+    assert result['items'][0]['specifications'] == {'재질': 'ABS'}
+    assert result['notes'] == '지정 장소 도착도'
+
+
+def test_classified_output_rejects_missing_notes_instead_of_assuming_no_terms() -> None:
+    extraction = _extraction()
+    extraction.pop('notes')
+    parser = RunPodQuotationParser(_config(), session=_Session({
+        'status': 'COMPLETED', 'output': {
+            'status': 'success', 'worker_version': 'document-text-v1', 'extraction': extraction,
+            'document_text': '특약사항: 선결제 필수',
+        },
+    }))
+    with pytest.raises(RunPodQuotationParserError, match='notes 키'):
+        parser(_prepared(), 'RFQ-1', 'Supplier', [])
 
 
 def test_completed_output_replaces_unsupported_model_delivery_values() -> None:

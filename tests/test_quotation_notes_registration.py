@@ -1,5 +1,7 @@
 import pytest
 
+from backend_logic2.nodes.quotation.quotation_filter.quotation_terms import parse_separated_terms
+
 from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
     SupplierQuotationRegistrationError,
     build_supplier_quotation_payload,
@@ -59,19 +61,23 @@ def test_external_notes_are_registered_as_safe_erpnext_terms() -> None:
         get_many=lambda *_args, **_kwargs: [],
     )
 
-    assert payload["terms"] == (
-        "특이사항: &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;<br>현장 납품"
-    )
+    assert "특이사항: &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;<br>현장 납품" in payload["terms"]
+    assert '<script>' not in payload['terms']
+    # Presentation wrappers must not corrupt, execute, or lose the source text.
+    specs, notes = parse_separated_terms(payload['terms'])
+    assert specs == {1: {}}
+    assert notes == '특이사항: <script>alert("x")</script>\n현장 납품'
 
 
-def test_empty_external_notes_do_not_create_terms_value() -> None:
+def test_empty_notes_keep_an_explicit_empty_supplier_evidence_section() -> None:
     payload = build_supplier_quotation_payload(
         _quotation("  "),
         get_one=_get_one,
         get_many=lambda *_args, **_kwargs: [],
     )
 
-    assert "terms" not in payload
+    # The marker prevents ERP/RFQ descriptions from becoming invented supplier specs.
+    assert parse_separated_terms(payload['terms']) == ({1: {}}, None)
 
 
 def test_single_external_item_maps_to_the_only_rfq_item() -> None:

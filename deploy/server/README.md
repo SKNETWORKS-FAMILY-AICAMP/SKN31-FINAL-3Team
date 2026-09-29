@@ -92,3 +92,20 @@ GitHub repository configuration:
    `BIDDINGFLOW_DEPLOY_TOKEN`.
 3. Keep the timer enabled until both backend and frontend workflows have been
    verified. It can then remain as reconciliation fallback or be disabled.
+
+### Discord notification outcomes
+
+`Backend CD` has separate `deploy` and `notify` jobs. Deployment still requires
+successful CI for a push to `main`; notification runs with `always()` after the
+deploy job, including when CI failure caused deployment to be skipped. PR
+workflow runs do not trigger this production notification.
+
+- CI failure/cancellation/timeout: **CI 미통과 · 배포하지 않음**, linked to CI logs.
+- Deployment success: **배포 완료**, with the usual request to pull locally.
+- Deployment failure: **배포 실패**, linked to CD logs.
+- Deployment cancellation/skip: completion is not claimed; inspect server state.
+
+The independent job uses the same `production` environment webhook secret.
+Missing webhook configuration or a rejected webhook now fails the notification
+job visibly, without rerunning or undoing deployment. A workflow cancelled as a
+whole by a newer run may still prevent its notification job from starting.

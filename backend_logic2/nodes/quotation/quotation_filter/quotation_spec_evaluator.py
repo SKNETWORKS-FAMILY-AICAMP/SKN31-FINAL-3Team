@@ -644,6 +644,68 @@ class RunPodQwenQuotationSpecEvaluator:
             )
         return assessment
 
+    def run_structured_json(
+        self,
+        *,
+        task: str,
+        system_prompt: str,
+        user_prompt: str,
+        retry_suffix: str,
+        document_text: str,
+        request_key: str,
+    ) -> dict[str, Any]:
+        """같은 워커로 규격 평가가 아닌 JSON 작업을 하나 돌린다.
+
+        워커는 task가 "extraction"이 아니면 자기 쪽 스키마 검증을 건너뛰고
+        모델이 낸 dict를 그대로 돌려준다(handler.py). 그래서 워커를 다시
+        배포하지 않고도 프롬프트만 바꾼 작업을 붙일 수 있다. 검증은 부르는
+        쪽이 한다.
+        """
+        config = self._get_config()
+        last_error: RunPodSpecEvaluationError | None = None
+        for attempt in range(1, config.max_attempts + 1):
+            prompt = user_prompt + (retry_suffix if attempt > 1 else "")
+            prompt_sha256 = hashlib.sha256(
+                f"{system_prompt}\n{prompt}".encode("utf-8")
+            ).hexdigest()
+            digest = hashlib.sha256(
+                f"{request_key}\0{attempt}\0{prompt_sha256}\0{document_text}".encode("utf-8")
+            ).hexdigest()[:32]
+            worker_input = {
+                "request_id": f"{task}-{digest}",
+                "task": task,
+                "system_prompt": system_prompt,
+                "user_prompt": prompt,
+                "prompt_version": config.prompt_version,
+                "prompt_sha256": prompt_sha256,
+                "pipeline_version": config.pipeline_version,
+                "documents": [],
+                "document_text": document_text,
+                "requires_ocr": False,
+                "input_mode": "text",
+                "max_new_tokens": (
+                    config.retry_max_new_tokens if attempt > 1 else config.max_new_tokens
+                ),
+            }
+            try:
+                output, _ = self._wait(self._submit(worker_input))
+            except RunPodSpecEvaluationError as exc:
+                last_error = exc
+                if attempt >= config.max_attempts:
+                    break
+                LOGGER.warning(
+                    "%s 재시도합니다 (%d/%d): %s", task, attempt, config.max_attempts, exc
+                )
+                continue
+            payload = output.get("extraction")
+            if isinstance(payload, dict):
+                return payload
+            last_error = RunPodSpecRetryableOutputError(
+                f"{task} 출력이 JSON 객체가 아닙니다."
+            )
+        assert last_error is not None
+        raise last_error
+
     def _evaluate_one(
         self,
         rfq: RFQRequirements,

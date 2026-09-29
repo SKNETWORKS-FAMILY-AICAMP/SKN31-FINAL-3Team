@@ -42,19 +42,18 @@ def test_cache_lookup_is_not_bound_to_current_rfq_and_rechecks_each_hash():
     assert 'RFQ-NEW' not in params
 
 
-@pytest.mark.parametrize('status', ['review_required', 'unknown'])
-def test_material_or_uncertain_terms_block_only_automatic_selection(status):
+@pytest.mark.parametrize('status', ['review_required', 'unknown', 'not_evaluated', 'clear'])
+def test_terms_never_block_automatic_selection(status):
+    """특약은 보여 주기만 한다.
+
+    있다는 이유만으로 멈추면 인사말 한 줄에도 사람이 붙어 자동화가 사실상
+    꺼진다. 점수와 진행은 가격·납기·규격·평가이력 기준대로 간다.
+    """
     result = _result()
     result['ranking'][0].update(terms_review=status, terms_reason='선결제 확인 필요')
     decision = _evaluate(result=result)
-    assert decision.needs_person and not decision.should_proceed
-    assert 'SUPPLIER_TERMS' in {r['code'] for r in decision.blockers}
-
-
-def test_clear_terms_keep_normal_automatic_gates():
-    result = _result()
-    result['ranking'][0].update(terms_review='clear', terms_reason='감사 인사만 있음')
-    assert _evaluate(result=result).should_proceed
+    assert decision.should_proceed
+    assert 'SUPPLIER_TERMS' not in {r['code'] for r in decision.blockers}
 
 
 @pytest.mark.parametrize(('notes', 'review', 'reason', 'expected'), [
@@ -62,17 +61,29 @@ def test_clear_terms_keep_normal_automatic_gates():
     ('감사합니다', 'clear', '인사 문구', 'clear'),
     ('선결제 필수', 'review_required', '결제 조건 확인', 'review_required'),
     ('선결제 필수', 'unknown', '', 'unknown'),
-    ('선결제 필수', 'clear', '', 'unknown'),
+    ('선결제 필수', 'clear', '', 'clear'),
 ])
-def test_terms_are_projected_without_changing_spec_score(notes, review, reason, expected):
+def test_terms_are_carried_through_without_touching_score_or_gates(notes, review, reason, expected):
+    """판정값은 화면에 보여 주려고 그대로 들고 간다. 점수도 게이트도 안 건드린다."""
     quote = _review('SQ-1', 'Supplier', '100')
     quote.quotation.notes = notes
     assessment = _assessment('SQ-1', 80).model_copy(update={'terms_review': review, 'terms_reason': reason})
     ranked = rank_quotations_with_spec_scores([quote], _rfq(), {'SQ-1': assessment}).recommended[0]
     assert ranked.terms_review == expected
     assert ranked.specification_score == 80
-    if expected != 'clear':
-        assert ranked.requires_confirmation
+    assert not ranked.requires_confirmation
+
+
+def test_separated_terms_are_shown_rather_than_judged():
+    """분리 저장된 특약은 규격 AI 입력에서 뺀 조항이라 판정 대상이 아니다."""
+    quote = _review('SQ-1', 'Supplier', '100')
+    quote.quotation.notes = '설치공사 별도'
+    quote.quotation.content_sections_separated = True
+    assessment = _assessment('SQ-1', 80).model_copy(update={'terms_review': 'clear', 'terms_reason': ''})
+    ranked = rank_quotations_with_spec_scores([quote], _rfq(), {'SQ-1': assessment}).recommended[0]
+    assert ranked.terms_review == 'not_evaluated'
+    assert ranked.specification_score == 80
+    assert not ranked.requires_confirmation
 
 
 def test_paused_case_does_not_mutate_shared_company_policy():

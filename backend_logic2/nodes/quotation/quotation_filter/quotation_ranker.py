@@ -277,6 +277,83 @@ def _scorecard_view(scorecard: Any) -> tuple[float | None, int]:
     return max(0.0, min(100.0, weighted * 20.0)), max(1, count)
 
 
+def _split_portal_terms(
+    reviews: list[QuotationReview], evaluator: Any, rfq_name: str
+) -> None:
+    """포털로 들어온 견적의 비고를 규격/특약으로 나눠 둔다(규격 평가 앞).
+
+    이메일 첨부 견적은 추출 단계에서 이미 나뉘어 저장되므로 건드리지 않는다
+    (content_sections_separated). 포털 견적만 통째 비고를 갖고 있고, 그대로
+    두면 규격 AI가 특약 문장까지 규격 근거로 읽는다.
+
+    ⚠️ 한 건이 실패해도 나머지를 막지 않는다. 나누지 못하면 예전처럼 통째
+    비고인 채로 넘어갈 뿐이다 - 순위 자체가 사라지는 것보다 낫다.
+    """
+    from .quotation_terms_splitter import (
+        apply_split,
+        build_quotation_terms_splitter,
+        split_fingerprint,
+    )
+
+    targets = [
+        review.quotation
+        for review in reviews
+        if review.quotation is not None
+        and not review.quotation.content_sections_separated
+        and str(review.quotation.notes or "").strip()
+    ]
+    if not targets:
+        return
+    try:
+        splitter = build_quotation_terms_splitter(evaluator)
+    except (TypeError, ValueError) as exc:
+        LOGGER.warning("특약 분리기를 만들지 못했습니다: %s", exc)
+        return
+    if not splitter.available:
+        return
+
+    source = f"{splitter.model_name}:terms-split"
+    fingerprints = {
+        str(quotation.quotation_id): split_fingerprint(quotation, splitter.model_name)
+        for quotation in targets
+    }
+    try:
+        from backend_logic2.repositories.quotation_specification_cache import load_matching
+
+        cached = load_matching(rfq_name, fingerprints, source)
+    except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+        LOGGER.warning("특약 분리 캐시 읽기 실패: %s", exc)
+        cached = {}
+
+    fresh: dict[str, dict[str, Any]] = {}
+    for quotation in targets:
+        quotation_id = str(quotation.quotation_id)
+        payload = cached.get(quotation_id)
+        if payload is None:
+            try:
+                payload = splitter.split(quotation).model_dump(mode="json")
+            except Exception as exc:  # noqa: BLE001 - 한 건 실패가 순위를 막지 않는다
+                LOGGER.warning("특약 분리 실패: quotation_id=%s %s", quotation_id, exc)
+                continue
+            fresh[quotation_id] = payload
+        try:
+            from .quotation_terms_splitter import QuotationTermsSplit
+
+            apply_split(quotation, QuotationTermsSplit.model_validate(payload))
+        except (TypeError, ValueError) as exc:
+            LOGGER.warning("특약 분리 결과 반영 실패: quotation_id=%s %s", quotation_id, exc)
+
+    if fresh:
+        try:
+            from backend_logic2.repositories.quotation_specification_cache import (
+                save_assessments,
+            )
+
+            save_assessments(rfq_name, fingerprints, source, fresh)
+        except (psycopg.Error, ProcurementDatabaseConfigurationError) as exc:
+            LOGGER.warning("특약 분리 캐시 쓰기 실패: %s", exc)
+
+
 def rank_quotations_with_spec_scores(
     review_data: list[QuotationReview | dict[str, Any]],
     rfq_data: RFQRequirements | dict[str, Any],
@@ -523,9 +600,9 @@ def rank_quotations_with_spec_scores(
         terms_review = (assessment.terms_review if assessment else "unknown") if has_terms else "clear"
         terms_reason = (assessment.terms_reason if assessment else "") if has_terms else "특약 없음"
         if has_terms and quotation.content_sections_separated:
-            # These clauses were deliberately omitted from the spec-only AI
-            # input. Its "clear / no terms" result cannot approve them.
-            terms_review = "review_required"
+            # Spec-only inference does not evaluate commercial conditions.
+            # Preserve the separate display without gating automatic progress.
+            terms_review = "not_evaluated"
             # Extraction already used Qwen to summarize/classify these clauses.
             # Reuse that persisted summary, rather than another paid inference
             # or an approval from the spec-only assessment. Do not truncate
@@ -534,9 +611,7 @@ def rank_quotations_with_spec_scores(
                 line.strip() for line in str(quotation.notes).splitlines() if line.strip()
             )
             terms_reason = f"{other_terms} (담당자 확인 필요)"
-        if has_terms and (terms_review != "clear" or not terms_reason.strip()):
-            terms_review = "review_required" if terms_review == "review_required" else "unknown"
-            row["warnings"].append("[특약 확인] " + (terms_reason or "특약 판단이 완료되지 않았습니다."))
+            row["warnings"].append("[특약 확인] " + terms_reason)
         reason = (
             f"종합 {row['overall']:.2f}점 = 가격 {_fmt('price')} · 납기 {_fmt('delivery')} · "
             f"규격 {_fmt('specification')} · 평가이력 {_fmt('scorecard')}.{penalty_text}{spec_reason} "
@@ -575,7 +650,7 @@ def rank_quotations_with_spec_scores(
             penalties=row["classified"]["penalties"],
             applied_weights=row["applied"],
             missing_factors=row["missing"],
-            requires_confirmation=row["classified"]["requires_confirmation"] or row["invalid_delivery"] or terms_review != "clear" or any(w.startswith("[규격 확인]") for w in row["warnings"]),
+            requires_confirmation=row["classified"]["requires_confirmation"] or row["invalid_delivery"] or any(w.startswith("[규격 확인]") for w in row["warnings"]),
             warnings=row["warnings"],
         ))
 
@@ -947,6 +1022,7 @@ def evaluate_quotations(
         LOGGER.warning("Quotation specification evaluator unavailable: %s", exc)
 
     if evaluator is not None:
+        _split_portal_terms(reviews, evaluator, rfq.rfq_name)
         fingerprints = {
             review.quotation_id: specification_evaluation_fingerprint(
                 rfq, review.quotation, evaluator
@@ -1091,6 +1167,12 @@ def evaluate_quotations(
             "specification_reason": ranked.specification_reason,
             "terms_review": ranked.terms_review,
             "terms_reason": ranked.terms_reason,
+            # 특약 원문. 점수와 자동 진행에는 쓰지 않고 화면에 그대로 띄운다.
+            "terms_text": (
+                str(review.quotation.notes).strip()
+                if review.quotation is not None and str(review.quotation.notes or "").strip()
+                else None
+            ),
             "specification_items": ranked.specification_items,
             "evaluation_source": ranked.evaluation_source,
             "price_score": ranked.price_score,
