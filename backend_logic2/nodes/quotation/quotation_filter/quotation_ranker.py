@@ -916,6 +916,19 @@ def _enrich_ranking_with_prices(
     return enriched
 
 
+def _display_review_issues(review: QuotationReview, *, ai_spec_evaluated: bool) -> list[str]:
+    """Preliminary rule comparisons must not contradict final semantic scores."""
+    return [
+        (
+            f"규칙 비교 확인: {issue.evidence}"
+            if issue.code in AI_SPEC_ISSUE_CODES and issue.evidence
+            else issue.message
+        )
+        for issue in review.issues
+        if not (ai_spec_evaluated and issue.code in AI_SPEC_ISSUE_CODES)
+    ]
+
+
 def evaluate_quotations(
     rfq_name: str,
     *,
@@ -1149,7 +1162,13 @@ def evaluate_quotations(
             "rank": ranked.rank,
             "fulfills_qty": all(item.quantity_compliant for item in review.item_compliance),
             "reason": ranked.reason,
-            "issues": [issue.message for issue in review.issues],
+            # AI owns semantic spec comparison (e.g. IE3 vs IE3 이상).
+            # Keep numeric/business issues, but do not present preliminary
+            # rule mismatches as final findings after a scored AI assessment.
+            "issues": _display_review_issues(
+                review,
+                ai_spec_evaluated=bool(ranked.evaluation_source) and ranked.specification_score is not None,
+            ),
             "currency": ranked.currency,
             "total_amount": ranked.total_amount,
             "grand_total": ranked.total_amount,
