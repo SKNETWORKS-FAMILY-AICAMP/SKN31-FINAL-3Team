@@ -90,7 +90,7 @@ FINETUNED_USER_PROMPT = """이 견적서의 정보를 아래 규칙과 JSON 스�
 7. item_name에는 제품명만, description에는 규격·사양·설명 내용을 기록합니다. specifications에는 문서에 표시된 규격 항목을 키-값으로 기록합니다.
 8. raw_description에는 해당 품목 행에 보이는 품목명과 규격·설명 원문을 읽는 순서대로 보존합니다. 원문에 없는 구분 문구를 만들지 않습니다.
 9. 품목이 여러 개이면 생략하거나 합치지 말고 items 배열에 위에서 아래 순서로 모두 출력합니다.
-10. notes에는 문서에 실제로 표시된 특약사항, 특이사항, 비고 또는 거래 조건을 빠짐없이 기록합니다. 특히 품목 표 아래나 문서 하단의 '[특약사항]', '[특이사항]', '[비고]', '[조건]', '상업 조건', '기술 특약' 영역과 다음 페이지의 계속 내용을 반드시 확인하고, 각 항목을 줄바꿈으로 구분해 원문 의미를 보존합니다. 기술 특약을 specifications에 반영했더라도 notes에서 삭제하지 않습니다. 설치·배선 제외, 보증 기간, 무상 자료, 지급 조건도 notes에 포함합니다.
+10. 전체 페이지의 본문·표·상업 조건·기술 특약을 모두 읽은 뒤, 위치나 제목이 아니라 내용의 의미로 다음 두 가지로 분류해 간결하게 정리합니다. (가) 규격사항: 치수, 재질, 출력, 전원, 효율, 보호 등급, 절연, 설치 형식, 적용 표준 및 공급 제외 제품 등의 기술적 조건은 해당 품목의 specifications에 항목별 키-값으로 기록합니다. (나) 그 외 사항: 지급·결제, 보증, 운송·포장, 설치공사 포함/제외, 무상 제출 서류 등 거래·서비스 조건은 notes에 줄바꿈으로 정리합니다. 한 문장에 두 종류가 섞여 있으면 의미 단위로 나눕니다. 예: 'IE3 이상이며 납품일 기준 12개월 보증'은 specifications의 효율 등급과 notes의 보증으로 분리합니다. 원문의 값·단위·부정·제외·적용 품목·범위를 보존하고, 누락·추측·중복 기재하지 않습니다. 규격이 특약 영역에 있어도 specifications로 옮기며 notes에는 다시 복사하지 않습니다. notes 키는 반드시 출력하고, 그 외 사항이 실제로 없을 때만 null입니다.
 11. 문서 상단의 '유효기간', '견적 유효기간', 'Validity', 'Valid Till' 날짜는 valid_until에 기록합니다. quotation_date나 납기일과 혼동하지 않습니다.
 12. 품목 행의 '납기일', '납품일', '납품예정일' 또는 특약사항의 '예상 납품일'은 해당 품목의 expected_delivery_date에 기록합니다. 모든 품목에 공통으로 표시된 날짜라면 각 품목에 같은 날짜를 기록합니다.
 13. 전체 페이지 이미지 뒤에 상단 또는 하단 확대 이미지가 추가로 제공될 수 있습니다. 확대 이미지는 같은 문서의 세부 영역이므로 품목을 중복 생성하지 말고, 전체 이미지에서 작게 보여 누락되기 쉬운 유효기간·납기일·특약사항을 보완하는 데 사용합니다.
@@ -814,15 +814,17 @@ def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
 def apply_document_fallbacks(
     payload: dict[str, Any],
     fallbacks: dict[str, Any] | None,
+    *,
+    include_notes: bool = True,
 ) -> dict[str, Any]:
     """Fill omitted scalars and retain explicit source-backed note sections."""
 
     fallbacks = fallbacks or {}
     if not payload.get("valid_until") and fallbacks.get("valid_until"):
         payload["valid_until"] = fallbacks["valid_until"]
-    if not str(payload.get("notes") or "").strip() and fallbacks.get("notes"):
+    if include_notes and not str(payload.get("notes") or "").strip() and fallbacks.get("notes"):
         payload["notes"] = fallbacks["notes"]
-    for section in fallbacks.get("note_sections") or []:
+    for section in (fallbacks.get("note_sections") or []) if include_notes else []:
         existing = str(payload.get("notes") or "").strip()
         # Identical OCR/recovery sections must not accumulate on repeated calls.
         compact_existing = re.sub(r"\s+", "", existing)
@@ -1079,6 +1081,8 @@ def _normalize_finetuned_quotation(payload: dict[str, Any]) -> dict[str, Any]:
 
 class LocalHuggingFaceQuotationParser:
     """텍스트 모델과 파인튜닝 비전 adapter를 지연 로딩해 재사용한다."""
+
+    content_sections_separated = True
 
     def __init__(
         self,
@@ -1478,7 +1482,11 @@ def _extract_prepared_quotation(
     parsed_value = parser(prepared, rfq_name, supplier_name, reflection_errors or [])
     parsed = parsed_value if isinstance(parsed_value, _ParsedQuotation) else _ParsedQuotation.model_validate(parsed_value)
     payload = parsed.model_dump()
-    apply_document_fallbacks(payload, extract_document_fallbacks(prepared.text))
+    separated = bool(getattr(parser, "content_sections_separated", False))
+    apply_document_fallbacks(
+        payload, extract_document_fallbacks(prepared.text), include_notes=not separated,
+    )
+    payload["content_sections_separated"] = separated
     if not payload.get("currency"):
         raise ValueError(
             "견적서에서 결제 통화를 확인할 수 없어 자동 등록하지 않습니다."

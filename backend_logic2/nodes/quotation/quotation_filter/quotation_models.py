@@ -84,6 +84,9 @@ class Quotation(StrictModel):
     base_total_amount: Decimal | None = Field(default=None, ge=0)
     items: list[QuotationItem] = Field(min_length=1)
     notes: str | None = None
+    # True only for Qwen-classified content / the versioned separated ERP format.
+    # Legacy portal terms may still mix technical and commercial information.
+    content_sections_separated: bool = False
     source: QuotationSource
     extraction_attempt: int = Field(default=1, ge=1, le=3)
     extraction_evidence: list[str] = Field(default_factory=list)

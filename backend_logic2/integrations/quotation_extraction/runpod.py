@@ -63,7 +63,7 @@ class _LenientQuotationExtraction(BaseModel):
     """RunPod worker schemas.py::QuotationExtraction과 값 형태는 동일하되,
 
     모델이 값을 모르는 필드의 키를 통째로 생략해도(예: 특약사항이 없어
-    notes 키 자체가 빠진 경우) 검증이 실패하지 않도록 모든 선택 필드에
+    notes 키 자체가 빠진 경우) 구형 결과 검증이 실패하지 않도록 모든 선택 필드에
     `= None`을 둔다. items는 견적의 핵심 데이터라 계속 필수로 둔다.
     """
 
@@ -188,6 +188,7 @@ class RunPodQuotationConfig:
 class RunPodQuotationParser:
     """Submit one quotation document job and normalize its terminal result."""
 
+    content_sections_separated = True
     provider_label = "RunPod Serverless"
     uses_external_service = True
 
@@ -400,6 +401,10 @@ class RunPodQuotationParser:
                 "RunPod 완료 응답에 견적 extraction이 없습니다."
             )
         extraction = dict(extraction)
+        if self.content_sections_separated and 'notes' not in extraction:
+            raise RunPodQuotationParserError(
+                'Qwen 분류 결과에 notes 키가 없습니다. 원문 특약을 확인해야 합니다.'
+            )
         try:
             extraction = _validate_extraction_locally(extraction)
         except ValidationError as exc:
@@ -438,7 +443,9 @@ class RunPodQuotationParser:
                     "OCR 원문에 서로 다른 날짜 또는 납기 값이 있어 자동 등록하지 않습니다."
                 )
             validate_document_delivery_evidence(extraction, document_text)
-            apply_document_fallbacks(extraction, fallbacks)
+            apply_document_fallbacks(
+                extraction, fallbacks, include_notes=not self.content_sections_separated,
+            )
         recovery_text = output.get("recovery_text")
         if recovery_text is not None:
             if (
@@ -456,6 +463,7 @@ class RunPodQuotationParser:
             apply_document_fallbacks(
                 extraction,
                 extract_document_fallbacks(recovery_text),
+                include_notes=not self.content_sections_separated,
             )
         return extraction
 

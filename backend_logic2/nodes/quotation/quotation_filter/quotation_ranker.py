@@ -522,6 +522,11 @@ def rank_quotations_with_spec_scores(
         has_terms = bool(str(quotation.notes or "").strip())
         terms_review = (assessment.terms_review if assessment else "unknown") if has_terms else "clear"
         terms_reason = (assessment.terms_reason if assessment else "") if has_terms else "특약 없음"
+        if has_terms and quotation.content_sections_separated:
+            # These clauses were deliberately omitted from the spec-only AI
+            # input. Its "clear / no terms" result cannot approve them.
+            terms_review = "review_required"
+            terms_reason = "규격 점수와 별개로 그 외 사항의 거래·특약 조건을 담당자가 확인해야 합니다."
         if has_terms and (terms_review != "clear" or not terms_reason.strip()):
             terms_review = "review_required" if terms_review == "review_required" else "unknown"
             row["warnings"].append("[특약 확인] " + (terms_reason or "특약 판단이 완료되지 않았습니다."))

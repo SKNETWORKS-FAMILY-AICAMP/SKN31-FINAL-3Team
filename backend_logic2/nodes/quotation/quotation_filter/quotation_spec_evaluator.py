@@ -73,11 +73,14 @@ class QuotationSpecAssessmentBatch(BaseModel):
 INSTRUCTIONS = """
 당신은 산업 구매 견적의 기술 규격 적합성을 판정하는 심사자입니다.
 RFQ의 specifications와 각 Supplier Quotation의 specifications 및 특약/비고(notes)만 비교하세요.
+content_sections_separated가 true인 견적은 Qwen이 규격과 그 외 사항을 분리한 견적입니다.
+이 견적은 specifications만 평가하고, 결제·보증·공사 등 그 외 사항은 점수에 반영하지 않습니다.
+notes는 예전의 미분류 견적에서만 규격 보완 근거로 사용합니다.
 가격, 공급사 인지도, 납기, 과거 실적은 규격 점수에 절대 반영하지 마세요.
 
 판정 원칙:
 - 동의어, 약어, 단위 환산, 표기 순서 차이는 의미가 같으면 일치로 봅니다.
-- specifications와 notes는 동일한 근거입니다. 한쪽에 없는 규격이 다른 쪽에 있으면 합쳐서 판단합니다.
+- 미분류된 기존 견적에서만 specifications와 notes를 동일한 근거로 봅니다. 한쪽에 없는 규격이 다른 쪽에 있으면 합쳐서 판단합니다.
 - 견적 specifications와 notes가 같은 RFQ 항목에 대해 서로 다른 값을 제시하면 충족으로
   간주하지 않습니다. 특히 RFQ에서 복사된 품목 설명과 공급사가 notes에 명시한 제안값이
   충돌하면 notes의 구체적인 제안값을 실제 견적값으로 보고 해당 필수 항목을 불일치 처리합니다.
@@ -281,9 +284,13 @@ def _quotation_payload(rfq: RFQRequirements, quotation: Any) -> dict[str, Any]:
                     }
                     for item in quotation.items
                 ],
-                # ERPNext의 특약/비고에는 규격 내용이 섞일 수 있으므로 함께 평가한다.
-                "notes": quotation.notes,
-                "notes_unit_normalizations": _unit_normalizations(quotation.notes),
+                # New classified terms exclude commercial notes from AI input;
+                # old mixed terms remain evidence for backward compatibility.
+                "content_sections_separated": quotation.content_sections_separated,
+                "notes": None if quotation.content_sections_separated else quotation.notes,
+                "notes_unit_normalizations": (
+                    [] if quotation.content_sections_separated else _unit_normalizations(quotation.notes)
+                ),
             }
         ],
     }
@@ -300,6 +307,11 @@ def specification_evaluation_fingerprint(
     # RFQ document identity changes on rebid, but unchanged requirements do not.
     # Keep the SQ id, complete requirements, terms and model/prompt versions.
     payload["rfq"].pop("rfq_name", None)
+    if quotation.content_sections_separated:
+        # The cached assessment now also contains terms_review/reason. Even
+        # though clauses are excluded from spec inference, changing them must
+        # not reuse an old combined review state.
+        payload["terms_review_source_notes"] = quotation.notes
     cache_identity = {
         "model": evaluator.model_name,
         "instructions": INSTRUCTIONS,

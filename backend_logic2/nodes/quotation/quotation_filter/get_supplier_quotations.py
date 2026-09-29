@@ -312,8 +312,10 @@ def get_quotations_for_rfqs(
 def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation:
     """ERPNext Supplier Quotation 하나를 reviewer 공통 모델로 변환한다."""
     transaction_date = detail.get("transaction_date")
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_terms import parse_separated_terms
+    separated = parse_separated_terms(detail.get('terms'))
     items: list[dict[str, Any]] = []
-    for item in detail.get("items") or []:
+    for index, item in enumerate(detail.get("items") or [], 1):
         if item.get("request_for_quotation") != rfq_name:
             continue
         description = html_to_text(item.get("description"))
@@ -334,7 +336,9 @@ def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation
                 or _calculate_schedule_date(transaction_date, item.get("lead_time_days"))
             ),
             "lead_time_days": item.get("lead_time_days"),
-            "specifications": extract_specifications(description),
+            # Classified terms are supplier evidence; do not merge an ERP/RFQ
+            # description that may have been copied from the requested spec.
+            "specifications": separated[0].get(index, {}) if separated else extract_specifications(description),
             "raw_description": description,
         })
 
@@ -354,7 +358,8 @@ def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation
         "total_amount": detail.get("grand_total") if detail.get("grand_total") is not None else detail.get("rounded_total"),
         "base_total_amount": detail.get("base_grand_total"),
         "items": items,
-        "notes": html_to_text(detail.get("terms")),
+        "notes": separated[1] if separated else html_to_text(detail.get("terms")),
+        "content_sections_separated": separated is not None,
         "source": {
             "kind": "portal",
             "filename": str(detail.get("name") or "ERPNext Supplier Quotation"),

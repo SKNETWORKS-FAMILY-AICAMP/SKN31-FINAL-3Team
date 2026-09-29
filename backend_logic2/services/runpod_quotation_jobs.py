@@ -78,6 +78,7 @@ def enqueue(data, filename, rfq_name, *, supplier_id, supplier_name,
             'source_kind': prepared.kind.value, 'evidence': prepared.evidence,
             'document_fallbacks': document_fallbacks,
             'pipeline_version': parser.config.pipeline_version,
+            'content_classification_version': 'spec-notes-v1',
         }, worker_input['prompt_sha256'], worker_input['prompt_version'],
     )
     if created:
@@ -96,8 +97,9 @@ def enqueue(data, filename, rfq_name, *, supplier_id, supplier_name,
 
 
 class _RecordedParser:
-    def __init__(self, extraction):
+    def __init__(self, extraction, *, separated=False):
         self.extraction = extraction
+        self.content_sections_separated = separated
 
     def __call__(self, *_args):
         return _normalize_finetuned_quotation(self.extraction)
@@ -114,12 +116,17 @@ def _register(job):
     evidence = context.pop('evidence', [])
     document_fallbacks = context.pop('document_fallbacks', {})
     context.pop('pipeline_version', None)
+    separated = context.pop('content_classification_version', None) == 'spec-notes-v1'
     # ⚠️ context는 그대로 _extract_prepared_quotation(**context)로 넘어간다.
     # 여기서 빼지 않으면 예상치 못한 인자로 터진다.
     submitted_at = context.pop('submitted_at', None)
     prepared = PreparedSource(kind=SourceKind(kind), text='', evidence=evidence)
     extraction = dict(job['result_json']['extraction'])
-    apply_document_fallbacks(extraction, document_fallbacks)
+    if separated and 'notes' not in extraction:
+        raise SupplierQuotationRegistrationError(
+            'Qwen did not return classified notes; manual review required',
+        )
+    apply_document_fallbacks(extraction, document_fallbacks, include_notes=not separated)
     extracted_document_text = job['result_json'].get('document_text')
     if extracted_document_text is not None:
         max_text_chars = int(os.getenv('RUNPOD_QUOTATION_MAX_TEXT_CHARS', '60000'))
@@ -130,7 +137,7 @@ def _register(job):
         if extracted_fallbacks.get('conflicts'):
             raise ValueError('RunPod document_text contains conflicting date or lead-time values')
         validate_document_delivery_evidence(extraction, extracted_document_text)
-        apply_document_fallbacks(extraction, extracted_fallbacks)
+        apply_document_fallbacks(extraction, extracted_fallbacks, include_notes=not separated)
     recovery_text = job['result_json'].get('recovery_text')
     if recovery_text is not None:
         max_text_chars = int(os.getenv('RUNPOD_QUOTATION_MAX_TEXT_CHARS', '60000'))
@@ -139,9 +146,10 @@ def _register(job):
         apply_document_fallbacks(
             extraction,
             extract_document_fallbacks(recovery_text),
+            include_notes=not separated,
         )
     quotation = _extract_prepared_quotation(
-        prepared, model_parser=_RecordedParser(extraction), **context,
+        prepared, model_parser=_RecordedParser(extraction, separated=separated), **context,
     )
     registration = quotation_service.register_supplier_quotation(quotation)
     # 마감 판정의 기준은 협력사가 낸 시각이다. 이 작업이 몇 분 걸렸어도

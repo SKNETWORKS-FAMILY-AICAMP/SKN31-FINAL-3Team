@@ -64,6 +64,20 @@ def _notes_to_terms(notes: str | None) -> str | None:
     ).replace("\n", "<br>")
 
 
+def _quotation_to_terms(quotation: Quotation) -> str | None:
+    """Persist supplier specs and clauses in the one shared ERP terms field.
+
+    Use only the extracted quotation, never the RFQ description fallback:
+    copying requested specs here would fabricate supplier compliance. Keep
+    item identities so multi-item specs do not become unscoped common terms.
+    Always use the same reversible format, even for callers that omit the
+    classification flag. Raw text is not appended when Qwen has supplied
+    structured specs. Old ERP records retain their legacy read path.
+    """
+    from backend_logic2.nodes.quotation.quotation_filter.quotation_terms import render_separated_terms
+    return render_separated_terms(quotation)
+
+
 def submit_finalized_quotations(ranking: list[dict[str, Any]]) -> list[str]:
     """최종 순위에 포함된 RFQ 견적을 제출해 이후 수정을 막는다."""
     rows_by_name = {
@@ -380,9 +394,9 @@ def build_supplier_quotation_payload(
         "plc_conversion_rate": 1,
         "ignore_pricing_rule": 1,
         "cost_center": company_doc.get("cost_center"),
-        # RFQ 포털의 Notes 입력란도 Supplier Quotation.terms에 저장된다.
-        # 외부 견적에서 추출한 notes를 같은 필드에 기록해 두 경로를 통일한다.
-        "terms": _notes_to_terms(quotation.notes),
+        # ERP has one shared field for supplier specifications and clauses.
+        # Do not discard structured specs when description refers to page 2.
+        "terms": _quotation_to_terms(quotation),
         "items": item_payloads,
         "taxes": taxes,
     }
