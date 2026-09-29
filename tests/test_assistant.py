@@ -193,5 +193,34 @@ class AssistantAdapterTests(unittest.TestCase):
         self.assertFalse(list_cases.call_args.kwargs["include_closed"])
 
 
+class StagePresentationCoverageTest(unittest.TestCase):
+    """단계가 늘 때 안내 문구와 이동 화면을 같이 늘리지 않으면 잡는다.
+
+    빠진 단계는 present_stage가 PROCESSING("자동 처리 중" · MR 목록)으로
+    되돌려서, 사람이 처리할 일이 있는 단계인데도 "기다리세요"라고 안내하고
+    행이 없는 화면으로 보냈다.
+    """
+
+    def test_every_projected_stage_has_presentation(self):
+        from backend_logic2.assistant.stage_presenter import STAGE_PRESENTATION
+        from backend_logic2.services.workflow_projection import STATUS_TO_STAGE
+
+        # 그래프 상태에서 나오지 않고 입고/평가 흐름이 직접 세우는 단계들.
+        extra = {"SCORECARD", "COMPLETED"}
+        for stage in sorted(set(STATUS_TO_STAGE.values()) | extra):
+            self.assertIn(stage, STAGE_PRESENTATION, stage)
+
+    def test_buyer_stages_point_at_the_screen_that_holds_them(self):
+        from backend_logic2.assistant.stage_presenter import present_stage
+
+        for stage, target in (
+            ("RFQ_TARGET_SELECTION", "vendor-select"),
+            ("ORDER_START", "vendor-select"),
+            ("PO_CREATION_FAILED", "po-manage"),
+            ("SCORECARD", "po-manage"),
+        ):
+            self.assertEqual(present_stage(stage)[3], target, stage)
+
+
 if __name__ == "__main__":
     unittest.main()
