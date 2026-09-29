@@ -90,7 +90,7 @@ FINETUNED_USER_PROMPT = """이 견적서의 정보를 아래 규칙과 JSON 스�
 7. item_name에는 제품명만, description에는 규격·사양·설명 내용을 기록합니다. specifications에는 문서에 표시된 규격 항목을 키-값으로 기록합니다.
 8. raw_description에는 해당 품목 행에 보이는 품목명과 규격·설명 원문을 읽는 순서대로 보존합니다. 원문에 없는 구분 문구를 만들지 않습니다.
 9. 품목이 여러 개이면 생략하거나 합치지 말고 items 배열에 위에서 아래 순서로 모두 출력합니다.
-10. notes에는 문서에 실제로 표시된 특약사항, 특이사항, 비고 또는 거래 조건을 빠짐없이 기록합니다. 특히 품목 표 아래나 문서 하단의 '[특약사항]', '[특이사항]', '[비고]', '[조건]' 영역을 반드시 다시 확인하고, 각 항목을 줄바꿈으로 구분해 원문 의미를 보존합니다.
+10. notes에는 문서에 실제로 표시된 특약사항, 특이사항, 비고 또는 거래 조건을 빠짐없이 기록합니다. 특히 품목 표 아래나 문서 하단의 '[특약사항]', '[특이사항]', '[비고]', '[조건]', '상업 조건', '기술 특약' 영역과 다음 페이지의 계속 내용을 반드시 확인하고, 각 항목을 줄바꿈으로 구분해 원문 의미를 보존합니다. 기술 특약을 specifications에 반영했더라도 notes에서 삭제하지 않습니다. 설치·배선 제외, 보증 기간, 무상 자료, 지급 조건도 notes에 포함합니다.
 11. 문서 상단의 '유효기간', '견적 유효기간', 'Validity', 'Valid Till' 날짜는 valid_until에 기록합니다. quotation_date나 납기일과 혼동하지 않습니다.
 12. 품목 행의 '납기일', '납품일', '납품예정일' 또는 특약사항의 '예상 납품일'은 해당 품목의 expected_delivery_date에 기록합니다. 모든 품목에 공통으로 표시된 날짜라면 각 품목에 같은 날짜를 기록합니다.
 13. 전체 페이지 이미지 뒤에 상단 또는 하단 확대 이미지가 추가로 제공될 수 있습니다. 확대 이미지는 같은 문서의 세부 영역이므로 품목을 중복 생성하지 말고, 전체 이미지에서 작게 보여 누락되기 쉬운 유효기간·납기일·특약사항을 보완하는 데 사용합니다.
@@ -684,13 +684,65 @@ def _normalize_lead_time_days(value: Any) -> int | None:
     return int(number)
 
 
+def _document_note_sections(document_text: str) -> list[str]:
+    """Recover explicitly headed clauses, not the entire OCR document.
+
+    Preserve clause line breaks and stop at tables, page/footer boundaries or
+    an unrelated section. These source-backed sections can supplement partial
+    model notes as well as a missing notes key, without another inference.
+    """
+    heading = re.compile(
+        r"^(특약\s*사항|특이\s*사항|비고|조건|상업\s*조건|거래\s*조건|기술\s*특약)"
+        r"(?:\s*[:：—–-]\s*(.*))?$"
+    )
+    boundary = re.compile(
+        r"^(?:\| |\||[-=]{3,}$|\d+\s*/\s*\d+$|테스트용|정답\s*파일|"
+        r"견적번호|견적일|유효기한|납품\s*및\s*문서\s*적용|부속\s*명세|"
+        r"공급가액|부가세|청구\s*합계|합계|공급사\s*[:：]|납품\s*예정일\s*[:：])"
+    )
+    enumeration = re.compile(r"^(?:[①-⑳]|[A-Za-z0-9]+[.)]|[-•·])\s*")
+
+    def clean(line: str) -> str:
+        value = re.sub(r"^#{1,6}\s+", "", line.strip()).replace("**", "")
+        return re.sub(r"^[\[【](.*?)[\]】]", r"\1", value).strip()
+
+    lines = document_text.splitlines()
+    sections: list[str] = []
+    for index, line in enumerate(lines):
+        match = heading.fullmatch(clean(line))
+        if not match:
+            continue
+        block = [clean(line)]
+        for offset in range(index + 1, len(lines)):
+            value = clean(lines[offset])
+            if not value:
+                # Blank lines between numbered clauses are layout, not an end.
+                next_line = next((clean(s) for s in lines[offset + 1:] if clean(s)), "")
+                if len(block) == 1 or enumeration.match(next_line):
+                    continue
+                break
+            if (heading.fullmatch(value) or boundary.match(value)
+                    or re.match(r"^#{1,6}\s+", lines[offset].strip())):
+                break
+            block.append(value)
+        if len(block) > 1 or match.group(2):
+            sections.append("\n".join(block))
+    # Payment conditions can occur on a delivery line outside headed sections.
+    for line in lines:
+        match = re.search(r"(?:^|[/|])\s*((?:지급|결제|지불)\s*[:：].+)", line)
+        if match:
+            sections.append(match.group(1).strip())
+    return list(dict.fromkeys(sections))
+
+
 def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
     """Read explicit terms/dates that a model may omit from document text.
 
     PDF text layers commonly insert whitespace between every Korean syllable
     and may split a date across lines.  Compacting whitespace makes labelled
     fields deterministic without guessing values that are absent from the
-    document.  These values are used only when the model returned ``null``.
+    document. Scalar values fill only omissions; explicitly headed note
+    sections also supplement partial model notes.
     """
 
     source_text = str(document_text or "")
@@ -744,6 +796,9 @@ def extract_document_fallbacks(document_text: str) -> dict[str, Any]:
         result["lead_time_days"] = lead_time_days
     if notes:
         result["notes"] = "\n".join(notes)
+    note_sections = _document_note_sections(source_text)
+    if note_sections:
+        result["note_sections"] = note_sections
     conflicts: dict[str, list[Any]] = {}
     if len(valid_until_values) > 1:
         conflicts["valid_until"] = valid_until_values
@@ -760,13 +815,21 @@ def apply_document_fallbacks(
     payload: dict[str, Any],
     fallbacks: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Fill only model-omitted values from deterministic document evidence."""
+    """Fill omitted scalars and retain explicit source-backed note sections."""
 
     fallbacks = fallbacks or {}
     if not payload.get("valid_until") and fallbacks.get("valid_until"):
         payload["valid_until"] = fallbacks["valid_until"]
     if not str(payload.get("notes") or "").strip() and fallbacks.get("notes"):
         payload["notes"] = fallbacks["notes"]
+    for section in fallbacks.get("note_sections") or []:
+        existing = str(payload.get("notes") or "").strip()
+        # Identical OCR/recovery sections must not accumulate on repeated calls.
+        compact_existing = re.sub(r"\s+", "", existing)
+        missing = [line for line in section.splitlines()
+                   if re.sub(r"\s+", "", line) not in compact_existing]
+        if missing:
+            payload["notes"] = "\n".join(filter(None, [existing, *missing]))
     delivery = fallbacks.get("expected_delivery_date")
     lead_time_days = fallbacks.get("lead_time_days")
     if delivery:
