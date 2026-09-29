@@ -24,11 +24,12 @@ def load_matching(
             """
             SELECT quotation_id, input_hash, assessment_json
             FROM procurement.quotation_specification_cache
-            WHERE rfq_name = %s
-              AND evaluation_source = %s
+            WHERE evaluation_source = %s
               AND quotation_id = ANY(%s)
+              AND input_hash = ANY(%s)
+            ORDER BY updated_at ASC
             """,
-            (rfq_name, evaluation_source, quotation_ids),
+            (evaluation_source, quotation_ids, list(fingerprints.values())),
         ).fetchall()
     return {
         str(row["quotation_id"]): dict(row["assessment_json"])

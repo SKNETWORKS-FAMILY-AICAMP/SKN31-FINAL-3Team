@@ -52,11 +52,19 @@ def for_case(case_id):
             SELECT %s, version FROM procurement.company_policy_head WHERE singleton = true
             ON CONFLICT (case_id) DO NOTHING
         """, (str(case_id),))
-        return conn.execute("""
-            SELECT v.* FROM procurement.case_policy p
+        row = conn.execute("""
+            SELECT v.*, c.automation_paused FROM procurement.case_policy p
             JOIN procurement.company_policy_version v USING (version)
+            JOIN procurement.procurement_case c ON c.case_id = p.case_id
             WHERE p.case_id = %s
         """, (str(case_id),)).fetchone()
+        if row and row.get("automation_paused"):
+            # Copy the JSON; the immutable shared policy version stays untouched.
+            row = dict(row)
+            row["policy"] = {**row["policy"], "rules": {
+                **row["policy"]["rules"], "automation_mode": "off",
+            }}
+        return row
 
 
 def for_mr(mr_name):

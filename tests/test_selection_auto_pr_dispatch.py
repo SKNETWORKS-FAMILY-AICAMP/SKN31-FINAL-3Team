@@ -36,15 +36,27 @@ def test_confirmed_selection_carries_the_dispatch_flag() -> None:
     assert command.update["selected_rfq_name"] == "PUR-RFQ-0001"
 
 
-def test_selection_without_confirmation_keeps_the_manual_buttons() -> None:
+def test_valid_final_selection_does_not_require_a_second_start_button() -> None:
     with patch(
         "backend_logic2.workflow.process_commands.interrupt",
         return_value={"supplier": "공급사 A", "quotation_id": "SQ-1"},
     ):
         command = final_selection_command(_selection_state(auto_pr_dispatch=True))
 
-    # 이 화면에서 다시 고른 답변에 확인이 없으면 예전 확인은 무효다.
-    assert command.update["auto_pr_dispatch"] is False
+    # 최종 선정이 PR 요청 확인이며, 법적 PO 승인은 별도로 유지한다.
+    assert command.update["auto_pr_dispatch"] is True
+
+
+def test_rebid_selection_resets_previous_order_and_auto_selection_marker() -> None:
+    with patch("backend_logic2.workflow.process_commands.interrupt",
+               return_value={"supplier": "공급사 A", "quotation_id": "SQ-1"}):
+        state = _selection_state(order_started=True, selection_mode="auto")
+        selected = final_selection_command(state)
+    assert selected.update["selection_mode"] == "manual"
+    with patch("backend_logic2.workflow.process_commands.interrupt") as interrupt:
+        order = await_order_start_command({**state, **selected.update})
+    assert order.goto == "request_pr"
+    interrupt.assert_not_called()
 
 
 def test_order_start_and_pr_request_skip_their_confirmations() -> None:

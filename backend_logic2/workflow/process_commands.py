@@ -419,6 +419,8 @@ def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
     if not bidding_items:
         cancellation_reason = _cancel_urgent_mr_without_supplier(mr_name, bidding_results)
         if cancellation_reason:
+            from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
+            log_ai_decision(state.get("case_id"), "urgent_purchase_cancelled", cancellation_reason)
             return Command(
                 update={
                     "bidding_results": bidding_results,
@@ -465,8 +467,16 @@ def decide_bidding_choice_command(state: PurchaseProcessState) -> Command:
                 goto=END,
             )
 
-        # 비딩을 생략하더라도 협력사 선정 결과를 구매 담당자가 화면에서
-        # 확인하고 '발주 진행'을 눌러야 PO 관리 단계로 이동한다.
+        from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
+        log_ai_decision(
+            state.get("case_id"), "direct_purchase_decision",
+            "기존 거래 협력사와 확정단가로 직접구매합니다. " + "; ".join(
+                f"{code}: {item['supplier']}, 단가 {item['rate']}, 근거 PO {item['reference_po']} ({item['reason']})"
+                for code, item in direct_purchase_items.items()
+            ),
+        )
+        # 긴급 직접구매는 아래 대기 노드에서 PR까지 자동으로 이어진다.
+        # 비긴급 직접구매 및 별도 PO 승인 게이트는 기존 동작을 유지한다.
         return Command(
             update={
                 "bidding_results": bidding_results,
@@ -1085,14 +1095,13 @@ def _auto_pr_dispatch_requested(answer: Any) -> bool:
 def final_selection_command(state: PurchaseProcessState) -> Command:
     """[8단계-대기] 순위목록을 보여주고 최종 공급사를 선정한다.
 
-    선정과 발주는 서로 다른 사람의 명시적 행위다. 공급사를 골랐다는 이유로
-    법적 효력이 생기는 PO를 즉시 만들지 않고, 협력사 선정 화면의 '발주 시작'
-    입력과 PO 관리 화면의 최종 승인을 차례로 기다린다.
+    유효한 최종 선정 후 PR 요청은 자동 진행한다. 법적 효력이 생기는 PO는
+    공급사 응답 이후 별도 역할 기반 최종 승인을 반드시 거친다.
     """
     ranking = state.get("quotation_ranking", [])
     supplier = str(state.get("requested_supplier") or "").strip()
     quotation_id = str(state.get("requested_quotation") or "").strip()
-    auto_pr_dispatch = bool(state.get("auto_pr_dispatch"))
+    selection_mode = state.get("selection_mode") or "manual"
     if not supplier:
         answer = interrupt({
             "type": "final_selection",
@@ -1105,9 +1114,7 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
             if isinstance(answer, dict)
             else ""
         )
-        # 이 화면에서 다시 고르는 경우엔 이번 답변의 확인 여부만 따른다
-        # (예전 확인이 남아 메일이 나가는 일이 없도록).
-        auto_pr_dispatch = _auto_pr_dispatch_requested(answer)
+        selection_mode = "manual"
     valid_suppliers = {r.get("supplier") for r in ranking}
     if supplier not in valid_suppliers:
         return Command(
@@ -1159,10 +1166,14 @@ def final_selection_command(state: PurchaseProcessState) -> Command:
 
     return Command(
         update={
-            "auto_pr_dispatch": auto_pr_dispatch,
+            # 유효한 최종 선정 자체가 PR 발송 확인이다. PO 최종 승인은
+            # 별도 po_approval 노드 및 서버 역할 검사를 그대로 유지한다.
+            "auto_pr_dispatch": True,
+            # 재비딩 전에 시작했던 주문의 플래그를 새 선정에 재사용하지 않는다.
+            "order_started": False,
             # 이 경로는 사람이 화면에서 고른 선정이다. 조건을 통과해 자동으로
             # 선정되는 경로는 여기 오기 전에 selection_mode를 세워 둔다.
-            "selection_mode": state.get("selection_mode") or "manual",
+            "selection_mode": selection_mode,
             "selected_supplier": supplier,
             "selected_quotation": str(
                 selected_row.get("quotation_id") or selected_row.get("name") or ""
@@ -1213,7 +1224,7 @@ def await_order_start_command(state: PurchaseProcessState) -> Command:
     # 없다. 다른 건들처럼 곧장 PR 요청 대기 단계로 넘어간다.
     if state.get("direct_purchase") and is_urgent_direct_purchase and not state.get("order_started"):
         return Command(
-            update={"order_started": True, "status": "awaiting_pr_request", "error": ""},
+            update={"order_started": True, "auto_pr_dispatch": True, "status": "awaiting_pr_request", "error": ""},
             goto="request_pr",
         )
 
@@ -1347,6 +1358,11 @@ def create_pr_command(state: PurchaseProcessState) -> Command:
         purchase_mode="direct" if state.get("direct_purchase") else "quotation",
         direct_purchase_items=state.get("direct_purchase_items") or {},
         expires_in_hours=72,
+    )
+    from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
+    log_ai_decision(
+        state.get("case_id"), "pr_request_created",
+        f"{supplier_id} 수주 접수 요청(PR) 처리 완료 · 상태: {pr['status']} · 요청 ID: {pr['pr_id']}",
     )
     return Command(
         update={

@@ -122,6 +122,13 @@ def test_execute_uses_prepared_result_and_current_task_version(scenario):
     assert scenario.finish.call_args.args[1] == 'DONE'
 
 
+def test_case_paused_after_preparation_never_resumes_graph(scenario):
+    scenario.case['automation_paused'] = True
+    s._execute(scenario.job)
+    scenario.invoke.assert_not_called()
+    assert scenario.finish.call_args.args[1] == 'DONE'
+
+
 @pytest.mark.parametrize('reason', ['input','control','instance','task','checkpoint','cas'])
 def test_execute_rechecks_guards(scenario, monkeypatch, reason):
     if reason == 'input':

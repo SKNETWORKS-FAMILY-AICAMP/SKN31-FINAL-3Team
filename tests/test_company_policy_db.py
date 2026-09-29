@@ -29,8 +29,8 @@ def isolated_policy(monkeypatch):
         conn.execute(f'CREATE SCHEMA {schema}')
     try:
         with connection() as conn:
-            conn.execute('CREATE TABLE procurement.procurement_case(case_id UUID PRIMARY KEY, mr_name TEXT)')
-            conn.execute('INSERT INTO procurement.procurement_case VALUES (%s, %s)', (legacy_case, 'LEGACY'))
+            conn.execute('CREATE TABLE procurement.procurement_case(case_id UUID PRIMARY KEY, mr_name TEXT, automation_paused boolean NOT NULL DEFAULT false)')
+            conn.execute('INSERT INTO procurement.procurement_case(case_id, mr_name) VALUES (%s, %s)', (legacy_case, 'LEGACY'))
             path = Path(__file__).resolve().parents[1] / 'migrations/014_create_company_policy.sql'
             conn.execute(path.read_text(encoding='utf-8'))
         monkeypatch.setattr(repo, 'get_connection', connection)
@@ -49,7 +49,7 @@ def test_publish_pin_resume_restore(isolated_policy):
     assert repo.for_case(legacy_case)['version'] == 1
     new_case = str(uuid4())
     with connection() as conn:
-        conn.execute('INSERT INTO procurement.procurement_case VALUES (%s, %s)', (new_case, 'NEW'))
+        conn.execute('INSERT INTO procurement.procurement_case(case_id, mr_name) VALUES (%s, %s)', (new_case, 'NEW'))
     assert repo.for_case(new_case)['version'] == 2
     assert repo.for_mr('NEW')['version'] == 2
     restored = repo.publish(CompanyPolicy(), expected_version=2, actor='tester', reason='기존 기준 복원')

@@ -132,6 +132,10 @@ def _execute(job):
             jobs.finish(job, 'WAITING', '준비 완료 조건이 충족되지 않았습니다.')
             return
         with graph_worker.case_lock(str(job['case_id'])), graph_worker.case_in_flight(str(job['case_id'])):
+            latest = cases.get_case(str(job['case_id']))
+            if latest and latest.get('automation_paused'):
+                jobs.finish(job, 'DONE', '담당자가 이 구매 건의 자동 진행을 껐습니다.')
+                return
             if not jobs.start(job):
                 return  # CAS: another process or an administrator won the race.
             invoked = True

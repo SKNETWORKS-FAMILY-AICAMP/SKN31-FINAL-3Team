@@ -25,6 +25,22 @@ class CaseConflictError(RuntimeError):
     """Raised when an optimistic version check detects a concurrent update."""
 
 
+def pause_automation(case_id: str) -> dict[str, Any]:
+    """Stop future automatic selection only while the case still awaits quotes."""
+    with get_connection() as conn:
+        row = conn.execute("""
+            UPDATE procurement.procurement_case SET automation_paused = true, updated_at = now()
+            WHERE case_id = %s AND stage = 'QUOTATION_COLLECTION'
+              AND status = 'WAITING_INPUT'
+            RETURNING *
+        """, (case_id,)).fetchone()
+        if not row:
+            raise CaseConflictError("견적 회신 대기 중인 구매 건에서만 자동 진행을 끌 수 있습니다.")
+        from backend_logic2.repositories.work_progress import notify_progress
+        notify_progress(conn, case_id)
+        return row
+
+
 _TERMINAL_CASE_STATUSES = {"COMPLETED", "CANCELLED", "REJECTED"}
 
 

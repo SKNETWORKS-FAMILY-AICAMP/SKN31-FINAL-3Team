@@ -165,6 +165,8 @@ class RankedQuotation(StrictModel):
     specification_score: float | None = Field(default=None, ge=0, le=100)
     overall_score: float | None = Field(default=None, ge=0, le=100)
     specification_reason: str | None = None
+    terms_review: str = "unknown"
+    terms_reason: str = ""
     specification_items: list[dict[str, Any]] = Field(default_factory=list)
     evaluation_source: str | None = None
     # 4항목 점수(0~100). 값이 없어 가중치에서 빠진 항목은 None이다.

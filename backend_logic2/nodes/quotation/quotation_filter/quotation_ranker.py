@@ -519,6 +519,12 @@ def rank_quotations_with_spec_scores(
             else ""
         )
         spec_reason = f" {row['specification_reason']}" if row["specification_reason"] else ""
+        has_terms = bool(str(quotation.notes or "").strip())
+        terms_review = (assessment.terms_review if assessment else "unknown") if has_terms else "clear"
+        terms_reason = (assessment.terms_reason if assessment else "") if has_terms else "특약 없음"
+        if has_terms and (terms_review != "clear" or not terms_reason.strip()):
+            terms_review = "review_required" if terms_review == "review_required" else "unknown"
+            row["warnings"].append("[특약 확인] " + (terms_reason or "특약 판단이 완료되지 않았습니다."))
         reason = (
             f"종합 {row['overall']:.2f}점 = 가격 {_fmt('price')} · 납기 {_fmt('delivery')} · "
             f"규격 {_fmt('specification')} · 평가이력 {_fmt('scorecard')}.{penalty_text}{spec_reason} "
@@ -540,6 +546,8 @@ def rank_quotations_with_spec_scores(
             specification_score=factors.get("specification"),
             overall_score=row["overall"],
             specification_reason=row["specification_reason"],
+            terms_review=terms_review,
+            terms_reason=terms_reason,
             specification_items=(
                 [item.model_dump(mode="json") for item in assessment.items]
                 if assessment is not None
@@ -555,7 +563,7 @@ def rank_quotations_with_spec_scores(
             penalties=row["classified"]["penalties"],
             applied_weights=row["applied"],
             missing_factors=row["missing"],
-            requires_confirmation=row["classified"]["requires_confirmation"] or row["invalid_delivery"] or any(w.startswith("[규격 확인]") for w in row["warnings"]),
+            requires_confirmation=row["classified"]["requires_confirmation"] or row["invalid_delivery"] or terms_review != "clear" or any(w.startswith("[규격 확인]") for w in row["warnings"]),
             warnings=row["warnings"],
         ))
 
@@ -1069,6 +1077,8 @@ def evaluate_quotations(
             "specification_score": ranked.specification_score,
             "overall_score": ranked.overall_score,
             "specification_reason": ranked.specification_reason,
+            "terms_review": ranked.terms_review,
+            "terms_reason": ranked.terms_reason,
             "specification_items": ranked.specification_items,
             "evaluation_source": ranked.evaluation_source,
             "price_score": ranked.price_score,

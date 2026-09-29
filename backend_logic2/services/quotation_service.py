@@ -740,13 +740,13 @@ def validate_case_quotations(case: dict[str, Any], *, strict: bool = False) -> d
             if review.quotation is not None
         }
         cached: dict[str, Any] = {}
-        for name in rfq_names:
-            try:
-                cached.update(load_matching(name, fingerprints, evaluator.model_name))
-            except Exception:  # noqa: BLE001
-                if strict:
-                    raise
-                LOGGER.warning("규격 평가 캐시 조회 실패: rfq=%s", name)
+        # Hash + SQ identity now spans RFQ rounds: one query is sufficient.
+        try:
+            cached.update(load_matching(rfq_names[0] if rfq_names else "", fingerprints, evaluator.model_name))
+        except Exception:  # noqa: BLE001
+            if strict:
+                raise
+            LOGGER.warning("규격 평가 캐시 조회 실패: rfqs=%s", rfq_names)
         spec_evaluated = {
             quotation_id: quotation_id in cached for quotation_id in fingerprints
         }

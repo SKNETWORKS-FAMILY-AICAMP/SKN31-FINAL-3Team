@@ -322,6 +322,57 @@ def download_material_request_attachment(
     )
 
 
+@router.get("/cases/{case_id}/quotation-attachments")
+def get_quotation_attachments(case_id: str, current_user: CurrentUser, quotation_id: str = Query(..., min_length=1)):
+    case = _require_case_access(case_id, current_user)
+    from backend_logic2.services.quotation_attachments import originals
+    try:
+        return {"items": [{"file_id": f["name"], "file_name": f.get("file_name") or f["name"]}
+                          for f in originals(case, quotation_id)]}
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ERPNextAPIError as exc:
+        raise HTTPException(502, "견적서 원본 목록을 가져오지 못했습니다.") from exc
+
+
+@router.get("/cases/{case_id}/quotation-attachments/download")
+def download_quotation_attachment(case_id: str, current_user: CurrentUser,
+                                  quotation_id: str = Query(..., min_length=1), file_id: str = Query(..., min_length=1)):
+    case = _require_case_access(case_id, current_user)
+    from backend_logic2.services.quotation_attachments import originals
+    try:
+        allowed = next((f for f in originals(case, quotation_id) if f['name'] == file_id), None)
+        if not allowed:
+            raise PermissionError("이 견적서의 첨부파일이 아닙니다.")
+        downloaded = erp_download_file(file_id, expected_attached_to_doctype=allowed['attached_to_doctype'])
+        if downloaded['document'].get('attached_to_name') != allowed['attached_to_name']:
+            raise PermissionError("첨부파일 연결이 변경되었습니다. 다시 확인해 주세요.")
+        filename = str(downloaded['document'].get('file_name') or file_id)
+        return Response(content=downloaded['content'], media_type=downloaded['content_type'], headers={
+            'Content-Disposition': f"attachment; filename*=UTF-8''{quote(filename)}",
+            'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store',
+        })
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ERPNextAPIError as exc:
+        raise HTTPException(502, "견적서 원본을 가져오지 못했습니다.") from exc
+
+
+@router.post("/cases/{case_id}/automation/pause")
+def pause_case_automation(case_id: str, current_user: CurrentUser):
+    _require_case_access(case_id, current_user)
+    from backend_logic2.services import graph_worker
+    from backend_logic2.nodes.supplier.tools.case_logging import log_ai_decision
+    try:
+        # Serialize with automatic execution so a successful stop wins the race.
+        with graph_worker.case_lock(case_id):
+            row = case_repository.pause_automation(case_id)
+            log_ai_decision(case_id, "automation_paused", f"{_user_id(current_user)}: 이 구매 건의 자동 진행을 껐습니다. 견적 수신·분석은 유지하고 최종 선정은 담당자가 확인합니다.")
+        return row
+    except (graph_worker.CaseBusy, case_repository.CaseConflictError) as exc:
+        raise HTTPException(409, "이미 진행 중이거나 견적 대기 단계가 아닙니다. 최신 상태를 확인한 뒤 다시 시도해 주세요.") from exc
+
+
 @router.post("/cases/{case_id}/start", status_code=status.HTTP_202_ACCEPTED)
 def start_case(case_id: str, background_tasks: BackgroundTasks, current_user: CurrentUser):
     

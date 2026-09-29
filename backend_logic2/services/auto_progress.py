@@ -353,6 +353,12 @@ def evaluate_final_selection(
 
     top = ranking[0] if ranking else {}
     top_supplier = str(top.get("supplier") or top.get("supplier_name") or "").strip()
+    # Model terms review is a separate business gate, not an exception that
+    # crashes the graph. Existing blocked decisions return to human selection.
+    if top.get("terms_review") in {"review_required", "unknown"}:
+        checks.append(_blocked("SUPPLIER_TERMS", "특약 확인", str(
+            top.get("terms_reason") or "특약 판단이 완료되지 않아 담당자 확인이 필요합니다."
+        )))
 
     # 5) 1순위에 확인이 필요한 감점이 있는가.
     blocking = [
