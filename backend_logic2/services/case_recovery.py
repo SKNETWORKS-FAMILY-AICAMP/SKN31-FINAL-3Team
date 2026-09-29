@@ -42,6 +42,47 @@ RECOVERY_ACTOR = "system:recovery"
 _UNFINISHED_STATUSES = {"RUNNING", "QUEUED"}
 
 
+def checkpoint_error(snapshot: Any) -> str | None:
+    """Node exceptions live on Pregel tasks, not necessarily values['error']."""
+    for task in getattr(snapshot, "tasks", ()) or ():
+        error = getattr(task, "error", None)
+        if error:
+            return str(error)
+    return None
+
+
+def reconcile_failed_action(case_id: str, *, error: str, actor: str) -> bool:
+    """Repair only the read model; never resume, replay or delete a checkpoint.
+
+    An answer can advance several nodes before a later node fails. Releasing
+    its claim alone resurrects the old button, whose interrupt is already gone.
+    Read the durable stopping point while holding the same lock as execution.
+    Missing/foreign checkpoints must not overwrite shared PostgreSQL state.
+    """
+    from .workflow_service import _GRAPH_LOCK, _TERMINAL_CASE_STATUSES, _config
+    from backend_logic2.workflow.process_graph import get_process_app
+
+    with _GRAPH_LOCK:
+        case = case_repository.get_case(case_id)
+        if not case or case.get("status") in _TERMINAL_CASE_STATUSES:
+            return False
+        snapshot = get_process_app().get_state(_config(case["thread_id"] or case["mr_name"]))
+        if not snapshot.values:
+            return False
+        for key, expected in (("case_id", case_id), ("mr_name", case["mr_name"])):
+            actual = snapshot.values.get(key)
+            if actual and str(actual) != str(expected):
+                LOGGER.error("Checkpoint identity mismatch: case_id=%s key=%s", case_id, key)
+                return False
+        _settle(
+            case_id,
+            error=checkpoint_error(snapshot) or error,
+            actor=actor,
+            reason="처리 실패 후 실제 체크포인트에 맞춰 대기 작업과 상태를 동기화했습니다.",
+        )
+        return True
+
+
 def has_local_checkpoint(case: dict[str, Any]) -> bool:
     """이 인스턴스가 그 케이스의 워크플로 진행 상황을 갖고 있는가."""
     from backend_logic2.workflow.process_graph import get_process_app
@@ -149,6 +190,19 @@ def recover_interrupted_work() -> dict[str, int]:
 
 
 def resync_waiting_cases() -> dict[str, int]:
+    # The quotation executor is separate from graph_worker. Do not interpret
+    # an intermediate checkpoint while another thread is still executing it.
+    from .workflow_service import _GRAPH_LOCK
+
+    if not _GRAPH_LOCK.acquire(blocking=False):
+        return {"checked": 0, "resynced": 0}
+    try:
+        return _resync_waiting_cases_locked()
+    finally:
+        _GRAPH_LOCK.release()
+
+
+def _resync_waiting_cases_locked() -> dict[str, int]:
     """사람을 기다리는 건의 단계가 체크포인트와 어긋났으면 맞춘다.
 
     달라진 것만 쓴다 - transition_case는 부를 때마다 이력 행을 남기므로,
@@ -170,6 +224,13 @@ def resync_waiting_cases() -> dict[str, int]:
             )
             waiting = project_waiting_point(_interrupt_payloads(snapshot))
             if waiting is None:
+                # Legacy failure handlers restored WAITING_INPUT after the
+                # graph had advanced and failed (e.g. PR allowlist rejection).
+                # A recorded node error proves this is not a running node.
+                error = checkpoint_error(snapshot)
+                if case.get("status") == "WAITING_INPUT" and error:
+                    if reconcile_failed_action(case_id, error=error, actor=RECOVERY_ACTOR):
+                        counts["resynced"] += 1
                 continue
             status, stage = waiting
             if case.get("status") == status and case.get("stage") == stage:

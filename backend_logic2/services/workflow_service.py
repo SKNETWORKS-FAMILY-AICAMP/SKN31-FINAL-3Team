@@ -182,23 +182,9 @@ def _run_queued_quotation_analysis(
             )
         except Exception as release_exc:  # noqa: BLE001
             print(f"[quotation analysis] 작업 잠금 해제 오류: {release_exc}")
-        # Make a retryable failure visible instead of leaving RUNNING forever.
-        try:
-            case = case_repository.get_case(case_id)
-            if case and case["status"] not in _TERMINAL_CASE_STATUSES:
-                case_repository.transition_case(
-                    case_id,
-                    status="WAITING_INPUT",
-                    stage=stage,
-                    reason="견적 AI 분석 중 오류가 발생했습니다.",
-                    triggered_by=answered_by,
-                    last_error=str(exc),
-                )
-        except Exception as projection_exc:  # noqa: BLE001
-            print(
-                "[quotation analysis] 실패 상태 저장 오류: "
-                f"{projection_exc}; original={exc}"
-            )
+        # 'auto' may already have passed selection and reached PR/PO. Never
+        # restore the stage captured before execution when a later node fails.
+        _reconcile_failed_action_safely(case_id, error=str(exc), actor=answered_by)
 
 
 def queue_quotation_analysis(
@@ -1181,6 +1167,26 @@ def resume_supplier_pr_response(
             ) from exc
 
 
+def _reconcile_failed_action_safely(case_id: str, *, error: str, actor: str) -> bool:
+    """Do not hide the original error if repairing the read model also fails."""
+    from .case_recovery import reconcile_failed_action
+
+    try:
+        return reconcile_failed_action(case_id, error=error, actor=actor)
+    except Exception:
+        logger.exception("Failed to reconcile workflow action: case_id=%s", case_id)
+        return False
+
+
+def _release_failed_action(task_id: str, *, claimed_version: int,
+                           case_id: str, error: Exception, actor: str) -> None:
+    try:
+        task_repository.release_claimed_task(task_id, claimed_version=claimed_version)
+    except Exception:
+        logger.exception("Failed to release workflow claim: task_id=%s", task_id)
+    _reconcile_failed_action_safely(case_id, error=str(error), actor=actor)
+
+
 def resume_task(
     task_id: str,
     *,
@@ -1253,7 +1259,8 @@ def resume_task(
             task_presentation(payload)["task_type"]
             for payload in _interrupt_payloads(snapshot)
         }
-        if task["task_type"] == "pr_request" and task["task_type"] not in active_task_types:
+        if (task["task_type"] == "pr_request" and task["task_type"] not in active_task_types
+                and not snapshot.values and not snapshot.next):
             persisted_snapshot = case.get("workflow_snapshot") or {}
             persisted_interrupts = persisted_snapshot.get("interrupts") or []
             persisted_types = {
@@ -1284,9 +1291,14 @@ def resume_task(
                     # moves them back to the required 발주 진행 decision.
                     return project_case_from_checkpoint(str(case["case_id"]))
         if task["task_type"] not in active_task_types:
+            repaired = _reconcile_failed_action_safely(
+                str(case["case_id"]), error="화면의 대기 작업과 실제 체크포인트가 달랐습니다.",
+                actor=answered_by,
+            )
             raise ValueError(
                 "현재 LangGraph 인터럽트와 대기 작업이 일치하지 않습니다. "
-                "서버 상태를 다시 동기화한 뒤 시도해 주세요."
+                + ("실제 처리 상태를 동기화했습니다. 목록을 새로고침하고 현재 단계와 오류 사유를 확인해 주세요."
+                   if repaired else "체크포인트를 확인하지 못했습니다. 관리자에게 상태 점검을 요청해 주세요.")
             )
 
         claimed = task_repository.claim_task(
@@ -1300,9 +1312,10 @@ def resume_task(
                 Command(resume=answer),
                 config=_config(case["thread_id"] or case["mr_name"]),
             )
-        except Exception:
-            task_repository.release_claimed_task(
-                task_id, claimed_version=int(claimed["version"])
+        except Exception as exc:
+            _release_failed_action(
+                task_id, claimed_version=int(claimed["version"]),
+                case_id=str(case["case_id"]), error=exc, actor=answered_by,
             )
             raise
         task_repository.complete_claimed_task(
@@ -1337,10 +1350,11 @@ def resume_task(
                         Command(resume={"supplier": supplier}),
                         config=_config(case["thread_id"] or case["mr_name"]),
                     )
-                except Exception:
-                    task_repository.release_claimed_task(
+                except Exception as exc:
+                    _release_failed_action(
                         str(final_task["task_id"]),
                         claimed_version=int(final_claim["version"]),
+                        case_id=str(case["case_id"]), error=exc, actor=answered_by,
                     )
                     raise
                 task_repository.complete_claimed_task(
