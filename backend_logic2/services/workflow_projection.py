@@ -23,8 +23,6 @@ STATUS_TO_STAGE = {
     "creating_rfq": "RFQ_SENDING",
     "awaiting_quotation_check": "QUOTATION_COLLECTION",
     "awaiting_final_selection": "SUPPLIER_SELECTION",
-    "checking_supplier_documents": "SUPPLIER_DOCUMENT_REVIEW",
-    "awaiting_supplier_document_review": "SUPPLIER_DOCUMENT_REVIEW",
     "supplier_selected": "ORDER_START",
     "awaiting_po_approval": "PRE_PO_APPROVAL",
     "awaiting_pr_request": "PR_REQUEST",
@@ -42,7 +40,6 @@ INTERRUPT_STATUSES = {
     "awaiting_supplier_approval",
     "awaiting_quotation_check",
     "awaiting_final_selection",
-    "awaiting_supplier_document_review",
     "supplier_selected",
     "awaiting_po_approval",
     "awaiting_pr_request",
@@ -81,7 +78,6 @@ INTERRUPT_TASK_STAGE = {
     "quotation_check": "QUOTATION_COLLECTION",
     "check_quotations": "QUOTATION_COLLECTION",
     "final_selection": "SUPPLIER_SELECTION",
-    "supplier_document_review": "SUPPLIER_DOCUMENT_REVIEW",
     "order_start": "ORDER_START",
     "po_approval": "PRE_PO_APPROVAL",
     "pr_request": "PR_REQUEST",
@@ -163,12 +159,6 @@ def task_presentation(payload: dict[str, Any]) -> dict[str, Any]:
             "BIDDINGFLOW",
             "최종 협력사를 선정해주세요",
             "AI 견적 순위와 근거를 검토한 뒤 최종 협력사를 선택합니다.",
-        ),
-        "supplier_document_review": (
-            "BUYER",
-            "BIDDINGFLOW",
-            "신규 협력사 제출서류를 확인해주세요",
-            "사업자등록증과 통장사본을 확인한 뒤 승인, 재조회 또는 반려합니다.",
         ),
         "order_start": (
             "BUYER",
@@ -254,20 +244,6 @@ def task_input_schema(payload: dict[str, Any]) -> dict[str, Any]:
             "type": "supplier_ranking_selection",
             "field": "supplier",
             "quotation_field": "quotation_id",
-        }
-    if task_type == "supplier_document_review":
-        return {
-            "type": "supplier_document_review",
-            "field": "decision",
-            "documents": payload.get("documents", []),
-            "missing_documents": payload.get("missing_documents", []),
-            "required_documents": payload.get("required_documents", []),
-            "optional_documents": payload.get("optional_documents", []),
-            "options": [
-                {"label": "승인", "value": "approve"},
-                {"label": "첨부 다시 확인", "value": "recheck"},
-                {"label": "반려", "value": "reject"},
-            ],
         }
     if task_type == "order_start":
         return {

@@ -18,7 +18,6 @@ STAGE_PRESENTATION: dict[str, tuple[str, str, str, NavigationTarget]] = {
     "RFQ_SENDING": ("견적 요청 발송", "시스템", "선택한 협력사에 견적 요청을 보내는 중입니다.", "vendor-select"),
     "QUOTATION_COLLECTION": ("견적 회신 대기", "공급사", "회신 현황을 확인하거나 견적 마감일까지 기다립니다.", "vendor-select"),
     "SUPPLIER_SELECTION": ("최종 공급사 선택", "구매 담당자", "회신 견적을 비교하고 최종 공급사를 선택합니다.", "vendor-select"),
-    "SUPPLIER_DOCUMENT_REVIEW": ("신규 협력사 서류 확인", "구매 담당자", "사업자등록증과 통장사본을 확인한 뒤 승인 또는 반려합니다.", "mr-list"),
     "ORDER_START": ("발주 시작 대기", "구매 담당자", "선정 결과를 확인하고 발주 시작을 누릅니다.", "vendor-select"),
     "PRE_PO_APPROVAL": ("발주 승인 대기", "구매 담당자", "금액·납기·공급사를 확인하고 최종 승인합니다.", "po-manage"),
     "PR_REQUEST": ("공급사 수주 확인 요청", "구매 담당자", "공급사에 수주 가능 여부 확인을 요청합니다.", "po-manage"),

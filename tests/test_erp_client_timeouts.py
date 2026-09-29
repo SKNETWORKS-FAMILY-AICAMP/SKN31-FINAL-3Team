@@ -35,7 +35,6 @@ _ERP_CALLERS = [
     "backend_logic2/nodes/item/item_validation.py",
     "backend_logic2/nodes/rfq/check_rfq_connection.py",
     "backend_logic2/nodes/rfq/send_rfq.py",
-    "backend_logic2/nodes/supplier/onboarding.py",
     "backend_logic2/nodes/supplier/register_candidate_suppliers.py",
 ]
 

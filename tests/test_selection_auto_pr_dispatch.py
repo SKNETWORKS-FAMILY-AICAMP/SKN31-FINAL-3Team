@@ -87,15 +87,27 @@ def test_expired_quotation_clears_the_confirmation() -> None:
     assert "유효기간" in command.update["error"]
 
 
-def test_new_supplier_document_review_still_stops_the_flow() -> None:
-    with patch("backend_logic2.workflow.process_commands.interrupt") as mock_interrupt:
-        command = await_order_start_command({
+def test_a_new_supplier_no_longer_stops_before_the_order() -> None:
+    """신규 협력사 서류 확인은 프로젝트에서 뺐다. 여기서 멈추면 안 된다.
+
+    화면에 처리 UI가 없는 인터럽트였고, 서류가 다 붙어 있어도
+    review_required가 항상 True라서 신규 업체 건은 선정 직후 영구히
+    멈췄다. 경로를 지웠으니 곧바로 발주 시작 확인으로 간다.
+    """
+    with patch(
+        "backend_logic2.workflow.process_commands.interrupt",
+        return_value={"decision": "start_order"},
+    ):
+        new_supplier = {
             "mr_name": "MAT-MR-0001",
             "selected_supplier": "공급사 A",
-            "auto_pr_dispatch": True,
             "supplier_registration_results": [
-                {"name": "공급사 A", "is_new_supplier": True},
+                {"name": "공급사 A", "is_new_supplier": True, "onboarding_status": "PROVISIONAL"},
             ],
-        })
-    assert command.goto == "inspect_selected_supplier_documents"
-    mock_interrupt.assert_not_called()
+        }
+        # 선정 팝업에서 이미 확인을 받은 경로.
+        assert await_order_start_command(
+            {**new_supplier, "auto_pr_dispatch": True}
+        ).goto == "request_pr"
+        # 화면에서 '발주 시작'을 누르는 경로.
+        assert await_order_start_command(new_supplier).goto == "request_pr"
