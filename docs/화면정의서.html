@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="BiddingFlow 구매·입찰 자동화 플랫폼 화면정의서">
+  <title>BiddingFlow 화면정의서</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b12;
+      --panel: #111723;
+      --panel-soft: #171e2d;
+      --line: #263147;
+      --text: #f4f7fb;
+      --muted: #9ca9bd;
+      --accent: #f5b942;
+      --accent-soft: rgba(245, 185, 66, 0.13);
+      --blue: #70a5ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { margin: 0; min-height: 100%; }
+
+    body {
+      background:
+        radial-gradient(circle at 15% 0%, rgba(50, 80, 130, 0.20), transparent 34%),
+        var(--bg);
+      color: var(--text);
+      font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      overflow: hidden;
+    }
+
+    button, select { font: inherit; }
+
+    .app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+
+    .topbar {
+      min-height: 64px;
+      padding: 11px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: rgba(14, 19, 29, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      color: #17120a;
+      background: linear-gradient(145deg, #ffd36f, var(--accent));
+      font-weight: 900;
+    }
+    .brand h1 { margin: 0; font-size: 16px; letter-spacing: -0.02em; }
+    .brand p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+
+    .top-actions { display: flex; align-items: center; gap: 12px; }
+    .screen-select {
+      max-width: 290px;
+      padding: 8px 34px 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .counter { min-width: 62px; color: var(--muted); font-size: 13px; text-align: right; }
+
+    main { min-height: 0; padding: 16px; }
+
+    .slide {
+      display: none;
+      grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.75fr);
+      gap: 16px;
+      height: 100%;
+      animation: enter 180ms ease-out;
+    }
+    .slide.active { display: grid; }
+
+    @keyframes enter {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .preview,
+    .definition {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.22);
+    }
+
+    .preview {
+      display: grid;
+      place-items: center;
+      padding: 12px;
+      overflow: auto;
+      background:
+        linear-gradient(45deg, rgba(255,255,255,.018) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(255,255,255,.018) 25%, transparent 25%),
+        #0d121c;
+      background-size: 24px 24px;
+    }
+    .preview img {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .definition { padding: 22px; overflow-y: auto; }
+    .eyebrow { margin: 0 0 8px; color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .12em; }
+    .definition h2 { margin: 0; font-size: 25px; line-height: 1.25; letter-spacing: -.035em; }
+    .purpose { margin: 12px 0 18px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .meta {
+      display: grid;
+      grid-template-columns: 86px 1fr;
+      gap: 8px;
+      margin-bottom: 22px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-soft);
+      font-size: 12px;
+    }
+    .meta-label { color: var(--muted); }
+    .section-label { margin: 0 0 11px; color: var(--blue); font-size: 11px; font-weight: 800; letter-spacing: .1em; }
+    .features { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+    .feature { display: grid; grid-template-columns: 24px 1fr; gap: 10px; align-items: start; }
+    .feature-num {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(245, 185, 66, .35);
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .feature strong { display: block; margin-bottom: 3px; font-size: 13px; }
+    .feature span { color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+    .bottom-nav {
+      min-height: 64px;
+      padding: 10px 22px;
+      display: grid;
+      grid-template-columns: 120px 1fr 120px;
+      gap: 12px;
+      align-items: center;
+      background: rgba(14, 19, 29, 0.96);
+      border-top: 1px solid var(--line);
+    }
+    .nav-btn {
+      padding: 10px 15px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-soft);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 160ms, background 160ms, transform 160ms;
+    }
+    .nav-btn:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
+    .nav-btn:disabled { opacity: .35; cursor: not-allowed; }
+    .progress { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+    .dot {
+      width: 8px;
+      height: 8px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: #344058;
+      cursor: pointer;
+      transition: width 160ms, background 160ms;
+    }
+    .dot.active { width: 24px; background: var(--accent); }
+    .keyboard-hint { position: fixed; right: 18px; bottom: 74px; color: #657188; font-size: 10px; pointer-events: none; }
+
+    @media (max-width: 900px) {
+      body { overflow: auto; }
+      .app { min-height: 100vh; height: auto; }
+      .topbar { align-items: flex-start; }
+      .top-actions { flex-direction: column; align-items: flex-end; }
+      .screen-select { max-width: 180px; }
+      main { min-height: 760px; }
+      .slide, .slide.active { grid-template-columns: 1fr; grid-template-rows: minmax(320px, 52vh) auto; height: auto; }
+      .definition { overflow: visible; }
+      .bottom-nav { position: sticky; bottom: 0; grid-template-columns: 86px 1fr 86px; padding-inline: 10px; }
+      .keyboard-hint { display: none; }
+    }
+
+    @media (max-width: 560px) {
+      .brand p, .screen-select { display: none; }
+      main { padding: 9px; }
+      .definition { padding: 17px; }
+      .definition h2 { font-size: 21px; }
+      .bottom-nav { grid-template-columns: 78px 1fr 78px; }
+      .nav-btn { padding-inline: 8px; font-size: 12px; }
+      .dot { width: 6px; height: 6px; }
+      .dot.active { width: 17px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">BF</div>
+        <div>
+          <h1>BiddingFlow 화면정의서</h1>
+          <p>AI AUTONOMOUS PROCUREMENT · SKN31 FINAL 3TEAM</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <select class="screen-select" id="screen-select" aria-label="화면 선택"></select>
+        <span class="counter" id="counter" aria-live="polite"></span>
+      </div>
+    </header>
+
+    <main id="slides" aria-label="BiddingFlow 화면 정의"></main>
+
+    <nav class="bottom-nav" aria-label="화면 이동">
+      <button class="nav-btn" id="prev" type="button">← 이전</button>
+      <div class="progress" id="progress" aria-label="전체 화면 목록"></div>
+      <button class="nav-btn" id="next" type="button">다음 →</button>
+    </nav>
+  </div>
+  <div class="keyboard-hint">키보드 ← → 로 이동</div>
+
+  <script>
+    const screens = [
+      {
+        id: "BF-UI-01", name: "로그인", user: "전체 사용자(구매 담당자·관리자)",
+        purpose: "계정 인증 후 BiddingFlow 구매 작업공간으로 진입합니다.",
+        image: "../presentation/screens/BF-UI-01-login.png",
+        features: [
+          ["아이디 입력", "사용자 계정 아이디를 입력합니다."],
+          ["비밀번호 입력", "입력값을 마스킹하여 안전하게 표시합니다."],
+          ["로그인", "인증 성공 시 구매 대시보드로 이동하며 실패 시 오류를 안내합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-02", name: "구매 대시보드", user: "구매 담당자",
+        purpose: "지금 처리해야 할 구매 업무와 전체 진행 상황을 한눈에 파악합니다.",
+        image: "../presentation/screens/BF-UI-02-dashboard.png",
+        features: [
+          ["통합 헤더", "MR·품목 검색, 알림, 신규 MR 진입점을 제공합니다."],
+          ["구매 작업 현황", "처리 상태와 실행 대기 건수, 마지막 확인 시각을 표시합니다."],
+          ["업무 우선순위", "점검 필요, 결정 대기, AI 처리, 외부 응답 대기를 구분합니다."],
+          ["최근 처리 알림", "시스템이 처리한 이벤트와 변경 요약을 시간순으로 제공합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-03", name: "아이템 목록/규격", user: "구매 담당자",
+        purpose: "ERPNext에 등록된 품목과 규격 정보를 검색하고 조회합니다.",
+        image: "../presentation/screens/BF-UI-03-item-list.png",
+        features: [
+          ["검색·정렬", "아이템 코드, 품목명, 요청 부서, 규격을 검색하고 정렬합니다."],
+          ["품목 정보", "품목 그룹, 재고 유지, 고정 자산 및 승인 상태를 제공합니다."],
+          ["규격 열람", "목록의 규격 미리보기에서 전체 상세 규격을 확장합니다."],
+          ["페이지네이션", "현재 페이지와 전체 건수, 페이지당 표시 건수를 제공합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-04", name: "MR 목록", user: "구매 담당자",
+        purpose: "구매요청(MR)을 검색·필터링하고 진행 상태를 조회합니다.",
+        image: "../presentation/screens/BF-UI-04-mr-list.png",
+        features: [
+          ["통합 검색", "MR번호, 품목명, 요청자, 요청 부서와 카테고리를 검색합니다."],
+          ["필터", "진행 단계와 요청 부서 조건으로 목록을 좁힙니다."],
+          ["MR 테이블", "규격, 첨부, 금액, 납기, 차수와 진행 상태를 한 행에 제공합니다."],
+          ["빈 상태", "조건에 맞는 MR이 없을 때 명확한 안내를 제공합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-04-01", name: "MR 규격 상세 정보", user: "구매 담당자",
+        purpose: "구매 품목의 상세 규격과 필수 항목을 확인합니다.",
+        image: "../presentation/screens/BF-UI-04-01-spec-detail.png",
+        features: [
+          ["규격 요약", "품목 코드, 품목명, 분류와 전체 규격 항목 수를 표시합니다."],
+          ["요청 규격", "요청된 세부 규격을 카드 형태로 제공합니다."],
+          ["필수 항목", "필수 규격 배지와 누락 여부를 표시합니다."],
+          ["닫기", "확인 버튼, 닫기 아이콘 또는 배경 선택으로 상세 화면을 종료합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-05", name: "RFQ 발송·협력사 선정", user: "구매 담당자",
+        purpose: "RFQ 발송 진행과 견적 회신 상황을 확인하고 후속 처리를 지시합니다.",
+        image: "../presentation/screens/BF-UI-05-rfq-selection.png",
+        features: [
+          ["진행 현황", "구매 건, 차수, 견적 마감과 회신율을 제공합니다."],
+          ["단계 표시", "RFQ 발송부터 견적 수집, 업체 선정까지 진행 단계를 시각화합니다."],
+          ["상세 보기", "RFQ 상세 요약과 견적 비교 화면으로 연결합니다."],
+          ["추가 작업", "마감 연장, 재비딩, 회신 확인과 자동 진행 판정을 제공합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-05-01", name: "RFQ 상세 요약", user: "구매 담당자",
+        purpose: "AI 추천, 협력사 회신 현황, 마감 및 차수 이력을 확인합니다.",
+        image: "../presentation/screens/BF-UI-05-01-rfq-summary.png",
+        features: [
+          ["AI 추천", "추천 협력사, 점수, 금액과 상세 판단 근거를 제공합니다."],
+          ["기본 정보", "품목, 수량, 약정 납기일과 요청 부서를 표시합니다."],
+          ["협력사 현황", "업체별 회신 상태, AI 점수와 순위를 표시합니다."],
+          ["마감·차수", "현재 마감, 연장 이력과 차수별 RFQ 회신 현황을 제공합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-05-02", name: "견적 상세 비교·최종 업체 선정", user: "구매 담당자",
+        purpose: "회신 견적과 AI 평가 근거를 비교하고 최종 협력사를 선정합니다.",
+        image: "../presentation/screens/BF-UI-05-02-quotation-comparison.png",
+        features: [
+          ["응찰 안내", "단독 응찰 등 비교 조건과 가능한 후속 행동을 안내합니다."],
+          ["견적 비교", "단가, 총액, 납기, 첨부자료와 회신 상태를 비교합니다."],
+          ["AI 평가", "가격·납기·규격·평가 이력 점수와 추천 근거를 제공합니다."],
+          ["최종 선정", "선택한 협력사를 검증한 뒤 최종 선정합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-06", name: "PO 관리", user: "구매 담당자",
+        purpose: "PO 발행부터 입고까지 구매 진행 현황을 관리합니다.",
+        image: "../presentation/screens/BF-UI-06-po-management.png",
+        features: [
+          ["PO 생성", "생성 가능한 구매 건을 기준으로 신규 PO 작업을 시작합니다."],
+          ["상태 탭", "진행 중인 건과 입고·평가까지 끝난 완료 건을 구분합니다."],
+          ["진행 현황", "PO 생성, 승인, 발송과 입고 단계를 확인합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-06-01", name: "PO 관리 MR 상세 내역", user: "구매 담당자",
+        purpose: "PO 생성 대상 구매 건의 요청, 견적과 공급사 상세를 검토합니다.",
+        image: "../presentation/screens/BF-UI-06-01-po-mr-detail.png",
+        features: [
+          ["MR 정보", "구매 요청과 품목·수량·납기 정보를 확인합니다."],
+          ["선정 정보", "최종 공급사와 선정 견적의 가격·조건을 확인합니다."],
+          ["업무 이력", "RFQ부터 PO까지 연결된 진행 기록을 제공합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-06-02", name: "PO 발송 최종 승인", user: "구매 담당자",
+        purpose: "PO 발송 전 공급사와 구매 조건을 마지막으로 검토하고 승인합니다.",
+        image: "../presentation/screens/BF-UI-06-02-po-final-approval.png",
+        features: [
+          ["발주 정보", "공급사, 품목, 수량, 금액과 납기를 검토합니다."],
+          ["승인 경계", "명시적인 사람의 승인 후에만 발송 단계로 진행합니다."],
+          ["취소", "정보가 올바르지 않으면 발송하지 않고 이전 단계로 돌아갑니다."]
+        ]
+      },
+      {
+        id: "BF-UI-06-03", name: "PO 생성·전자결재 요청", user: "구매 담당자",
+        purpose: "생성된 PO를 확인하고 ERPNext 전자결재를 요청합니다.",
+        image: "../presentation/screens/BF-UI-06-03-po-approval-request.png",
+        features: [
+          ["생성 결과", "PO 문서 번호와 생성 결과를 확인합니다."],
+          ["전자결재", "ERPNext 승인 워크플로에 결재를 요청합니다."],
+          ["상태 확인", "결재 요청 이후 후속 상태와 발송 가능 여부를 확인합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-06-04", name: "입고 완료·협력사 평가", user: "구매 담당자",
+        purpose: "입고 결과를 바탕으로 공급사 Scorecard를 작성합니다.",
+        image: "../presentation/screens/BF-UI-06-04-supplier-scorecard.png",
+        features: [
+          ["납기 자동 평가", "약정일과 실제 수령일을 비교해 납기 점수를 계산합니다."],
+          ["가격 자동 평가", "비교 견적 단가를 바탕으로 가격 경쟁력을 계산합니다."],
+          ["직접 평가", "대응력, 커뮤니케이션과 품질을 5점 척도로 평가합니다."],
+          ["평가 제출", "필수 점수가 준비되면 평가를 완료하여 공급사 이력에 반영합니다."]
+        ]
+      },
+      {
+        id: "BF-UI-07", name: "AI 판단 로그", user: "관리자",
+        purpose: "구매 자동화 과정에서 AI가 내린 판단과 근거를 감사합니다.",
+        image: "../presentation/screens/BF-UI-07-ai-decision-log.png",
+        features: [
+          ["필터·검색", "판단 단계, MR, RFQ, 견적번호와 근거를 검색합니다."],
+          ["판단 기록", "시각, 단계, 구매 건, 평가 대상, 점수와 모델을 제공합니다."],
+          ["판단 근거", "AI가 결론을 내린 구체적인 근거를 확인합니다."],
+          ["새로고침", "최신 판단 기록을 서버에서 다시 불러옵니다."]
+        ]
+      },
+      {
+        id: "BF-UI-08", name: "회사 구매 정책", user: "관리자",
+        purpose: "구매 기준, 견적 평가 가중치, 자동화 수준과 AI 지침을 설정·게시합니다.",
+        image: "../presentation/screens/BF-UI-08-company-policy.png",
+        features: [
+          ["모델 서버", "RunPod 워커 유지 시간, 준비 상태와 자동 해제를 관리합니다."],
+          ["운영 설정", "품목 그룹 담당자, 이메일 허용 목록과 공급사 검색원을 관리합니다."],
+          ["구매·평가 기준", "비딩 기준과 가격·납기·규격·평가 이력 가중치를 설정합니다."],
+          ["자동 진행", "RFQ 자동 발송과 최종 선정 조건 및 안전 임계값을 설정합니다."],
+          ["정책 게시", "AI 지침, 변경 사유, 검토와 버전별 복원을 관리합니다."]
+        ]
+      }
+    ];
+
+    const slidesRoot = document.getElementById("slides");
+    const progressRoot = document.getElementById("progress");
+    const select = document.getElementById("screen-select");
+    const counter = document.getElementById("counter");
+    const prev = document.getElementById("prev");
+    const next = document.getElementById("next");
+    let current = 0;
+
+    screens.forEach((screen, index) => {
+      const article = document.createElement("article");
+      article.className = "slide";
+      article.id = `slide-${index}`;
+      article.innerHTML = `
+        <section class="preview">
+          <img src="${screen.image}" alt="${screen.id} ${screen.name} 화면 설계" loading="${index === 0 ? "eager" : "lazy"}">
+        </section>
+        <aside class="definition">
+          <p class="eyebrow">${screen.id}</p>
+          <h2>${screen.name}</h2>
+          <p class="purpose">${screen.purpose}</p>
+          <div class="meta">
+            <span class="meta-label">주요 사용자</span><strong>${screen.user}</strong>
+            <span class="meta-label">화면 유형</span><strong>${screen.id.includes("-") && screen.id.split("-").length > 3 ? "상세·모달" : "업무 화면"}</strong>
+          </div>
+          <p class="section-label">KEY FEATURES</p>
+          <ol class="features">
+            ${screen.features.map((feature, featureIndex) => `
+              <li class="feature">
+                <span class="feature-num">${featureIndex + 1}</span>
+                <div><strong>${feature[0]}</strong><span>${feature[1]}</span></div>
+              </li>`).join("")}
+          </ol>
+        </aside>`;
+      slidesRoot.appendChild(article);
+
+      const option = document.createElement("option");
+      option.value = index;
+      option.textContent = `${screen.id} · ${screen.name}`;
+      select.appendChild(option);
+
+      const dot = document.createElement("button");
+      dot.type = "button";
+      dot.className = "dot";
+      dot.setAttribute("aria-label", `${screen.id} ${screen.name} 보기`);
+      dot.addEventListener("click", () => show(index));
+      progressRoot.appendChild(dot);
+    });
+
+    const slides = [...document.querySelectorAll(".slide")];
+    const dots = [...document.querySelectorAll(".dot")];
+
+    function show(index) {
+      current = Math.max(0, Math.min(index, screens.length - 1));
+      slides.forEach((slide, i) => slide.classList.toggle("active", i === current));
+      dots.forEach((dot, i) => {
+        dot.classList.toggle("active", i === current);
+        dot.setAttribute("aria-current", i === current ? "true" : "false");
+      });
+      select.value = current;
+      counter.textContent = `${current + 1} / ${screens.length}`;
+      prev.disabled = current === 0;
+      next.disabled = current === screens.length - 1;
+      document.title = `${screens[current].id} ${screens[current].name} | BiddingFlow 화면정의서`;
+    }
+
+    prev.addEventListener("click", () => show(current - 1));
+    next.addEventListener("click", () => show(current + 1));
+    select.addEventListener("change", event => show(Number(event.target.value)));
+    document.addEventListener("keydown", event => {
+      if (event.key === "ArrowLeft") show(current - 1);
+      if (event.key === "ArrowRight") show(current + 1);
+      if (event.key === "Home") show(0);
+      if (event.key === "End") show(screens.length - 1);
+    });
+
+    let touchStartX = null;
+    document.addEventListener("touchstart", event => { touchStartX = event.changedTouches[0].clientX; }, { passive: true });
+    document.addEventListener("touchend", event => {
+      if (touchStartX === null) return;
+      const delta = event.changedTouches[0].clientX - touchStartX;
+      if (Math.abs(delta) > 60) show(current + (delta < 0 ? 1 : -1));
+      touchStartX = null;
+    }, { passive: true });
+
+    show(0);
+  </script>
+</body>
+</html>
