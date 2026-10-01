@@ -66,7 +66,7 @@ def test_finetuned_defaults_match_uploaded_adapter(monkeypatch) -> None:
     assert parser.vision_model_name == DEFAULT_VISION_MODEL == "Qwen/Qwen3.5-9B"
     assert parser.vision_adapter_name == DEFAULT_VISION_ADAPTER
     assert parser.vision_max_pixels == 802816
-    assert parser.vision_max_new_tokens == 512
+    assert parser.vision_max_new_tokens == 1024
     assert "expected_delivery_date" in FINETUNED_USER_PROMPT
     # The classified contract covers all pages, not just a fixed footer location.
     assert "전체 페이지" in FINETUNED_USER_PROMPT
