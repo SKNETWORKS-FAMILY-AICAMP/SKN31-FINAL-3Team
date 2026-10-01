@@ -268,30 +268,12 @@ class RunPodQuotationParser:
         # the supplied prompt/hash, which allows prompt revisions without a
         # worker image rebuild.
         from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
-            TEXT_STRUCTURE_SYSTEM_PROMPT,
-            TEXT_STRUCTURE_USER_PROMPT,
+            build_text_structure_prompts,
         )
-
-        additions: list[str] = []
-        specification_keys = list(
-            getattr(prepared, "specification_keys", []) or []
+        return build_text_structure_prompts(
+            list(getattr(prepared, "specification_keys", []) or []),
+            reflection_errors,
         )
-        if specification_keys:
-            additions.append(
-                "[RFQ 규격 키]\n"
-                + ", ".join(str(value) for value in specification_keys)
-                + "\n문서에 실제 값이 있는 키만 specifications에 기록하세요."
-            )
-        if reflection_errors:
-            additions.append(
-                "[이전 검토에서 확인된 오류]\n"
-                + "\n".join(f"- {value}" for value in reflection_errors)
-                + "\n위 오류를 입력 문서와 다시 대조해 교정하세요."
-            )
-        user_prompt = TEXT_STRUCTURE_USER_PROMPT
-        if additions:
-            user_prompt += "\n\n" + "\n\n".join(additions)
-        return TEXT_STRUCTURE_SYSTEM_PROMPT, user_prompt
 
     @staticmethod
     def _request_id(

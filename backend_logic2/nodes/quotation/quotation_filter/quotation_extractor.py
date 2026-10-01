@@ -125,6 +125,29 @@ TEXT_STRUCTURE_USER_PROMPT = FINETUNED_USER_PROMPT.replace(
 )
 
 
+def build_text_structure_prompts(
+    specification_keys: list[str], reflection_errors: list[str],
+) -> tuple[str, str]:
+    """Use the same text-to-JSON instructions for local and RunPod models."""
+    additions: list[str] = []
+    if specification_keys:
+        additions.append(
+            "[RFQ 규격 키]\n"
+            + ", ".join(str(value) for value in specification_keys)
+            + "\n문서에 실제 값이 있는 키만 specifications에 기록하세요."
+        )
+    if reflection_errors:
+        additions.append(
+            "[이전 검토에서 확인된 오류]\n"
+            + "\n".join(f"- {value}" for value in reflection_errors)
+            + "\n위 오류를 입력 문서와 다시 대조해 교정하세요."
+        )
+    user_prompt = TEXT_STRUCTURE_USER_PROMPT
+    if additions:
+        user_prompt += "\n\n" + "\n\n".join(additions)
+    return TEXT_STRUCTURE_SYSTEM_PROMPT, user_prompt
+
+
 def _project_model_setting(name: str) -> str | None:
     """Read only quotation model settings from the repository .env file.
 
@@ -1254,7 +1277,7 @@ class LocalHuggingFaceQuotationParser:
     def _load_text_model(self) -> None:
         if self._text_model is not None:
             return
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
         _, device, dtype = self._runtime()
         try:
@@ -1263,12 +1286,30 @@ class LocalHuggingFaceQuotationParser:
                 local_files_only=True,
                 trust_remote_code=False,
             )
+            model_kwargs: dict[str, Any] = {
+                "local_files_only": True,
+                "trust_remote_code": False,
+                "dtype": dtype,
+                "low_cpu_mem_usage": True,
+            }
+            if device == "cuda":
+                # The LoRA OCR model is already resident on the GPU. Loading
+                # another full-precision 9B model would exhaust common cards.
+                model_kwargs.update({
+                    "device_map": "auto",
+                    "quantization_config": BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_compute_dtype=dtype,
+                    ),
+                })
             self._text_model = AutoModelForCausalLM.from_pretrained(
-                self.text_model_name,
-                local_files_only=True,
-                trust_remote_code=False,
-                dtype=dtype,
-            ).to(device).eval()
+                self.text_model_name, **model_kwargs,
+            )
+            if device != "cuda":
+                self._text_model = self._text_model.to(device)
+            self._text_model.eval()
         except Exception as exc:
             raise self._local_model_error(self.text_model_name, exc) from exc
         self._device = device
@@ -1338,12 +1379,21 @@ class LocalHuggingFaceQuotationParser:
                 {"type": "text", "text": (
                     "이 견적서 이미지의 모든 글자와 표를 번역하거나 고치지 말고 원문 그대로 전사하세요. "
                     "특히 문서번호의 SQTN/RFQ, 한글 품목명과 색상, 모든 숫자를 픽셀과 정확히 대조하세요. "
-                    "품목명, 규격, 수량, 단가, 공급가액, 세액, 총액, 납기일을 빠뜨리지 마세요. "
+                    "품목명, 규격, 수량, 단가, 공급가액, 세액, 총액, 유효기간, 납기일, "
+                    "기술 특약과 상업 조건을 빠뜨리지 마세요. JSON으로 정리하지 말고 원문만 전사하세요. "
                     "값을 추측하거나 계산해 채우지 마세요."
                 )},
             ],
         }]
-        prompt = self._vision_processor.apply_chat_template(messages, add_generation_prompt=True)
+        try:
+            prompt = self._vision_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except TypeError:  # pragma: no cover - older processor compatibility
+            prompt = self._vision_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
         inputs = self._vision_processor(text=prompt, images=[image], return_tensors="pt")
         inputs = _move_inputs_to_device(inputs, self._device or "cpu")
         input_length = inputs["input_ids"].shape[-1]
@@ -1355,85 +1405,22 @@ class LocalHuggingFaceQuotationParser:
             )
             generated = outputs[:, input_length:]
             return self._vision_processor.batch_decode(
-                generated, skip_special_tokens=True
+                generated, skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
             )[0].strip()
         finally:
             image.close()
 
-    def _extract_images(
-        self,
-        prepared: PreparedSource,
-        reflection_errors: list[str],
-    ) -> _ParsedQuotation:
-        """Run the quotation-specific Qwen3.5 adapter directly on document images."""
-        from PIL import Image
-
-        self._load_vision_model()
-        images = [
-            Image.open(io.BytesIO(vision_input.data)).convert("RGB")
-            for vision_input in prepared.vision_inputs
-        ]
-        correction = ""
-        if reflection_errors:
-            correction = (
-                "\n\n[이전 검토에서 확인된 오류]\n"
-                + "\n".join(f"- {error}" for error in reflection_errors)
-                + "\n위 오류를 이미지와 다시 대조해 교정하세요."
-            )
-        messages = [
-            {"role": "system", "content": FINETUNED_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    *({"type": "image", "image": image} for image in images),
-                    {"type": "text", "text": FINETUNED_USER_PROMPT + correction},
-                ],
-            },
-        ]
-        try:
-            prompt = self._vision_processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=False,
-            )
-            inputs = self._vision_processor(
-                text=[prompt],
-                images=images,
-                return_tensors="pt",
-            )
-            inputs = _move_inputs_to_device(inputs, self._device or "cpu")
-            input_length = inputs["input_ids"].shape[-1]
-            outputs = self._vision_model.generate(
-                **inputs,
-                max_new_tokens=self.vision_max_new_tokens,
-                do_sample=False,
-                use_cache=True,
-            )
-            generated = outputs[:, input_length:]
-            decoded = self._vision_processor.batch_decode(
-                generated,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )[0].strip()
-            payload = _extract_json_object(decoded)
-            return _ParsedQuotation.model_validate(
-                _normalize_finetuned_quotation(payload)
-            )
-        finally:
-            for image in images:
-                image.close()
-
     def _structure_text(
         self,
-        prompt: str,
+        system_prompt: str,
+        user_prompt: str,
         document_text: str,
-        supplier_name: str | None,
     ) -> _ParsedQuotation:
         self._load_text_model()
         messages = [
-            {"role": "system", "content": "한국 구매 견적서를 JSON으로 구조화하는 내부 시스템입니다. JSON만 출력하세요."},
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"{user_prompt}\n\n[견적 원문]\n{document_text}"},
         ]
         tokenizer = self._text_tokenizer
         if hasattr(tokenizer, "apply_chat_template"):
@@ -1462,7 +1449,13 @@ class LocalHuggingFaceQuotationParser:
         generated = outputs[:, input_length:]
         decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
         payload = _extract_json_object(decoded)
-        normalized = _normalize_generated_quotation(payload, document_text, supplier_name)
+        if "notes" not in payload:
+            raise ValueError("Qwen 분류 결과에 notes 키가 없습니다. 원문 특약을 확인해야 합니다.")
+        normalized = _normalize_finetuned_quotation(payload)
+        fallbacks = extract_document_fallbacks(document_text)
+        if fallbacks.get("conflicts"):
+            raise ValueError("견적 원문에 서로 다른 날짜 또는 납기 값이 있어 자동 등록하지 않습니다.")
+        apply_document_fallbacks(normalized, fallbacks, include_notes=False)
         return _ParsedQuotation.model_validate(normalized)
 
     def __call__(
@@ -1472,35 +1465,22 @@ class LocalHuggingFaceQuotationParser:
         supplier_name: str | None,
         reflection_errors: list[str],
     ) -> _ParsedQuotation:
-        if prepared.vision_inputs and prepared.kind in {SourceKind.IMAGE, SourceKind.PDF}:
-            return self._extract_images(prepared, reflection_errors)
-
-        transcriptions = []
+        transcriptions: list[str] = []
         for image in prepared.vision_inputs:
-            transcriptions.append(f"[local vision: {image.filename}]\n{self._transcribe_image(image)}")
-        document_text = "\n\n".join([prepared.text, *transcriptions])
-        reflection = "\n".join(f"- {error}" for error in reflection_errors) or "없음"
-        specification_keys = ", ".join(prepared.specification_keys) or "없음"
-        prompt = (
-            "/no_think\n"
-            "다음 외부 공급사 견적 원문에서 실제 견적값을 추출하세요. "
-            "설명, JSON Schema, 예시는 출력하지 말고 완성된 JSON 객체 하나만 출력하세요. "
-            "문서에 없는 선택값은 null, specifications는 빈 객체로 두세요. "
-            "RFQ 번호와 공급사명은 추출하지 마세요. 두 값은 애플리케이션이 별도로 지정합니다. "
-            "견적번호는 원문에 실제로 적힌 Supplier Quotation 문서번호만 사용하고 없으면 null로 두세요. "
-            "quotation_date에는 견적서 발행일자를, valid_until에는 견적 유효기간을 넣으세요. "
-            "통화 기호와 천 단위 쉼표는 숫자에서 제거하고 DD-MM-YYYY 날짜는 YYYY-MM-DD로 변환하세요.\n"
-            f"specifications에 사용할 수 있는 규격 키: {specification_keys}\n"
-            f"이전 검토 오류(재추출 시 교정):\n{reflection}\n"
-            "최상위 필수 키: quotation_id, business_registration_no, "
-            "quotation_date, valid_until, currency, subtotal, tax_amount, total_amount, items, notes.\n"
-            "각 items 원소의 필수 키: item_code, item_name, description, quantity, unit, "
-            "unit_price, amount, specifications, raw_description. "
-            "품목별 expected_delivery_date와 lead_time_days는 보조 필드이며 원문에 명시된 경우에만 넣으세요.\n"
-            "subtotal은 세전 공급가액, tax_amount는 세액, total_amount는 세금 포함 총액입니다.\n\n"
-            f"견적 원문:\n{document_text}"
+            transcription = self._transcribe_image(image)
+            if not transcription:
+                raise ValueError(f"견적 이미지 전사 결과가 비어 있습니다: {image.filename}")
+            transcriptions.append(f"[이미지: {image.filename}]\n{transcription}")
+        native_text = prepared.text.strip()
+        if native_text in {"[견적서 이미지]", "[스캔 PDF]"}:
+            native_text = ""
+        document_text = "\n\n".join(part for part in [native_text, *transcriptions] if part)
+        if not document_text:
+            raise ValueError("견적 추출에 사용할 텍스트나 이미지 전사 결과가 없습니다.")
+        system_prompt, user_prompt = build_text_structure_prompts(
+            prepared.specification_keys, reflection_errors,
         )
-        return self._structure_text(prompt, document_text, None)
+        return self._structure_text(system_prompt, user_prompt, document_text)
 
 
 _LOCAL_PARSER: LocalHuggingFaceQuotationParser | None = None
@@ -1607,9 +1587,10 @@ def _extract_prepared_quotation(
     )
     payload["extraction_attempt"] = attempt
     if isinstance(parser, LocalHuggingFaceQuotationParser):
-        if prepared.vision_inputs and prepared.kind in {SourceKind.IMAGE, SourceKind.PDF}:
+        if prepared.vision_inputs:
             model_label = (
-                f"{parser.vision_model_name} + LoRA {parser.vision_adapter_name}"
+                f"{parser.vision_model_name} + LoRA {parser.vision_adapter_name} 전사"
+                f" → {parser.text_model_name} JSON 구조화"
             )
         else:
             model_label = parser.text_model_name

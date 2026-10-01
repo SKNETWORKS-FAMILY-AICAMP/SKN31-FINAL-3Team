@@ -77,11 +77,13 @@ def test_finetuned_defaults_match_uploaded_adapter(monkeypatch) -> None:
     assert "확대 이미지" in FINETUNED_USER_PROMPT
 
 
-def test_image_source_uses_direct_finetuned_extraction() -> None:
+def test_image_source_transcribes_then_structures_with_runpod_prompt() -> None:
+    from backend_logic2.integrations.quotation_extraction.runpod import RunPodQuotationParser
+
     parser = LocalHuggingFaceQuotationParser()
     expected = _parsed_quotation()
-    parser._extract_images = Mock(return_value=expected)
-    parser._structure_text = Mock(side_effect=AssertionError("text path must not run"))
+    parser._transcribe_image = Mock(return_value="quotation OCR")
+    parser._structure_text = Mock(return_value=expected)
     prepared = PreparedSource(
         kind=SourceKind.IMAGE,
         text="[견적서 이미지]",
@@ -91,7 +93,11 @@ def test_image_source_uses_direct_finetuned_extraction() -> None:
     actual = parser(prepared, "RFQ-1", "공급사", [])
 
     assert actual is expected
-    parser._extract_images.assert_called_once_with(prepared, [])
+    parser._transcribe_image.assert_called_once_with(prepared.vision_inputs[0])
+    system_prompt, user_prompt = RunPodQuotationParser._prompt(prepared, [])
+    actual_system, actual_user, document_text = parser._structure_text.call_args.args
+    assert (actual_system, actual_user) == (system_prompt, user_prompt)
+    assert document_text.endswith("quotation OCR")
 
 
 def test_text_source_keeps_existing_text_model_path() -> None:
