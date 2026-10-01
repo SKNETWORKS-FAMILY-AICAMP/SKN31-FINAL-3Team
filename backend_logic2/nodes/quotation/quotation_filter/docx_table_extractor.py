@@ -2,16 +2,16 @@
 
 이미지/PDF용 추출기(table_structure_extractor.py 등)와 근본적으로 다르다.
 docx는 표 데이터가 이미지가 아니라 문서 안에 진짜 텍스트로 들어있어서 OCR이
-전혀 필요 없다. python-docx로 표 구조(document.tables)를 그대로 읽기만 하면
-되므로, 지금까지 봤던 인식 오류(오탈자, 행 뭉개짐, 손글씨 재확인 등)가
-원천적으로 발생하지 않는다.
+전혀 필요 없다. python-docx로 표 구조(document.tables)를 그대로 읽는다.
+단, DOCX 안에 삽입된 이미지의 글자는 quotation_extractor가 별도 비전
+입력으로 전달한다.
 
 지원 형식: .docx만 지원한다. 구형 이진 형식 .doc는 python-docx가 읽지 못한다.
 .doc 파일은 Word/한글/LibreOffice에서 열어 "다른 이름으로 저장 > Word 문서
 (.docx)"로 변환한 뒤 사용하면 된다.
 
 병합 셀 처리: python-docx는 병합된 셀을 rowspan/colspan으로 알려주지 않고,
-"같은 셀 텍스트가 이웃 칸에도 그대로 반복"되는 형태로 보여준다. 이 스크립트는
+"같은 셀 텍스트가 이웃 칸에도 그대로 반복"되는 형태로 보여준다. 이 모듈은
 그 반복을 그대로 둔다 — 값이 사라지거나 엉뚱한 칸으로 새는 이미지 추출기의
 문제와는 다른 종류의(더 안전한) 결과다.
 
@@ -19,9 +19,7 @@ docx는 표 데이터가 이미지가 아니라 문서 안에 진짜 텍스트�
 
 from __future__ import annotations
 
-import argparse
 import io
-import json
 from pathlib import Path
 from typing import TypeAlias
 
@@ -78,75 +76,3 @@ def extract_paragraphs(path: DocxSource) -> list[str]:
     """표 밖의 본문 문단(회사명, 비고 등)을 읽는다."""
     document = _open_document(path)
     return [p.text.strip() for p in document.paragraphs if p.text.strip()]
-
-
-def build_html_report(tables: list[list[list[str]]], paragraphs: list[str], source_label: str) -> str:
-    paragraphs_html = "".join(f"<p>{p}</p>" for p in paragraphs)
-
-    tables_html = []
-    for index, grid in enumerate(tables, start=1):
-        rows_html = "".join(
-            "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
-            for row in grid
-        )
-        tables_html.append(f"""
-        <section class="table-block">
-          <h3>표 {index} <span class="badge">{len(grid)}행 x {len(grid[0]) if grid else 0}열</span></h3>
-          <div class="table-scroll"><table>{rows_html}</table></div>
-        </section>
-        """)
-
-    return f"""<!doctype html>
-<html lang="ko">
-<head>
-<meta charset="utf-8">
-<title>DOCX 표 추출 결과</title>
-<style>
-  body {{ font-family: "Malgun Gothic", sans-serif; margin: 24px; background: #fafafa; color: #222; }}
-  h1 {{ font-size: 20px; }}
-  .notice {{ background: #e6f4ea; border: 1px solid #b7ddc3; padding: 10px 14px; border-radius: 6px; margin-bottom: 18px; }}
-  .paragraphs {{ color: #555; font-size: 13px; margin-bottom: 20px; }}
-  .table-block {{ margin-top: 24px; }}
-  .badge {{ display: inline-block; font-size: 12px; background: #e6f4ea; color: #1e7d32; border-radius: 10px; padding: 2px 10px; margin-left: 8px; }}
-  .table-scroll {{ overflow-x: auto; }}
-  table {{ border-collapse: collapse; margin-top: 8px; }}
-  td {{ border: 1px solid #999; padding: 6px 10px; font-size: 13px; white-space: nowrap; }}
-</style>
-</head>
-<body>
-  <h1>DOCX 표 추출 결과</h1>
-  <div class="notice">
-    이미지가 아니라 문서 안 텍스트를 직접 읽은 결과라 OCR 인식 오류가 없습니다.
-    로컬 결과이며 ERPNext 등 외부 시스템에 저장되지 않았습니다.
-  </div>
-  <div class="paragraphs">원본: {source_label}<br>{paragraphs_html}</div>
-  {"".join(tables_html)}
-</body>
-</html>
-"""
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Word(.docx) 견적서 표 추출")
-    parser.add_argument("--docx", required=True, help=".docx 파일 경로")
-    parser.add_argument("--output-json", help="표 그리드 JSON 저장 경로")
-    parser.add_argument("--output-html", default="docx_report.html", help="HTML 리포트 저장 경로")
-    args = parser.parse_args()
-
-    tables = extract_tables_from_docx(args.docx)
-    paragraphs = extract_paragraphs(args.docx)
-
-    if args.output_json:
-        Path(args.output_json).write_text(json.dumps(tables, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"표 그리드 JSON 저장: {args.output_json}")
-
-    html = build_html_report(tables, paragraphs, source_label=args.docx)
-    Path(args.output_html).write_text(html, encoding="utf-8")
-    print(f"HTML 리포트 저장: {args.output_html}")
-    print(f"찾은 표 개수: {len(tables)}")
-    for index, grid in enumerate(tables, start=1):
-        print(f"  표 {index}: {len(grid)}행 x {len(grid[0]) if grid else 0}열")
-
-
-if __name__ == "__main__":
-    main()

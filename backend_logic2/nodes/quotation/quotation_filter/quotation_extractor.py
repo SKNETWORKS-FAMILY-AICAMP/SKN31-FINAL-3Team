@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import argparse
 import csv
 import html
 import io
@@ -28,24 +27,7 @@ from typing import Any, Callable
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field
 
-try:
-    from .quotation_models import (
-        Quotation,
-        QuotationItem,
-        QuotationSource,
-        SourceKind,
-        dump_json,
-        load_json,
-    )
-except ImportError:  # nodes 폴더에서 직접 실행할 때
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
-        Quotation,
-        QuotationItem,
-        QuotationSource,
-        SourceKind,
-        dump_json,
-        load_json,
-    )
+from .quotation_models import Quotation, QuotationItem, QuotationSource, SourceKind
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -54,6 +36,7 @@ DOCX_SUFFIXES = {".docx"}
 PDF_SUFFIXES = {".pdf"}
 EMAIL_SUFFIXES = {".eml"}
 TEXT_SUFFIXES = {".txt", ".md"}
+MAX_VISUAL_PDF_PAGES = 8  # Match the RunPod worker's default MAX_PDF_PAGES.
 
 VALID_UNTIL_LABELS = (
     "유효기간", "견적유효기간", "validuntil", "validity",
@@ -234,7 +217,7 @@ def classify_source(path: str | Path) -> SourceKind:
 def _spreadsheet_to_text(data: bytes, filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
-        decoded = data.decode("utf-8-sig", errors="replace")
+        decoded = _decode_text_document(data)
         rows = list(csv.reader(io.StringIO(decoded)))
         return "\n".join(" | ".join(cell.strip() for cell in row) for row in rows)
 
@@ -251,6 +234,16 @@ def _spreadsheet_to_text(data: bytes, filename: str) -> str:
     return "\n\n".join(rendered)
 
 
+def _decode_text_document(data: bytes) -> str:
+    """Accept UTF-8 and legacy Korean CP949 without silently corrupting text."""
+    for encoding in ("utf-8-sig", "cp949"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    raise ValueError("텍스트 인코딩을 읽을 수 없습니다. UTF-8 또는 CP949로 저장해 주세요.")
+
+
 def _render_scanned_pdf(data: bytes, filename: str) -> list[VisionInput]:
     try:
         import fitz
@@ -260,6 +253,8 @@ def _render_scanned_pdf(data: bytes, filename: str) -> list[VisionInput]:
     document = fitz.open(stream=data, filetype="pdf")
     images: list[VisionInput] = []
     try:
+        if document.page_count > MAX_VISUAL_PDF_PAGES:
+            raise ValueError(f"이미지 PDF는 최대 {MAX_VISUAL_PDF_PAGES}페이지까지 처리합니다.")
         for index, page in enumerate(document, 1):
             pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
             images.append(VisionInput(
@@ -289,13 +284,7 @@ def _tables_to_text(tables: list[list[list[str]]]) -> str:
 
 def _docx_to_text(source: str | Path | bytes, filename: str | None = None) -> tuple[str, list[str]]:
     """DOCX 본문과 표를 XML 기반으로 직접 읽어 텍스트 모델 입력을 만든다."""
-    try:
-        from .docx_table_extractor import extract_paragraphs, extract_tables_from_docx
-    except ImportError:  # nodes 폴더에서 직접 실행하는 경우
-        from backend_logic2.nodes.quotation.quotation_filter.docx_table_extractor import (
-            extract_paragraphs,
-            extract_tables_from_docx,
-        )
+    from .docx_table_extractor import extract_paragraphs, extract_tables_from_docx
 
     paragraphs = extract_paragraphs(source)
     tables = extract_tables_from_docx(source)
@@ -304,7 +293,7 @@ def _docx_to_text(source: str | Path | bytes, filename: str | None = None) -> tu
         sections.append("[본문]\n" + "\n".join(paragraphs))
     if tables:
         sections.append(_tables_to_text(tables))
-    if not sections:
+    if not sections and not _docx_to_images(source, filename, allow_compact_image=True):
         source_name = filename or (Path(source).name if not isinstance(source, bytes) else "attachment.docx")
         raise ValueError(f"DOCX에서 읽을 수 있는 본문이나 표가 없습니다: {source_name}")
 
@@ -315,58 +304,197 @@ def _docx_to_text(source: str | Path | bytes, filename: str | None = None) -> tu
     return "\n\n".join(sections), evidence
 
 
+def _docx_to_images(
+    source: str | Path | bytes,
+    filename: str | None = None,
+    *,
+    allow_compact_image: bool = False,
+) -> list[VisionInput]:
+    """Send substantive body pictures to vision, not logos or seals."""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml.ns import qn
+    from PIL import Image
+    from .docx_table_extractor import _open_document
+
+    document = _open_document(source)
+    found: list[VisionInput] = []
+    seen: set[str] = set()
+    # Body XML includes table cells, but not header/footer logos. Only images
+    # actually referenced by visible body content are candidates.
+    for element in document.element.body.iter(qn("a:blip")):
+        relationship_id = element.get(qn("r:embed"))
+        if not relationship_id or relationship_id in seen:
+            continue
+        seen.add(relationship_id)
+        rel = document.part.rels.get(relationship_id)
+        if rel is None or rel.reltype != RT.IMAGE or rel.is_external:
+            continue
+        image_part = rel.target_part
+        media_type = str(image_part.content_type or "").lower()
+        if media_type not in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+            continue
+        blob = image_part.blob
+        try:
+            with Image.open(io.BytesIO(blob)) as picture:
+                width, height = picture.size
+        except (OSError, ValueError):
+            # A broken embedded picture must not discard the readable DOCX.
+            continue
+        # Common body logos and stamps are short or small. A document scan,
+        # screenshot or specification table is normally materially larger.
+        substantive = min(width, height) >= 250 and width * height >= 120_000
+        compact_table = allow_compact_image and width >= 500 and height >= 100 and width * height >= 50_000
+        if not (substantive or compact_table):
+            continue
+        suffix = ".jpg" if media_type == "image/jpeg" else "." + media_type.split("/")[1]
+        stem = Path(filename or "attachment.docx").stem
+        found.append(VisionInput(data=blob, filename=f"{stem}-embedded-{len(found) + 1}{suffix}"))
+    return found
+
+
+def _pdf_page_needs_vision(page: Any) -> bool:
+    """Detect visible scanned content, not merely the absence of a text layer."""
+    native = page.get_text()
+    compact = re.sub(r"\s+", "", native)
+    lower = native.lower()
+    corrupt = (
+        "(cid:" in lower
+        or (len(compact) >= 10 and compact.count("\ufffd") / len(compact) >= 0.1)
+    )
+    top = page.rect.y0 + page.rect.height * 0.13
+    bottom = page.rect.y0 + page.rect.height * 0.88
+    visible_body_chars = sum(
+        len(span["chars"])
+        for span in page.get_texttrace()
+        if span["type"] != 3 and span["bbox"][1] < bottom and span["bbox"][3] > top
+    )
+    page_area = max(1.0, page.rect.width * page.rect.height)
+    visible_image_area = sum(
+        max(0.0, min(float(image["bbox"][2]), page.rect.x1) - max(float(image["bbox"][0]), page.rect.x0))
+        * max(0.0, min(float(image["bbox"][3]), page.rect.y1) - max(float(image["bbox"][1]), page.rect.y0))
+        for image in page.get_image_info()
+    )
+    image_ratio = min(1.0, visible_image_area / page_area)
+    if corrupt:
+        return True
+    if image_ratio >= 0.55:
+        if visible_body_chars >= 80:
+            return False  # Digital quote over a full-page stationery background.
+        if not compact:
+            # A printer may append a full-page white raster. Avoid sending
+            # that blank page (and every preceding digital page) to the GPU.
+            preview = page.get_pixmap(dpi=36, alpha=False)
+            samples = preview.samples
+            if not any(
+                min(samples[index:index + preview.n]) < 170
+                for index in range(0, len(samples), preview.n)
+            ):
+                return False
+        return True  # Full-page scan, including a hidden OCR text layer.
+    if len(compact) < 30 and visible_body_chars < 15 and image_ratio >= 0.10:
+        return True  # Short footer or watermark alongside the actual image.
+    if not compact and not image_ratio:
+        drawings = page.get_drawings()
+        # One outline/border is blank stationery. Outlined text has many paths.
+        return len(drawings) >= 20 or sum(len(path.get("items", [])) for path in drawings) >= 60
+    return False
+
+
 def _pdf_to_source(data: bytes, filename: str) -> tuple[str, list[VisionInput], list[str]]:
-    # 2026-09-22: pymupdf4llm으로 교체. pypdf는 한글 음절 사이에 스페이스가
-    # 끼어드는 문제가 있고, PDF는 DOCX(_tables_to_text)와 달리 별도 표
-    # 추출기가 없어 표 구조가 완전히 평문화되는 문제가 있었다. 실제 RunPod
-    # 견적 추출 파이프라인으로 비교 검증함
-    # (tests/manual_pdf_extraction_comparison.py,
-    #  tests/manual_runpod_quotation_extraction_test.py). 원래 코드는 참고용으로
-    # 남겨둔다.
-    #
-    # try:
-    #     from pypdf import PdfReader
-    # except ImportError as exc:  # pragma: no cover - 설치 환경 오류
-    #     raise RuntimeError("PDF 추출에는 pypdf가 필요합니다.") from exc
-    #
-    # reader = PdfReader(io.BytesIO(data))
-    # pages = [(page.extract_text() or "").strip() for page in reader.pages]
-    # flat_text = "\n\n".join(f"[page {idx}]\n{page}" for idx, page in enumerate(pages, 1) if page)
-    # if not flat_text.strip():
-    #     evidence = [
-    #         f"PDF {len(reader.pages)}페이지에서 텍스트 0자 추출",
-    #         "디지털 텍스트가 없어 페이지를 이미지로 변환해 로컬 비전 모델 사용",
-    #     ]
-    #     return "[스캔 PDF]", _render_scanned_pdf(data, filename), evidence
-    #
-    # return flat_text, [], [
-    #     f"PDF {len(reader.pages)}페이지에서 디지털 텍스트 {len(flat_text)}자 로컬 추출",
-    #     "pypdf 텍스트 레이어 직접 판독(OCR 미사용)",
-    # ]
 
     try:
         import fitz
-        import pymupdf4llm
     except ImportError as exc:  # pragma: no cover - 설치 환경 오류
-        raise RuntimeError("PDF 추출에는 pymupdf4llm(및 PyMuPDF)이 필요합니다.") from exc
+        raise RuntimeError("PDF 추출에는 PyMuPDF가 필요합니다.") from exc
 
-    document = fitz.open(stream=data, filetype="pdf")
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except (fitz.FileDataError, ValueError, RuntimeError) as exc:
+        raise ValueError(f"손상되었거나 지원하지 않는 PDF입니다: {filename}") from exc
     try:
         page_count = document.page_count
-        markdown_text = (pymupdf4llm.to_markdown(document) or "").strip()
+        if document.needs_pass:
+            raise ValueError(f"암호화된 PDF는 비밀번호 없이 추출할 수 없습니다: {filename}")
+        if not page_count:
+            raise ValueError(f"페이지가 없는 PDF입니다: {filename}")
+        # PyMuPDF4LLM otherwise auto-OCRs image-only pages and makes them
+        # look like digital text. One substantive visual page triggers the
+        # vision route for the whole PDF, preserving cross-page context.
+        needs_vision = any(_pdf_page_needs_vision(page) for page in document)
+        extraction_method = "pymupdf4llm"
+        extraction_note = "pymupdf4llm 마크다운 변환 직접 판독(OCR 미사용)"
+        if needs_vision:
+            if page_count > MAX_VISUAL_PDF_PAGES:
+                raise ValueError(f"이미지 PDF는 최대 {MAX_VISUAL_PDF_PAGES}페이지까지 처리합니다: {filename}")
+            markdown_text = ""
+        else:
+            try:
+                import pymupdf4llm
+            except ImportError as exc:  # pragma: no cover - 설치 환경 오류
+                raise RuntimeError("디지털 PDF 추출에는 pymupdf4llm이 필요합니다.") from exc
+            rotated_pages = {
+                index for index, page in enumerate(document)
+                if page.rotation and page.get_text().strip()
+            }
+            if rotated_pages:
+                # PyMuPDF4LLM 1.28.2 drops text on /Rotate pages, even when
+                # other pages in the same document produce valid Markdown.
+                sections = []
+                native_fallback_pages = []
+                for index, page in enumerate(document):
+                    if index in rotated_pages:
+                        page_text = page.get_text(sort=True).strip()
+                    else:
+                        page_text = (pymupdf4llm.to_markdown(
+                            document, pages=[index], use_ocr=False,
+                        ) or "").strip()
+                        if not page_text:
+                            page_text = page.get_text(sort=True).strip()
+                            if page_text:
+                                native_fallback_pages.append(index + 1)
+                    if page_text:
+                        sections.append(f"[page {index + 1}]\n{page_text}")
+                markdown_text = "\n\n".join(sections)
+                extraction_method = "pymupdf4llm + PyMuPDF get_text"
+                rotation_details = ", ".join(
+                    f"{index + 1}페이지({document[index].rotation}도)"
+                    for index in sorted(rotated_pages)
+                )
+                extraction_note = (
+                    f"회전 페이지 {rotation_details}는 PyMuPDF 디지털 텍스트로 추출; "
+                    "나머지는 pymupdf4llm 마크다운 사용(OCR 미사용)"
+                )
+                if native_fallback_pages:
+                    extraction_note += f"; 마크다운 빈 페이지 {native_fallback_pages}도 PyMuPDF 폴백"
+            else:
+                markdown_text = (pymupdf4llm.to_markdown(document, use_ocr=False) or "").strip()
+            if not markdown_text:
+                native_pages = [
+                    f"[page {index}]\n{page_text}"
+                    for index, page in enumerate(document, 1)
+                    if (page_text := page.get_text(sort=True).strip())
+                ]
+                if native_pages:
+                    markdown_text = "\n\n".join(native_pages)
+                    extraction_method = "PyMuPDF get_text"
+                    extraction_note = (
+                        "pymupdf4llm 빈 결과로 PyMuPDF 디지털 텍스트 폴백 적용"
+                        "(OCR 미사용)"
+                    )
     finally:
         document.close()
 
     if not markdown_text:
         evidence = [
-            f"PDF {page_count}페이지에서 텍스트 0자 추출",
-            "디지털 텍스트가 없어 페이지를 이미지로 변환해 로컬 비전 모델 사용",
+            f"PDF {page_count}페이지 중 이미지 기반 페이지 포함" if needs_vision
+            else f"PDF {page_count}페이지에서 읽을 수 있는 디지털 텍스트 없음",
+            "모든 페이지를 이미지로 변환해 비전 모델 입력으로 전달",
         ]
         return "[스캔 PDF]", _render_scanned_pdf(data, filename), evidence
 
     return markdown_text, [], [
-        f"PDF {page_count}페이지에서 디지털 텍스트 {len(markdown_text)}자 로컬 추출(pymupdf4llm)",
-        "pymupdf4llm 마크다운 변환 직접 판독(OCR 미사용)",
+        f"PDF {page_count}페이지에서 디지털 텍스트 {len(markdown_text)}자 로컬 추출({extraction_method})",
+        extraction_note,
     ]
 
 
@@ -392,7 +520,10 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
 
     body = message.get_body(preferencelist=("plain", "html"))
     if body:
-        content = body.get_content()
+        try:
+            content = body.get_content()
+        except (LookupError, UnicodeError):
+            content = _decode_text_document(body.get_payload(decode=True) or b"")
         body_parts.append(_strip_html(content) if body.get_content_type() == "text/html" else str(content))
 
     for part in message.iter_attachments():
@@ -405,6 +536,9 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
         elif suffix in DOCX_SUFFIXES:
             docx_text, docx_evidence = _docx_to_text(payload, attachment_name)
             body_parts.append(f"[attachment: {attachment_name}]\n{docx_text}")
+            docx_images = _docx_to_images(payload, attachment_name, allow_compact_image=not docx_text.strip())
+            vision_inputs.extend(docx_images)
+            document_inputs.extend(docx_images)
             evidence.extend(docx_evidence)
         elif suffix in PDF_SUFFIXES:
             pdf_text, pdf_images, pdf_evidence = _pdf_to_source(payload, attachment_name)
@@ -418,7 +552,11 @@ def _email_to_source(data: bytes, filename: str) -> PreparedSource:
             vision_inputs.append(image_input)
             document_inputs.append(image_input)
         elif part.get_content_maintype() == "text":
-            body_parts.append(f"[attachment: {attachment_name}]\n{part.get_content()}")
+            try:
+                content = part.get_content()
+            except (LookupError, UnicodeError):
+                content = _decode_text_document(payload)
+            body_parts.append(f"[attachment: {attachment_name}]\n{content}")
 
     return PreparedSource(
         kind=SourceKind.EMAIL,
@@ -434,7 +572,11 @@ def prepare_source_bytes(data: bytes, filename: str) -> PreparedSource:
     kind = classify_source(filename)
     if kind == SourceKind.DOCX:
         text, evidence = _docx_to_text(data, filename)
-        return PreparedSource(kind=kind, text=text, evidence=evidence)
+        images = _docx_to_images(data, filename, allow_compact_image=not text.strip())
+        return PreparedSource(
+            kind=kind, text=text, vision_inputs=images, document_inputs=images,
+            evidence=[*evidence, f"DOCX 내 이미지 {len(images)}개 비전 입력"] if images else evidence,
+        )
     if kind == SourceKind.EXCEL:
         return PreparedSource(kind=kind, text=_spreadsheet_to_text(data, filename), evidence=[f"표 파일 메모리 파싱: {filename}"])
     if kind == SourceKind.PDF:
@@ -443,7 +585,7 @@ def prepare_source_bytes(data: bytes, filename: str) -> PreparedSource:
             kind=kind,
             text=text,
             vision_inputs=vision_inputs,
-            document_inputs=[VisionInput(data=data, filename=filename)],
+            document_inputs=[VisionInput(data=data, filename=filename)] if vision_inputs else [],
             evidence=evidence,
         )
     if kind == SourceKind.IMAGE:
@@ -457,7 +599,7 @@ def prepare_source_bytes(data: bytes, filename: str) -> PreparedSource:
         )
     if kind == SourceKind.EMAIL:
         return _email_to_source(data, filename)
-    return PreparedSource(kind=kind, text=data.decode("utf-8-sig", errors="replace"), evidence=[f"텍스트 파일 메모리 파싱: {filename}"])
+    return PreparedSource(kind=kind, text=_decode_text_document(data), evidence=[f"텍스트 파일 메모리 파싱: {filename}"])
 
 
 def prepare_source(path: str | Path) -> PreparedSource:
@@ -1117,7 +1259,7 @@ class LocalHuggingFaceQuotationParser:
         self.vision_max_new_tokens = int(
             _project_model_setting("HF_QUOTATION_VISION_MAX_NEW_TOKENS")
             or os.getenv("HF_QUOTATION_VISION_MAX_NEW_TOKENS")
-            or "512"
+            or "1024"
         )
         self.vision_max_pixels = int(
             _project_model_setting("HF_QUOTATION_VISION_MAX_PIXELS")
@@ -1568,8 +1710,6 @@ def extract_quotation_bytes(
         rfq_requirements=rfq_requirements,
         model_parser=model_parser,
     )
-
-
 def extract_quotation(
     path: str | Path,
     rfq_name: str,
@@ -1597,76 +1737,3 @@ def extract_quotation(
         rfq_requirements=rfq_requirements,
         model_parser=model_parser,
     )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="로컬 Hugging Face 기반 외부 견적 추출")
-    parser.add_argument("input", help="xlsx/xls/csv/docx/pdf/png/jpg/eml/txt 파일")
-    parser.add_argument("--rfq", required=True, help="RFQ 이름")
-    parser.add_argument(
-        "--supplier-name",
-        required=True,
-        help="고정 공급사명(모델이 추출하거나 변경하지 않음)",
-    )
-    parser.add_argument("--supplier-id")
-    parser.add_argument("--quotation-id")
-    parser.add_argument("--attempt", type=int, default=1, choices=(1, 2, 3))
-    parser.add_argument("--reflection", action="append", default=[], help="이전 추출 오류(여러 번 지정 가능)")
-    parser.add_argument("--rfq-context", help="선택: RFQ 요구사항 JSON. 규격 키 추출에 사용")
-    parser.add_argument("--text-model", help="로컬 캐시 또는 사내 로컬 텍스트 모델 경로")
-    parser.add_argument(
-        "--vision-model",
-        help=f"로컬 Qwen3.5 기반 모델 경로(기본: {DEFAULT_VISION_MODEL})",
-    )
-    parser.add_argument(
-        "--vision-adapter",
-        help=f"로컬 견적서 LoRA adapter 경로(기본: {DEFAULT_VISION_ADAPTER})",
-    )
-    parser.add_argument(
-        "--register-erp",
-        action="store_true",
-        help="추출 결과를 로컬 파일 없이 ERPNext Supplier Quotation Draft로 등록",
-    )
-    parser.add_argument(
-        "--erp-dry-run",
-        action="store_true",
-        help="--register-erp 사용 시 ERP POST 없이 매핑 payload와 중복 여부만 확인",
-    )
-    parser.add_argument("--output", help="결과 JSON 경로. 생략하면 stdout")
-    args = parser.parse_args()
-    if args.erp_dry_run and not args.register_erp:
-        parser.error("--erp-dry-run은 --register-erp와 함께 사용해야 합니다.")
-
-    local_parser = LocalHuggingFaceQuotationParser(
-        args.text_model,
-        args.vision_model,
-        args.vision_adapter,
-    )
-    quotation = extract_quotation(
-        args.input,
-        args.rfq,
-        supplier_name=args.supplier_name,
-        supplier_id=args.supplier_id,
-        quotation_id=args.quotation_id,
-        attempt=args.attempt,
-        reflection_errors=args.reflection,
-        rfq_requirements=load_json(args.rfq_context) if args.rfq_context else None,
-        model_parser=local_parser,
-    )
-    if args.output:
-        dump_json(quotation, args.output)
-        print(f"추출 완료(외부 전송 없음): {args.output}")
-    elif not args.register_erp:
-        print(dump_json(quotation))
-
-    if args.register_erp:
-        try:
-            from .quotation_registrar import register_supplier_quotation
-        except ImportError:  # quotation_filter 폴더에서 직접 실행할 때
-            from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import register_supplier_quotation
-        registration = register_supplier_quotation(quotation, dry_run=args.erp_dry_run)
-        print(json.dumps(registration, ensure_ascii=False, indent=2, default=str))
-
-
-if __name__ == "__main__":
-    main()

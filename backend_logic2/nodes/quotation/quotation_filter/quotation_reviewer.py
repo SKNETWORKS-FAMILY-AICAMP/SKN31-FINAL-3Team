@@ -1,51 +1,27 @@
-"""추출된 견적의 형식·산식·RFQ 규격 부합 여부를 검토한다.
-
-
-``--rfq``에는 ERPNext RFQ 이름 또는 기존 RFQ 요구사항 JSON 경로를 지정한다.
-"""
+"""추출된 견적의 형식·산식·RFQ 규격 부합 여부를 검토한다."""
 
 from __future__ import annotations
 
-import argparse
 import html
 import re
-import sys
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from difflib import SequenceMatcher
-from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import ValidationError
 
-try:
-    from .quotation_models import (
-        IssueSeverity,
-        ItemCompliance,
-        Quotation,
-        QuotationReview,
-        RFQItemRequirement,
-        RFQRequirements,
-        ReviewIssue,
-        ReviewStatus,
-        SourceKind,
-        dump_json,
-        load_json,
-    )
-except ImportError:
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
-        IssueSeverity,
-        ItemCompliance,
-        Quotation,
-        QuotationReview,
-        RFQItemRequirement,
-        RFQRequirements,
-        ReviewIssue,
-        ReviewStatus,
-        SourceKind,
-        dump_json,
-        load_json,
-    )
+from .quotation_models import (
+    IssueSeverity,
+    ItemCompliance,
+    Quotation,
+    QuotationReview,
+    RFQItemRequirement,
+    RFQRequirements,
+    ReviewIssue,
+    ReviewStatus,
+    SourceKind,
+)
 
 
 MONEY_QUANTUM = Decimal("1")
@@ -71,9 +47,6 @@ GetOne = Callable[[str, str], dict[str, Any] | None]
 
 def _erp_get_one() -> GetOne:
     """JSON 입력만 사용할 때는 ERP 모듈을 불러오지 않도록 지연 import한다."""
-    backend_root = Path(__file__).resolve().parents[4]
-    if str(backend_root) not in sys.path:
-        sys.path.insert(0, str(backend_root))
     from backend_logic2.integrations.erp_client import erp_get_one
 
     return erp_get_one
@@ -201,17 +174,12 @@ def load_rfq_requirements_from_erp(
 
 
 def load_rfq_requirements(
-    rfq_source: str | Path,
+    rfq_name: str,
     *,
     get_one: GetOne | None = None,
 ) -> RFQRequirements:
-    """기존 JSON 경로와 ERPNext RFQ 이름을 모두 지원한다."""
-    source = Path(rfq_source)
-    if source.is_file():
-        return RFQRequirements.model_validate(load_json(source))
-    if source.suffix.lower() == ".json":
-        raise FileNotFoundError(f"RFQ 요구사항 JSON을 찾을 수 없습니다: {source}")
-    return load_rfq_requirements_from_erp(str(rfq_source), get_one=get_one)
+    """운영 RFQ 이름으로 ERPNext의 요구사항을 조회한다."""
+    return load_rfq_requirements_from_erp(rfq_name, get_one=get_one)
 
 
 def _money(value: Decimal) -> Decimal:
@@ -497,29 +465,3 @@ def review_quotation(
         item_compliance=item_results,
         rejection_evidence=rejection_evidence,
     )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="추출 견적 검토")
-    parser.add_argument("input", help="quotation_extractor 결과 JSON")
-    parser.add_argument(
-        "--rfq",
-        required=True,
-        help="ERPNext RFQ 이름(예: PUR-RFQ-2026-00295) 또는 RFQ 요구사항 JSON 경로",
-    )
-    parser.add_argument("--output")
-    args = parser.parse_args()
-    try:
-        rfq = load_rfq_requirements(args.rfq)
-    except Exception as exc:
-        parser.exit(1, f"RFQ 요구사항 로드 실패: {exc}\n")
-    result = review_quotation(load_json(args.input), rfq)
-    rendered = dump_json(result, args.output)
-    if args.output:
-        print(f"검토 완료: {args.output} ({result.status.value})")
-    else:
-        print(rendered)
-
-
-if __name__ == "__main__":
-    main()

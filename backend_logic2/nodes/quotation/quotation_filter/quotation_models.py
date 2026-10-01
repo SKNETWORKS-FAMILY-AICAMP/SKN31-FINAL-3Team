@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from decimal import Decimal
 from enum import Enum
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -201,21 +199,3 @@ class RankingResult(StrictModel):
     # 순위 대상이 된 유효 견적 수. 1이면 단독 응찰이다.
     competition_count: int = Field(default=0, ge=0)
     single_bid: bool = False
-
-
-def load_json(path: str | Path) -> Any:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def dump_json(data: Any, path: str | Path | None = None) -> str:
-    if isinstance(data, BaseModel):
-        payload = data.model_dump(mode="json")
-    elif isinstance(data, list):
-        payload = [item.model_dump(mode="json") if isinstance(item, BaseModel) else item for item in data]
-    else:
-        payload = data
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
-    if path:
-        Path(path).write_text(rendered + "\n", encoding="utf-8")
-    return rendered

@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 from datetime import date, timedelta
@@ -13,63 +12,32 @@ from typing import Any
 
 import psycopg
 
-try:
-    from .quotation_models import (
-        QuotationReview,
-        RankedQuotation,
-        RankingResult,
-        RFQRequirements,
-        IssueSeverity,
-        ReviewStatus,
-        dump_json,
-        load_json,
-    )
-    from .get_supplier_quotations import (
-        get_quotations_for_rfq,
-        get_quotations_for_rfqs,
-        get_reviewable_quotations,
-        get_reviewable_quotations_for_rfqs,
-    )
-    from .quotation_reviewer import load_rfq_requirements, match_requirement, review_quotation
-except ImportError:
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import (
-        QuotationReview,
-        RankedQuotation,
-        RankingResult,
-        RFQRequirements,
-        IssueSeverity,
-        ReviewStatus,
-        dump_json,
-        load_json,
-    )
-    from backend_logic2.nodes.quotation.quotation_filter.get_supplier_quotations import (
-        get_quotations_for_rfq,
-        get_quotations_for_rfqs,
-        get_reviewable_quotations,
-        get_reviewable_quotations_for_rfqs,
-    )
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import (
-        load_rfq_requirements,
-        match_requirement,
-        review_quotation,
-    )
+from .quotation_models import (
+    QuotationReview,
+    RankedQuotation,
+    RankingResult,
+    RFQRequirements,
+    IssueSeverity,
+    ReviewStatus,
+)
+from .get_supplier_quotations import (
+    _first_non_zero,
+    _number,
+    get_quotations_for_rfq,
+    get_quotations_for_rfqs,
+    get_reviewable_quotations,
+    get_reviewable_quotations_for_rfqs,
+)
+from .quotation_reviewer import load_rfq_requirements, match_requirement, review_quotation
 
 from backend_logic2.repositories.deliveries import get_supplier_scorecard_history
 from procurement_db import ProcurementDatabaseConfigurationError
-try:
-    from .quotation_spec_evaluator import (
-        QuotationSpecEvaluator,
-        QuotationSpecAssessment,
-        build_quotation_spec_evaluator,
-        specification_evaluation_fingerprint,
-    )
-except ImportError:
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_spec_evaluator import (
-        QuotationSpecEvaluator,
-        QuotationSpecAssessment,
-        build_quotation_spec_evaluator,
-        specification_evaluation_fingerprint,
-    )
+from .quotation_spec_evaluator import (
+    QuotationSpecEvaluator,
+    QuotationSpecAssessment,
+    build_quotation_spec_evaluator,
+    specification_evaluation_fingerprint,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -842,21 +810,6 @@ def _attach_supplier_scorecards(quotations: list[dict[str, Any]]) -> list[dict[s
     ]
 
 
-def _number(value: Any) -> float:
-    try:
-        return float(str(value).replace(",", ""))
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _first_non_zero(*values: Any) -> float:
-    for value in values:
-        number = _number(value)
-        if number:
-            return number
-    return 0.0
-
-
 def _enrich_ranking_with_prices(
     ranking: list[dict[str, Any]],
     quotations: list[dict[str, Any]],
@@ -1261,27 +1214,3 @@ def print_evaluation(result: dict[str, Any]) -> None:
         print(f"#{row.get('rank')} {row.get('supplier_name') or row.get('supplier')}: {row.get('reason')}")
     for row in result.get("excluded") or []:
         print(f"제외 {row.get('supplier_name') or row.get('quotation_id')}: {row.get('evidence')}")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="검토 통과 견적 우선순위 정렬")
-    parser.add_argument("input", help="검토 결과 JSON 배열")
-    parser.add_argument("--rfq", required=True, help="RFQ 요구사항 JSON")
-    parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument("--output")
-    args = parser.parse_args()
-    raw_reviews = load_json(args.input)
-    if isinstance(raw_reviews, dict) and "reviews" in raw_reviews:
-        raw_reviews = raw_reviews["reviews"]
-    if not isinstance(raw_reviews, list):
-        raw_reviews = [raw_reviews]
-    result = rank_quotations(raw_reviews, load_json(args.rfq), top_k=args.top_k)
-    rendered = dump_json(result, args.output)
-    if args.output:
-        print(f"정렬 완료: {args.output} ({len(result.recommended)}개 추천)")
-    else:
-        print(rendered)
-
-
-if __name__ == "__main__":
-    main()

@@ -9,28 +9,18 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
-import sys
 from datetime import date, timedelta
 from html import unescape
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import Any, Callable
 
-BACKEND_ROOT = Path(__file__).resolve().parents[4]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.append(str(BACKEND_ROOT))
+from backend_logic2.integrations.erp_client import erp_get, erp_get_one
 
-from backend_logic2.integrations.erp_client import ERPNextAPIError, erp_get, erp_get_one
-
-try:
-    from .quotation_models import Quotation
-    from .quotation_reviewer import extract_specifications
-except ImportError:  # quotation_filter 폴더에서 직접 실행할 때
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import Quotation
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_reviewer import extract_specifications
+from .quotation_models import Quotation
+from .quotation_reviewer import extract_specifications
+from .quotation_terms import parse_separated_terms
 
 
 GetOne = Callable[[str, str], dict[str, Any] | None]
@@ -312,7 +302,6 @@ def get_quotations_for_rfqs(
 def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation:
     """ERPNext Supplier Quotation 하나를 reviewer 공통 모델로 변환한다."""
     transaction_date = detail.get("transaction_date")
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_terms import parse_separated_terms
     separated = parse_separated_terms(detail.get('terms'))
     items: list[dict[str, Any]] = []
     for index, item in enumerate(detail.get("items") or [], 1):
@@ -416,55 +405,3 @@ def get_reviewable_quotations_for_rfqs(
             seen.add(quotation_id)
             quotations.append(quotation)
     return quotations
-
-
-def print_quotations_summary(rfq_name: str, quotations: list[dict[str, Any]]) -> None:
-    """조회 결과를 사람이 확인할 수 있는 평문 표로 출력한다."""
-    print(f"\n=== RFQ '{rfq_name}' ERPNext 전체 견적 ===")
-    if not quotations:
-        print("(제출된 Supplier Quotation이 없습니다)\n")
-        return
-
-    header = f"{'공급사':<16} {'품목':<20} {'수량':>8} {'단가':>12} {'금액':>14} {'납기일':<12} {'상태':<10}"
-    print(header)
-    print("-" * len(header))
-    for quotation in quotations:
-        supplier = quotation.get("supplier_name") or quotation.get("supplier") or "-"
-        item = quotation.get("item_name") or quotation.get("item_code") or "-"
-        qty = quotation.get("qty") if quotation.get("qty") is not None else "-"
-        rate = f"{quotation['rate']:,.0f}" if quotation.get("rate") is not None else "-"
-        amount = f"{quotation['amount']:,.0f}" if quotation.get("amount") is not None else "-"
-        schedule_date = quotation.get("schedule_date") or "-"
-        status = quotation.get("status") or "-"
-        print(f"{supplier:<16} {item:<20} {qty:>8} {rate:>12} {amount:>14} {schedule_date:<12} {status:<10}")
-
-    count = len({row["quotation_name"] for row in quotations})
-    print("-" * len(header))
-    print(f"총 {count}건의 Supplier Quotation, {len(quotations)}개 품목 라인\n")
-
-
-def main() -> None:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="ERPNext Supplier Quotation 통합 조회")
-    parser.add_argument("rfq_name", nargs="?", help="예: PUR-RFQ-2026-00295")
-    parser.add_argument("--json", action="store_true", help="표 대신 JSON 출력")
-    args = parser.parse_args()
-    rfq_name = args.rfq_name or input("RFQ 이름 입력: ").strip()
-    if not rfq_name:
-        parser.error("RFQ 이름이 필요합니다.")
-
-    try:
-        quotations = get_supplier_quotations(rfq_name)
-    except ERPNextAPIError as exc:
-        print(f"[에러] ERPNext API 호출 실패: {exc}")
-        raise SystemExit(1) from exc
-
-    if args.json:
-        print(json.dumps(quotations, ensure_ascii=False, indent=2, default=str))
-    else:
-        print_quotations_summary(rfq_name, quotations)
-
-
-if __name__ == "__main__":
-    main()

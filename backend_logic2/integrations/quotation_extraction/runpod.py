@@ -122,7 +122,7 @@ class RunPodQuotationConfig:
     max_payload_bytes: int = 9 * 1024 * 1024
     max_text_chars: int = 60_000
     max_documents: int = 8
-    max_new_tokens: int = 512
+    max_new_tokens: int = 1024
     status_max_attempts: int = 3
     prompt_version: str = "qwen35-quotation-text-json-v1"
     pipeline_version: str = "document-text-v1"
@@ -163,7 +163,7 @@ class RunPodQuotationConfig:
             ),
             max_documents=_positive_int("RUNPOD_QUOTATION_MAX_DOCUMENTS", "8"),
             max_new_tokens=_positive_int(
-                "RUNPOD_QUOTATION_MAX_NEW_TOKENS", "512"
+                "RUNPOD_QUOTATION_MAX_NEW_TOKENS", "1024"
             ),
             status_max_attempts=_positive_int(
                 "RUNPOD_QUOTATION_STATUS_MAX_ATTEMPTS", "3"

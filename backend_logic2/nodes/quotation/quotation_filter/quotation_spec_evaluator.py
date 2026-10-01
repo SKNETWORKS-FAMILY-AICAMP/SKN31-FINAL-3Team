@@ -787,7 +787,10 @@ class RunPodQwenQuotationSpecEvaluator:
                     LOGGER.exception("RunPod Qwen 견적 %s 규격 평가에 실패했습니다.", quotation_id)
         if failures:
             LOGGER.error("RunPod Qwen 규격 평가 실패 견적: %s", sorted(failures))
-            return None
+            # Ranking and caching already support partial assessments. Keep
+            # successful paid results so only failed quotations need a retry.
+            if not results:
+                return None
         return results
 
 

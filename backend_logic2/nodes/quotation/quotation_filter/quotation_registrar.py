@@ -7,27 +7,16 @@
 
 from __future__ import annotations
 
-import argparse
 import html
-import json
 import re
-import sys
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, Callable
 
-try:
-    from .quotation_models import Quotation, load_json
-except ImportError:  # quotation_filter 폴더에서 직접 실행할 때
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_models import Quotation, load_json
+from .quotation_models import Quotation
+from .quotation_terms import render_separated_terms
 
-
-BACKEND_ROOT = Path(__file__).resolve().parents[4]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.append(str(BACKEND_ROOT))
-
-from backend_logic2.integrations.erp_client import (  # noqa: E402
+from backend_logic2.integrations.erp_client import (
     ERPNextAPIError,
     erp_cancel,
     erp_discard_draft,
@@ -74,7 +63,6 @@ def _quotation_to_terms(quotation: Quotation) -> str | None:
     classification flag. Raw text is not appended when Qwen has supplied
     structured specs. Old ERP records retain their legacy read path.
     """
-    from backend_logic2.nodes.quotation.quotation_filter.quotation_terms import render_separated_terms
     return render_separated_terms(quotation)
 
 
@@ -604,19 +592,3 @@ def register_supplier_quotation(
         "supplier": payload["supplier"],
         "docstatus": created.get("docstatus", 0),
     }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="추출 JSON을 ERPNext Supplier Quotation Draft로 등록")
-    parser.add_argument("input", help="quotation_extractor 결과 JSON")
-    parser.add_argument("--dry-run", action="store_true", help="ERP POST 없이 payload와 중복 여부만 확인")
-    args = parser.parse_args()
-    try:
-        result = register_supplier_quotation(load_json(args.input), dry_run=args.dry_run)
-    except (ERPNextAPIError, SupplierQuotationRegistrationError) as exc:
-        parser.exit(1, f"ERPNext Supplier Quotation 등록 실패: {exc}\n")
-    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-
-
-if __name__ == "__main__":
-    main()
