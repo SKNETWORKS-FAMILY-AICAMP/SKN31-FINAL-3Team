@@ -3,11 +3,13 @@
 왜 만들었나: 공급사 탐색에서 두 가지를 바꿨는데 "줄었다"는 말만 있고 숫자가
 없었다. 같은 품목·같은 회사 목록으로 전·후를 모두 실제로 돌려 측정한다.
 
-  A. 홈페이지 찾기 : 회사별 Tavily 검색 -> 네이버 검색 API(무료)
-     회사 이름은 Tavily가 잘 찾지만, 찾아낸 회사마다 홈페이지를 또 Tavily로
-     검색하면 호출이 회사 수만큼 늘어난다. 그 단계만 네이버로 옮겼다.
-     네이버가 못 찾은 회사만 Tavily로 보완하는 폴백도 같이 측정한다
-     (무료로 되는 건 무료로, 안 되는 것만 유료로 남기는 안).
+  A. 홈페이지 찾기 : 네이버 단독 -> 네이버 + Tavily 폴백
+     역할 분담은 원래부터 이렇다 - 회사명 수집은 Tavily, 그 회사의 홈페이지
+     찾기는 네이버(무료). 홈페이지까지 회사마다 Tavily로 돌리면 호출이 회사
+     수만큼 늘어 비싸기 때문이다. 문제는 네이버 적중률이라, 네이버가 못 찾은
+     회사만 Tavily로 보완하는 폴백의 효과를 잰다.
+     "Tavily만" 줄도 같이 찍지만 그건 과거 상태가 아니라 "홈페이지까지 전부
+     Tavily로 돌렸다면"의 참고선이다.
 
   B. 연락처 추출 : 회사 1건씩 호출 -> batch_size개씩 묶어 호출
      호출 수가 1/batch_size로 줄고, 지시문 블록이 회사마다 반복되지 않아
@@ -417,21 +419,21 @@ def main():
 
     budget = {"naver": 0, "tavily": 0}
 
-    print("\n[2/5] 홈페이지 찾기 — 변경 전 (회사별 Tavily, 같은 제외규칙+AI판단)...")
+    print("\n[2/5] 홈페이지 찾기 — 참고선 (회사별 Tavily, 같은 제외규칙+AI판단)...")
     before_meter = TokenMeter()
     before_budget = {"naver": 0, "tavily": 0}
     before_records, before_secs = phase(
-        "A-before: 회사별 Tavily 검색", find_sites,
+        "A-ref: 전부 Tavily였다면", find_sites,
         companies, item, resolve_site_tavily, "tavily", before_meter, before_budget,
     )
     before_hits = sum(1 for r in before_records if r["url"])
 
-    print("\n[3/5] 홈페이지 찾기 — 변경 후 (네이버 무료 API)...")
+    print("\n[3/5] 홈페이지 찾기 — 네이버 단독 (폴백 전, 지금까지의 동작)...")
     naver_meter = TokenMeter()
     from backend_logic2.nodes.supplier.tools import naver_contact_enrichment as nce
     with count_calls(nce, "_search_naver_web") as naver_counter:
         records, after_secs = phase(
-            "A-after: 회사별 네이버 검색", find_sites,
+            "A-naver: 네이버 단독", find_sites,
             companies, item, resolve_site_naver, "naver", naver_meter, budget,
         )
     naver_hits = sum(1 for r in records if r["url"])
@@ -450,11 +452,11 @@ def main():
         f"A. 홈페이지 찾기 — 회사 {len(companies)}곳",
         ["방식", "Tavily 호출(유료)", "네이버 호출(무료)", "AI 호출", "검색 요금", "소요", "홈페이지 확보"],
         [
-            ["변경 전 (Tavily만)", before_budget["tavily"], 0, before_meter.calls,
+            ["(참고) Tavily만", before_budget["tavily"], 0, before_meter.calls,
              tavily_money(before_budget["tavily"]), f"{before_secs:.1f}s", f"{before_hits}/{len(companies)}"],
-            ["변경 후 (네이버만)", 0, naver_counter["count"], naver_meter.calls,
+            ["네이버만 (폴백 전)", 0, naver_counter["count"], naver_meter.calls,
              tavily_money(0), f"{after_secs:.1f}s", f"{naver_hits}/{len(companies)}"],
-            ["변경 후 + Tavily 폴백", budget["tavily"], naver_counter["count"],
+            ["네이버 + Tavily 폴백", budget["tavily"], naver_counter["count"],
              naver_meter.calls + fb_meter.calls, tavily_money(budget["tavily"]),
              f"{after_secs + fb_secs:.1f}s", f"{final_hits}/{len(companies)}"],
         ],
@@ -524,13 +526,13 @@ def main():
         print(table_b)
     print(table_c)
 
-    saved = before_budget["tavily"] - budget["tavily"]
     print(
         f"\n읽는 법:\n"
         f"  · A — 세 줄 모두 같은 제외규칙과 같은 AI 사이트판단을 거친 숫자입니다. "
-        f"네이버만 쓰면 Tavily 호출이 0이 되지만 확보가 {before_hits} -> {naver_hits}곳으로 떨어지고, "
-        f"실패분만 Tavily로 보완하면 유료 호출 {before_budget['tavily']} -> {budget['tavily']}회"
-        f"({saved}회 절감)로 확보는 {final_hits}곳까지 올라옵니다.\n"
+        f"홈페이지 찾기는 원래 네이버 단독이고 그때 확보가 {naver_hits}곳입니다. "
+        f"실패분만 Tavily로 보완하면 유료 호출 {budget['tavily']}회를 써서 확보가 {final_hits}곳이 됩니다. "
+        f"첫 줄(전부 Tavily)은 유료 {before_budget['tavily']}회에 {before_hits}곳이라, "
+        f"폴백 쪽이 호출은 적고 확보는 많습니다.\n"
         f"  · 못 찾은 회사는 C표의 실패 사유를 보세요. '검색 0건'은 검색어 문제, "
         f"'AI가 전부 반려'는 사이트 판단 기준이 엄격한 것이라 고칠 곳이 다릅니다.\n"
         f"  · 운영에서는 홈페이지를 못 찾으면 연락처가 비어 그 회사가 후보에서 제외되므로, "
