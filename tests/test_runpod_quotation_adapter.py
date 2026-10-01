@@ -194,7 +194,7 @@ def test_classified_output_rejects_missing_notes_instead_of_assuming_no_terms() 
         parser(_prepared(), 'RFQ-1', 'Supplier', [])
 
 
-def test_completed_output_replaces_unsupported_model_delivery_values() -> None:
+def test_completed_output_preserves_model_delivery_values() -> None:
     extraction = _extraction()
     extraction["items"][0]["expected_delivery_date"] = "2026-10-10"
     extraction["items"][0]["lead_time_days"] = 99
@@ -211,8 +211,8 @@ def test_completed_output_replaces_unsupported_model_delivery_values() -> None:
 
     result = parser(_prepared(), "RFQ-1", "Supplier", [])
 
-    assert result["items"][0]["expected_delivery_date"] == "2026-09-30"
-    assert result["items"][0]["lead_time_days"] == 14
+    assert result["items"][0]["expected_delivery_date"] == "2026-10-10"
+    assert result["items"][0]["lead_time_days"] == 99
 
 
 def test_failed_job_error_does_not_expose_api_key() -> None:

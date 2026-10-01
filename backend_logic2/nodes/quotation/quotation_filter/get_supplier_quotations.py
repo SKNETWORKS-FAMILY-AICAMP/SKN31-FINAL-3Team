@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, timedelta
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Callable
@@ -91,17 +90,6 @@ def _parse_json_object(value: Any) -> dict[str, Any]:
         return {}
 
 
-def _calculate_schedule_date(transaction_date: Any, lead_time_days: Any) -> str | None:
-    """포털의 거래일과 납기 소요일로 PO용 납기일을 계산한다."""
-    if not transaction_date or lead_time_days is None:
-        return None
-    try:
-        start = date.fromisoformat(str(transaction_date)[:10])
-        return (start + timedelta(days=int(lead_time_days))).isoformat()
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-
 def _unique_quotation_names(rows: list[dict[str, Any]]) -> list[str]:
     """자식 테이블 필터가 같은 부모를 여러 번 반환해도 한 번만 조회한다."""
     seen: set[str] = set()
@@ -117,11 +105,7 @@ def _unique_quotation_names(rows: list[dict[str, Any]]) -> list[str]:
 def _normalize_item(detail: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
     transaction_date = detail.get("transaction_date")
     lead_time_days = item.get("lead_time_days")
-    expected_delivery_date = (
-        item.get("expected_delivery_date")
-        or item.get("schedule_date")
-        or item.get("delivery_date")
-    )
+    expected_delivery_date = item.get("expected_delivery_date")
     return {
         # Supplier Quotation 헤더
         "quotation_name": detail.get("name"),
@@ -155,10 +139,7 @@ def _normalize_item(detail: dict[str, Any], item: dict[str, Any]) -> dict[str, A
         "net_rate": item.get("net_rate"),
         "net_amount": item.get("net_amount"),
         "lead_time_days": lead_time_days,
-        "schedule_date": (
-            expected_delivery_date
-            or _calculate_schedule_date(transaction_date, lead_time_days)
-        ),
+        "schedule_date": expected_delivery_date,
         "expected_delivery_date": expected_delivery_date,
         "warehouse": item.get("warehouse"),
         "item_tax_rate": _parse_json_object(item.get("item_tax_rate")),
@@ -318,12 +299,7 @@ def _quotation_from_document(detail: dict[str, Any], rfq_name: str) -> Quotation
             "unit": item.get("uom") or item.get("stock_uom"),
             "unit_price": net_rate if net_rate is not None else item.get("rate"),
             "amount": net_amount if net_amount is not None else item.get("amount"),
-            "expected_delivery_date": (
-                item.get("expected_delivery_date")
-                or item.get("schedule_date")
-                or item.get("delivery_date")
-                or _calculate_schedule_date(transaction_date, item.get("lead_time_days"))
-            ),
+            "expected_delivery_date": item.get("expected_delivery_date"),
             "lead_time_days": item.get("lead_time_days"),
             # Classified terms are supplier evidence; do not merge an ERP/RFQ
             # description that may have been copied from the requested spec.

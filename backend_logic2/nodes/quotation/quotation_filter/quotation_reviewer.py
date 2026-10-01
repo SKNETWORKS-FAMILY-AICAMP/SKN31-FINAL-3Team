@@ -409,13 +409,9 @@ def review_quotation(
                 if not matched:
                     issues.append(_issue("SPECIFICATION_MISMATCH", IssueSeverity.ERROR, f"items.{index}.specifications.{key}", "RFQ 규격과 견적 규격이 부합하지 않습니다.", evidence[-1]))
 
-            # 배송 예정일은 품목의 ERPNext expected_delivery_date를 우선한다.
-            # lead_time_days만 있는 경우에는 견적일(transaction_date)이 있어야 계산할 수 있다.
-            has_calculable_delivery = bool(
-                item.expected_delivery_date
-                or (quotation.quotation_date and item.lead_time_days is not None)
-            )
-            if required.required_delivery_date and not has_calculable_delivery:
+            # 납품 예정일은 명시된 expected_delivery_date만 사용한다.
+            # lead_time_days는 주문 후 소요일로 견적일 기준 날짜가 아니다.
+            if required.required_delivery_date and not item.expected_delivery_date:
                 issues.append(_issue("MISSING_DELIVERY_DATE", IssueSeverity.ERROR, f"items.{index}.expected_delivery_date", "비교에 필요한 배송 예정일이 누락되었습니다.", f"RFQ 요구 납기={required.required_delivery_date}"))
 
         item_results.append(ItemCompliance(

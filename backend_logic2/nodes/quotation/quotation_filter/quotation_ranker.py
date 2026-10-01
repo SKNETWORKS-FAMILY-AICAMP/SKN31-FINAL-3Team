@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -150,12 +150,6 @@ def _delivery_metrics(
     item_late_days: list[int] = []
     for item in review.quotation.items:
         delivery = item.expected_delivery_date
-        if (
-            delivery is None
-            and review.quotation.quotation_date
-            and item.lead_time_days is not None
-        ):
-            delivery = review.quotation.quotation_date + timedelta(days=item.lead_time_days)
         if delivery:
             dates.append(delivery)
             required = match_requirement(item, rfq)
@@ -402,8 +396,6 @@ def rank_quotations_with_spec_scores(
         if context and context.delivery_not_before:
             for item in quotation.items:
                 promised = item.expected_delivery_date
-                if promised is None and quotation.quotation_date and item.lead_time_days is not None:
-                    promised = quotation.quotation_date + timedelta(days=item.lead_time_days)
                 if promised and promised < context.delivery_not_before:
                     row["invalid_delivery"] = True
 
@@ -840,11 +832,7 @@ def _enrich_ranking_with_prices(
             )
         expected_delivery_date = ranked.get("expected_delivery_date")
         if expected_delivery_date is None and first_item:
-            expected_delivery_date = (
-                first_item.get("expected_delivery_date")
-                or first_item.get("schedule_date")
-                or first_item.get("delivery_date")
-            )
+            expected_delivery_date = first_item.get("expected_delivery_date")
         enriched.append({
             **ranked,
             "name": ranked.get("name") or ranked.get("quotation_id") or quotation.get("name"),

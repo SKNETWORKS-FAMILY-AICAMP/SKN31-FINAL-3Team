@@ -322,17 +322,6 @@ def build_supplier_quotation_payload(
             rfq_items,
             allow_single_item_fallback=allow_single_item_fallback,
         )
-        lead_time_days = quotation_item.lead_time_days
-        if (
-            lead_time_days is None
-            and quotation_item.expected_delivery_date
-            and quotation.quotation_date
-        ):
-            lead_time_days = max(
-                (quotation_item.expected_delivery_date - quotation.quotation_date).days,
-                0,
-            )
-
         row = {
             "item_code": rfq_item.get("item_code"),
             "item_name": rfq_item.get("item_name"),
@@ -344,9 +333,8 @@ def build_supplier_quotation_payload(
             "warehouse": rfq_item.get("warehouse"),
             "rate": float(quotation_item.unit_price),
             "price_list_rate": float(quotation_item.unit_price),
-            "lead_time_days": lead_time_days,
-            # 프로젝트 ERPNext에 추가된 실제 견적 납기 필드. lead_time_days도
-            # 함께 유지해 표준 ERPNext와 기존 평가 모듈 모두 호환한다.
+            "lead_time_days": quotation_item.lead_time_days,
+            # 납품 예정일은 기간값이 아니라 ERPNext의 날짜 필드에 저장한다.
             "expected_delivery_date": (
                 quotation_item.expected_delivery_date.isoformat()
                 if quotation_item.expected_delivery_date

@@ -987,29 +987,6 @@ def apply_document_fallbacks(
     return payload
 
 
-def validate_document_delivery_evidence(
-    payload: dict[str, Any],
-    document_text: str,
-) -> dict[str, Any]:
-    """Discard model delivery values that lack matching labelled source text."""
-
-    fallbacks = extract_document_fallbacks(document_text)
-    evidenced_delivery_date = fallbacks.get("expected_delivery_date")
-    evidenced_lead_time_days = fallbacks.get("lead_time_days")
-    for item in payload.get("items") or []:
-        if not isinstance(item, dict):
-            continue
-        model_delivery_date = _normalize_date(
-            item.get("expected_delivery_date", item.get("delivery_date"))
-        )
-        if model_delivery_date != evidenced_delivery_date:
-            item["expected_delivery_date"] = None
-        model_lead_time_days = _normalize_lead_time_days(item.get("lead_time_days"))
-        if model_lead_time_days != evidenced_lead_time_days:
-            item["lead_time_days"] = None
-    return payload
-
-
 def _normalize_generated_quotation(
     payload: dict[str, Any],
     document_text: str,
@@ -1021,19 +998,6 @@ def _normalize_generated_quotation(
     raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
     erpnext_prices = _erpnext_pdf_item_prices(document_text, len(raw_items))
     erpnext_totals = _erpnext_document_totals(document_text)
-    # A delivery-related word alone is not evidence for a model-generated value.
-    # Accept it only when one unambiguous labelled value exists in the source.
-    delivery_date_values = _labelled_date_values(
-        document_text,
-        DELIVERY_DATE_LABELS,
-    )
-    evidenced_delivery_date = (
-        delivery_date_values[0] if len(delivery_date_values) == 1 else None
-    )
-    lead_time_values = _labelled_lead_time_days(document_text)
-    evidenced_lead_time_days = (
-        lead_time_values[0] if len(lead_time_values) == 1 else None
-    )
     items: list[dict[str, Any]] = []
     for index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict):
@@ -1080,22 +1044,10 @@ def _normalize_generated_quotation(
             or re.fullmatch(r"(?i)(?:KRW|USD|EUR|JPY|CNY)?\s*[\d,.]+", raw_description_text)
         ):
             raw_description = description
-        model_delivery_date = _normalize_date(
+        expected_delivery_date = _normalize_date(
             raw_item.get("expected_delivery_date", raw_item.get("delivery_date"))
         )
-        expected_delivery_date = (
-            model_delivery_date
-            if model_delivery_date == evidenced_delivery_date
-            else None
-        )
-        normalized_lead_time_days = _normalize_lead_time_days(
-            raw_item.get("lead_time_days")
-        )
-        lead_time_days = (
-            normalized_lead_time_days
-            if normalized_lead_time_days == evidenced_lead_time_days
-            else None
-        )
+        lead_time_days = _normalize_lead_time_days(raw_item.get("lead_time_days"))
         items.append({
             "item_code": item_code,
             "item_name": item_name,

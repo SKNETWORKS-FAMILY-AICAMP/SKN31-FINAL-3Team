@@ -19,7 +19,6 @@ from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import 
     _normalize_currency,
     apply_document_fallbacks, extract_document_fallbacks, prepare_source_bytes,
     prepare_rfq_specifications,
-    validate_document_delivery_evidence,
 )
 from backend_logic2.nodes.quotation.quotation_filter.quotation_models import SourceKind
 from backend_logic2.nodes.quotation.quotation_filter.quotation_registrar import (
@@ -136,7 +135,6 @@ def _register(job):
         extracted_fallbacks = extract_document_fallbacks(extracted_document_text)
         if extracted_fallbacks.get('conflicts'):
             raise ValueError('RunPod document_text contains conflicting date or lead-time values')
-        validate_document_delivery_evidence(extraction, extracted_document_text)
         apply_document_fallbacks(extraction, extracted_fallbacks, include_notes=not separated)
     recovery_text = job['result_json'].get('recovery_text')
     if recovery_text is not None:

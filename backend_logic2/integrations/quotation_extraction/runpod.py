@@ -434,7 +434,6 @@ class RunPodQuotationParser:
             from backend_logic2.nodes.quotation.quotation_filter.quotation_extractor import (
                 apply_document_fallbacks,
                 extract_document_fallbacks,
-                validate_document_delivery_evidence,
             )
 
             fallbacks = extract_document_fallbacks(document_text)
@@ -442,7 +441,6 @@ class RunPodQuotationParser:
                 raise RunPodQuotationParserError(
                     "OCR 원문에 서로 다른 날짜 또는 납기 값이 있어 자동 등록하지 않습니다."
                 )
-            validate_document_delivery_evidence(extraction, document_text)
             apply_document_fallbacks(
                 extraction, fallbacks, include_notes=not self.content_sections_separated,
             )

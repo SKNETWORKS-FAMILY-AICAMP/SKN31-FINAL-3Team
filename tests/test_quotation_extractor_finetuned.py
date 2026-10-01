@@ -362,17 +362,17 @@ def _generated_payload_with_delivery(
     }
 
 
-def test_delivery_word_alone_does_not_authorize_model_date() -> None:
+def test_model_delivery_date_is_preserved_without_regex_evidence() -> None:
     normalized = _normalize_generated_quotation(
         _generated_payload_with_delivery("2026-09-30"),
         "배송 조건은 추후 협의합니다.",
         None,
     )
 
-    assert normalized["items"][0]["expected_delivery_date"] is None
+    assert normalized["items"][0]["expected_delivery_date"] == "2026-09-30"
 
 
-def test_model_delivery_value_must_match_explicit_document_evidence() -> None:
+def test_model_delivery_value_is_not_overwritten_by_text_fallback() -> None:
     matched = _normalize_generated_quotation(
         _generated_payload_with_delivery("2026-09-30", 14),
         "납품 예정일: 2026-09-30\n리드 타임: 2주",
@@ -386,8 +386,8 @@ def test_model_delivery_value_must_match_explicit_document_evidence() -> None:
 
     assert matched["items"][0]["expected_delivery_date"] == "2026-09-30"
     assert matched["items"][0]["lead_time_days"] == 14
-    assert mismatched["items"][0]["expected_delivery_date"] is None
-    assert mismatched["items"][0]["lead_time_days"] is None
+    assert mismatched["items"][0]["expected_delivery_date"] == "2026-10-01"
+    assert mismatched["items"][0]["lead_time_days"] == 10
 
 
 def test_conflicting_delivery_dates_are_not_silently_merged() -> None:
