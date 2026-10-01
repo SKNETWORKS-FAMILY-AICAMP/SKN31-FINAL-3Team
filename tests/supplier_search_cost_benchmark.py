@@ -157,6 +157,20 @@ def phase(name: str, fn, *args, **kwargs):
 
 # ── 측정 대상 ───────────────────────────────────────────────────────────────
 
+def normalize(item_name):
+    """운영과 같은 정규화. 이걸 빼면 비교 자체가 성립하지 않는다.
+
+    supplier_search()는 맨 앞에서 한 번 정규화하고, 이후 모든 도구에
+    normalized를 넘긴다(enrich 단계도 item_name=normalized). 원본 ERP
+    품목명("삼상 유도전동기 2.2kW 4극")을 그대로 쓰면 네이버 검색어가
+    "회사명 + 삼상 유도전동기 2.2kW 4극 + 공식 홈페이지"가 되는데,
+    네이버 웹검색은 Tavily와 달리 문자 그대로 찾아서 결과가 0건이 된다.
+    """
+    from backend_logic2.nodes.supplier.tools.web_search_based_tool import normalize_item_name
+
+    return normalize_item_name(item_name)
+
+
 def collect_company_names(item_name, count):
     """실제 파이프라인과 같은 방식으로 후보 회사명을 모은다."""
     from backend_logic2.nodes.supplier.tools.web_search_based_tool import (
@@ -255,19 +269,24 @@ def main():
     print(f"품목: {item_name} · 회사 {count}곳 · 묶음 {batch_size}")
     print(f"{'=' * 60}")
 
+    # 운영과 똑같이 맨 앞에서 한 번만 정규화하고, 이후 모든 단계에 이걸 넘긴다.
+    print("\n[0/4] 품목명 정규화 중...")
+    item, _ = phase("0. 품목명 정규화", normalize, item_name)
+    print(f"  -> '{item_name}' -> '{item}'")
+
     print("\n[1/4] 후보 회사명 수집 중 (Tavily)...")
-    companies, _ = phase("0. 회사명 수집", collect_company_names, item_name, count)
+    companies, _ = phase("1. 회사명 수집", collect_company_names, item, count)
     if not companies:
         print("[중단] 후보 회사를 한 곳도 찾지 못했습니다.")
         return 1
     print(f"  -> {len(companies)}곳: {', '.join(companies)}")
 
     print("\n[2/4] 홈페이지 찾기 — 변경 전 (회사별 Tavily)...")
-    before_search, before_secs = phase("A-before: 회사별 Tavily 검색", find_sites_with_tavily, companies, item_name)
+    before_search, before_secs = phase("A-before: 회사별 Tavily 검색", find_sites_with_tavily, companies, item)
 
     print("[3/4] 홈페이지 찾기 — 변경 후 (네이버 무료 API)...")
     naver_meter = TokenMeter()
-    after_search, after_secs = phase("A-after: 회사별 네이버 검색", find_sites_with_naver, companies, item_name, naver_meter)
+    after_search, after_secs = phase("A-after: 회사별 네이버 검색", find_sites_with_naver, companies, item, naver_meter)
 
     tavily_calls = before_search["calls"]
     tavily_cost = None if TAVILY_PER_CALL is None else tavily_calls * TAVILY_PER_CALL
@@ -283,8 +302,12 @@ def main():
         ],
     )
 
+    if before_search["hits"] and not after_search["hits"]:
+        print("\n⚠️ Tavily는 찾았는데 네이버는 0건입니다. 검색어가 너무 구체적이면"
+              " 네이버는 문자 그대로 찾아 결과가 비어 나옵니다. 위의 정규화 결과를 확인하세요.")
+
     print("\n[4/4] 연락처 추출 — 페이지 확보 후 1건씩 vs 묶음...")
-    prepared, _ = phase("B-prep: 페이지 텍스트 확보(1회)", fetch_pages_once, companies, item_name)
+    prepared, _ = phase("B-prep: 페이지 텍스트 확보(1회)", fetch_pages_once, companies, item)
     if not prepared:
         print("[중단] 페이지 텍스트를 한 건도 확보하지 못해 B를 비교할 수 없습니다.")
         print(table_a)
@@ -292,8 +315,8 @@ def main():
     print(f"  -> {len(prepared)}곳 확보 (두 방식에 같은 텍스트를 넣습니다)")
 
     before_meter, after_meter = TokenMeter(), TokenMeter()
-    _, b_before_secs = phase("B-before: 1건씩 추출", extract_in_chunks, prepared, 1, item_name, before_meter)
-    _, b_after_secs = phase(f"B-after: {batch_size}건씩 묶어 추출", extract_in_chunks, prepared, batch_size, item_name, after_meter)
+    _, b_before_secs = phase("B-before: 1건씩 추출", extract_in_chunks, prepared, 1, item, before_meter)
+    _, b_after_secs = phase(f"B-after: {batch_size}건씩 묶어 추출", extract_in_chunks, prepared, batch_size, item, after_meter)
 
     def row(label, meter, secs):
         return [label, meter.calls, f"{meter.input_tokens:,}", f"{meter.output_tokens:,}",
