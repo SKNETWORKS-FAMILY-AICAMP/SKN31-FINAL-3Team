@@ -17,16 +17,24 @@
 LLM도 같은 함수(_extract_contacts_batch)를 batch_size만 바꿔 부른다 -
 프롬프트 모양이 달라지면 토큰 비교가 의미를 잃는다.
 
-실행 (실제 과금 호출이 나간다 - 기본은 건너뜀):
-    set SUPPLIER_BENCHMARK=1
-    set LANGSMITH_TRACING=true
-    set LANGSMITH_PROJECT=supplier_gathering_test
+실행 (실제 과금 호출이 나간다 - 기본은 건너뜀).
+
+PowerShell:
+    $env:SUPPLIER_BENCHMARK = "1"
+    $env:LANGSMITH_TRACING = "true"
+    $env:LANGSMITH_PROJECT = "supplier_gathering_test"
     pytest tests/test_supplier_search_cost_benchmark.py -s
 
+cmd:
+    set SUPPLIER_BENCHMARK=1 && set LANGSMITH_TRACING=true && pytest tests/test_supplier_search_cost_benchmark.py -s
+
 단가를 넣으면 요금 칸이 채워진다(안 넣으면 토큰만 표시):
-    set BENCH_IN_PER_1M=...      1M 입력 토큰당 단가
-    set BENCH_OUT_PER_1M=...     1M 출력 토큰당 단가
-    set BENCH_TAVILY_PER_CALL=...  Tavily 1회 단가
+    $env:BENCH_IN_PER_1M = "..."       1M 입력 토큰당 단가
+    $env:BENCH_OUT_PER_1M = "..."      1M 출력 토큰당 단가
+    $env:BENCH_TAVILY_PER_CALL = "..." Tavily 1회 단가
+
+⚠️ SUPPLIER_BENCHMARK만은 .env에서 읽지 않는다. .env에 켜 둔 채로 잊으면
+평범한 전체 테스트 실행이 돈을 쓴다. 켜는 것은 매번 쉘에서 명시한다.
 """
 
 from __future__ import annotations
@@ -37,11 +45,23 @@ from contextlib import contextmanager
 
 import pytest
 
+# ⚠️ 켜는 스위치는 .env를 읽기 **전에** 본다. .env에 켜 둔 채로 잊으면
+# 평범한 전체 테스트 실행이 유료 API를 호출하게 된다.
 RUN = os.getenv("SUPPLIER_BENCHMARK", "").strip().lower() in {"1", "true", "on", "yes"}
 pytestmark = pytest.mark.skipif(
     not RUN,
-    reason="실제 과금 API를 호출한다. SUPPLIER_BENCHMARK=1 일 때만 실행.",
+    reason=(
+        "실제 과금 API를 호출한다. PowerShell에서 "
+        '$env:SUPPLIER_BENCHMARK = "1" 을 설정한 뒤 실행하세요.'
+    ),
 )
+
+# API 키(TAVILY/OPENAI/NAVER)는 .env에 있다. 이 파일이 키를 직접 꺼내 쓰므로
+# 여기서 먼저 읽어 둔다 - 안 그러면 첫 Tavily 호출에서 KeyError가 난다.
+if RUN:
+    from dotenv import load_dotenv
+
+    load_dotenv()
 
 # LangSmith에서 이 비교만 따로 보려고 프로젝트를 고정한다.
 os.environ.setdefault("LANGSMITH_PROJECT", "supplier_gathering_test")
@@ -244,6 +264,11 @@ def _table(title, header, rows):
 def test_supplier_search_call_cost_before_and_after(capsys):
     """같은 회사 목록으로 전·후를 모두 돌리고 표를 찍는다."""
     assert COMPANIES, "BENCH_COMPANIES가 비어 있습니다."
+    missing = [
+        key for key in ("TAVILY_API_KEY", "OPENAI_API_KEY", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET")
+        if not os.getenv(key, "").strip()
+    ]
+    assert not missing, f".env에서 다음 키를 찾지 못했습니다: {', '.join(missing)}"
     n = len(COMPANIES)
     print(f"\n품목: {ITEM_NAME} · 회사 {n}곳 · 묶음 크기 {BATCH_SIZE}")
     print(f"LangSmith 프로젝트: {os.environ['LANGSMITH_PROJECT']}")
