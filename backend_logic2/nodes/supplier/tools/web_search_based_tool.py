@@ -176,7 +176,7 @@ def _extract_company_names_llm(item_name, text, case_id=None):
     llm = ChatOpenAI(model="gpt-5.6-luna", temperature=0)
     prompt = PromptTemplate.from_template(
         "다음은 '{item_name}' 관련 검색결과 텍스트 모음입니다. "
-        "이 안에서 실제 판매,공급업체로 보이는 회사명들을 찾아서 목록으로 뽑아주세요.\n\n"
+        "이 안에서 실제 국내에서 판매,공급업체로 보이는 회사명들을 찾아서 목록으로 뽑아주세요.\n\n"
         "{text}\n\n"
         "규칙:\n"
         "- 회사명으로 보이면 뽑으세요. 100% 확신까지는 필요 없습니다 - "
