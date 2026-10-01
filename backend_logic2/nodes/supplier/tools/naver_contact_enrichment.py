@@ -11,6 +11,16 @@ tools/naver_contact_enrichment.py - 회사명으로 네이버 검색해서 공�
         "이메일/전화 추출"은 여러 회사를 묶어서(기본 5개씩) AI 1번에
         같이 처리 -> 호출횟수가 회사수에 거의 비례하지 않게 됨.
 
+핵심 변경(홈페이지 찾기 Tavily 폴백, 2026-10-01):
+  역할 분담은 그대로다 - 회사명 수집은 Tavily(web_search_based_tool),
+  그 회사의 홈페이지 찾기는 이 모듈의 네이버 검색. 홈페이지까지 회사마다
+  Tavily로 돌리면 호출이 회사 수만큼 늘어 비싸서 네이버를 쓴다.
+  문제는 네이버 적중률이 낮다는 것(실측 20곳 중 7곳). 홈페이지를 못 찾으면
+  연락처가 비어 그 회사가 최종 후보에서 탈락하므로 공급사 후보 수가 그만큼
+  깎인다. 그래서 네이버로 못 찾은 회사만 Tavily로 한 번 더 찾게 함
+  (유료 호출 13회로 7 -> 16/20). 자세한 수치는
+  _find_official_site_simple() 주석과 tests/supplier_search_cost_benchmark.py.
+
 핵심 변경(Jina Reader 폴백):
   requests.get()은 JS로 콘텐츠를 채우는 최신 사이트에서 빈 껍데기만
   받아오는 경우가 있음. 받아온 텍스트가 너무 짧으면(200자 미만),
@@ -53,6 +63,11 @@ _EXCLUDED_CONTACT_DOMAINS = [
     # 백과사전 페이지지 회사 자체 사이트가 아니고, SSL 인증서도 깨져있어서
     # 연락처 출처로 부적합. myfactory.co.kr은 제3자 공장정보 디렉토리로 추정.
     "grandculture.net", "myfactory.co.kr",
+    # 2026-10-01 추가: 아래 AI 판단 프롬프트가 "백과사전은 제3자라 제외"라고
+    # 명시하는데도 'GS글로벌 -> ko.wikipedia.org'가 실측(회사 20곳 벤치마크)
+    # 에서 그대로 통과함. 프롬프트로만 막으면 모델 판단에 따라 새므로 도메인
+    # 차원에서도 결정적으로 거른다.
+    "wikipedia.org", "wikiwand.com", "namu.wiki",
 ]
 
 # 제3자 "기업정보/스타트업 프로필" 플랫폼 URL 구조 탐지 (2026-08-31 추가).
@@ -113,7 +128,52 @@ def _search_naver_web(query, display=5):
     return items
 
 
-# ---------- 사이트 찾기 (AI 없이, 네이버 1등 결과 채택) ----------
+# ---------- 사이트 찾기 ----------
+
+def _site_candidates(items, link_key, title_key, desc_key):
+    """검색 결과를 제외규칙에 통과시켜 같은 모양의 후보 목록으로 만든다.
+
+    네이버는 link/title/description, Tavily는 url/title/content로 키 이름이
+    달라서 키만 받아 맞춘다. 두 검색엔진 결과가 완전히 같은 제외규칙과 같은
+    AI 판단(_pick_best_site_candidate)을 거치게 하려는 것 - 한쪽만 심사를
+    건너뛰면 어느 쪽이 더 잘 찾는지 비교 자체가 성립하지 않고, 폴백으로
+    들어온 URL의 품질이 1차 경로보다 낮아진다.
+    """
+    candidates = []
+    for item in items or []:
+        link = item.get(link_key, "") or ""
+        if any(domain in link for domain in _EXCLUDED_CONTACT_DOMAINS):
+            continue
+        if _looks_like_directory_url(link):
+            print(f"    [URL구조 제외] {link} (제3자 플랫폼 패턴)")
+            continue
+        candidates.append({
+            "title": item.get(title_key),
+            "link": link,
+            "description": item.get(desc_key, "") or "",
+        })
+    return candidates
+
+
+def _tavily_search_site(query):
+    """Tavily 웹검색(유료). 폴백 전용이라 실패해도 조용히 빈 결과를 돌려준다.
+
+    여기서 예외가 올라가면 네이버로는 이미 실패한 회사 하나 때문에 전체
+    탐색이 멈춘다. 키가 없거나 호출이 실패하면 폴백 없이 그냥 못 찾은
+    것으로 처리하는 게 맞다.
+    """
+    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+    if not api_key:
+        return []
+    try:
+        from tavily import TavilyClient
+
+        return (TavilyClient(api_key=api_key).search(query=query, max_results=5) or {}).get("results") or []
+    except Exception as e:
+        print(f"    [_tavily_search_site] 검색 실패 ('{query}'): {e}")
+        return []
+
+
 
 def _pick_best_site_candidate(company_name, candidates, item_name=None, case_id=None):
     """
@@ -206,22 +266,61 @@ def _pick_best_site_candidate(company_name, candidates, item_name=None, case_id=
 def _find_official_site_simple(company_name, item_name=None, case_id=None):
     """
     네이버 검색결과 중 제외리스트(채용사이트 등)에 안 걸리는 후보들을
-    모은 다음, 후보가 여럿이면 AI로 제일 그럴듯한 것을 선택.
+    모은 다음, AI로 제일 그럴듯한 것을 선택. 네이버로 못 찾으면 그 회사만
+    Tavily로 한 번 더 찾는다.
+
+    Tavily 폴백을 넣은 근거(tests/supplier_search_cost_benchmark.py, 회사 20곳
+    실측 - 세 줄 모두 같은 제외규칙과 같은 AI 판단을 거친 숫자):
+
+        네이버만         : 유료  0회 · 홈페이지  7/20 · 38.9s   (폴백 전)
+        네이버 + 폴백    : 유료 13회 · 홈페이지 16/20 · 89.3s   (지금)
+        (참고) Tavily만  : 유료 20회 · 홈페이지 14/20 · 86.2s
+
+    세 번째 줄은 "홈페이지까지 전부 Tavily로 돌렸다면"의 참고선이지 과거
+    상태가 아니다. 이 모듈의 홈페이지 찾기는 처음부터 네이버였다.
+
+    네이버만 쓰면 검색 요금은 0이지만 홈페이지를 1/3밖에 못 찾는다.
+    enrich_contacts_batch()는 홈페이지를 못 찾은 회사의 page_text를 빈
+    문자열로 두고, 그러면 연락처가 비어 그 회사가 최종 후보에서 탈락하므로
+    (운영상 "연락처 확보 실패, 제외") 공급사 후보 수가 그만큼 깎인다.
+
+    실패분만 Tavily로 보완하면 유료 호출 13회로 확보가 16곳이 된다. 전부
+    Tavily로 돌리는 참고선(20회에 14곳)보다 호출은 적고 확보는 많다.
+    네이버와 Tavily가 서로 놓치는 회사가 달라서 합집합이 각각보다 크기
+    때문이다.
+
+    이 변경이 치르는 값은 유료 호출 0 -> 13회, 얻는 건 홈페이지 7 -> 16곳이다.
+
+    위 소요는 벤치마크가 회사를 직렬로 도는 숫자다. 운영의 1단계는
+    회사별 병렬(enrich_contacts_batch, 동시 8개)이라 폴백은 네이버가 실패한
+    회사들에서만 한 라운드 더 도는 비용이고, 전체 소요가 2.3배가 되지는
+    않는다. 운영 실측은 아직 안 했다.
+
+    끄려면 SUPPLIER_SITE_TAVILY_FALLBACK=0.
     """
     query = f"{company_name} {item_name} 공식 홈페이지" if item_name else f"{company_name} 공식 홈페이지"
-    candidates = []
-    for item in _search_naver_web(query):
-        link = item.get("link", "")
-        if any(domain in link for domain in _EXCLUDED_CONTACT_DOMAINS):
-            continue
-        if _looks_like_directory_url(link):
-            print(f"    [URL구조 제외] {link} (제3자 플랫폼 패턴)")
-            continue
-        candidates.append({"title": item.get("title"), "link": link, "description": item.get("description", "")})
 
-    if not candidates:
+    candidates = _site_candidates(_search_naver_web(query), "link", "title", "description")
+    best = _pick_best_site_candidate(company_name, candidates, item_name=item_name, case_id=case_id) if candidates else None
+    if best:
+        return {"url": best["link"], "content": best["description"]}
+
+    if os.getenv("SUPPLIER_SITE_TAVILY_FALLBACK", "1").strip().lower() in ("0", "false", "no", "off"):
         return None
-    best = _pick_best_site_candidate(company_name, candidates, item_name=item_name, case_id=case_id)
+
+    print(f"    [Tavily 폴백] '{company_name}' - 네이버로 홈페이지를 못 찾아 재검색")
+    # 폴백 전체를 감싼다. 이 단계는 네이버로 이미 실패한 회사를 한 번 더
+    # 시도해 보는 보조 경로라, 여기서 뭐가 터지든 결과는 "못 찾음"이어야지
+    # 회사 하나 때문에 공급사 탐색 전체가 멈추면 안 된다. 검색뿐 아니라
+    # 사이트판단 AI 호출도 같이 감싸는 이유다.
+    try:
+        fallback = _site_candidates(_tavily_search_site(query), "url", "title", "content")
+        if not fallback:
+            return None
+        best = _pick_best_site_candidate(company_name, fallback, item_name=item_name, case_id=case_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"    [Tavily 폴백] '{company_name}' 실패, 홈페이지 없음으로 처리: {e}")
+        return None
     if not best:
         return None
     return {"url": best["link"], "content": best["description"]}
@@ -241,16 +340,12 @@ def retry_find_contact_page(name, item_name=None, case_id=None):
     동일한 재시도 로직을 쓰도록 공용 함수로 뺌.
     """
     retry_query = f"{name} {item_name} 연락처" if item_name else f"{name} 연락처"
-    candidates = []
-    for item in _search_naver_web(retry_query):
-        link = item.get("link", "")
-        if any(d in link for d in _EXCLUDED_CONTACT_DOMAINS):
-            continue
-        if _looks_like_directory_url(link):
-            print(f"    [URL구조 제외] {link} (제3자 플랫폼 패턴)")
-            continue
-        candidates.append({"title": item.get("title"), "link": link, "description": item.get("description", "")})
-
+    # 1단계(_find_official_site_simple)와 같은 제외규칙을 쓰도록 공용 헬퍼로 통일.
+    # 다만 Tavily 폴백은 여기 넣지 않았다 - 이 단계는 1단계에서 홈페이지를
+    # 확보한 회사의 "연락처 페이지"를 더 찾는 보조 경로라, 폴백까지 깔면
+    # 유료 호출이 회사 수만큼 또 늘어나는 데 비해 회수되는 양이 측정되지
+    # 않았다. 필요해지면 1단계와 같은 방식으로 측정한 뒤에 넣는다.
+    candidates = _site_candidates(_search_naver_web(retry_query), "link", "title", "description")
     if not candidates:
         return None
     best = _pick_best_site_candidate(name, candidates, item_name=item_name, case_id=case_id)
