@@ -225,14 +225,27 @@ def fetch_pages_once(companies, item_name):
 
 
 def extract_in_chunks(prepared, size, item_name, meter):
-    """같은 함수를 묶음 크기만 바꿔 부른다. size=1이 변경 전(1건씩)."""
+    """같은 함수를 묶음 크기만 바꿔 부른다. size=1이 변경 전(1건씩).
+
+    돌려주는 값은 추출 결과가 아니라 요약이다. LangSmith 목록에서 이 단계의
+    Output 칸만 보고도 호출이 몇 번 나갔는지 바로 알 수 있게 하려는 것이다
+    (A단계가 {"calls":5,"hits":5}로 보이는 것과 같은 방식).
+    """
     from backend_logic2.nodes.supplier.tools import naver_contact_enrichment as nce
 
     results = {}
     with with_callback(meter.handler()):
         for start in range(0, len(prepared), size):
             results.update(nce._extract_contacts_batch(prepared[start:start + size], item_name))
-    return results
+    found = sum(1 for row in results.values() if row.get("email") or row.get("phone"))
+    return {
+        "batch_size": size,
+        "companies": len(prepared),
+        "llm_calls": meter.calls,
+        "input_tokens": meter.input_tokens,
+        "output_tokens": meter.output_tokens,
+        "contacts_found": found,
+    }
 
 
 # ── 표 출력 ─────────────────────────────────────────────────────────────────
@@ -315,8 +328,10 @@ def main():
     print(f"  -> {len(prepared)}곳 확보 (두 방식에 같은 텍스트를 넣습니다)")
 
     before_meter, after_meter = TokenMeter(), TokenMeter()
-    _, b_before_secs = phase("B-before: 1건씩 추출", extract_in_chunks, prepared, 1, item, before_meter)
-    _, b_after_secs = phase(f"B-after: {batch_size}건씩 묶어 추출", extract_in_chunks, prepared, batch_size, item, after_meter)
+    before_summary, b_before_secs = phase("B-before: 1건씩 추출", extract_in_chunks, prepared, 1, item, before_meter)
+    after_summary, b_after_secs = phase(f"B-after: {batch_size}건씩 묶어 추출", extract_in_chunks, prepared, batch_size, item, after_meter)
+    print(f"  -> 1건씩: LLM {before_summary['llm_calls']}회 · "
+          f"{batch_size}건씩: LLM {after_summary['llm_calls']}회")
 
     def row(label, meter, secs):
         return [label, meter.calls, f"{meter.input_tokens:,}", f"{meter.output_tokens:,}",
@@ -350,8 +365,13 @@ def main():
         print("⚠️ 응답에 토큰 사용량이 없어 호출 수만 비교됩니다(토큰 0으로 표시).")
     if IN_PER_1M is None or OUT_PER_1M is None:
         print("※ 요금 칸을 채우려면 BENCH_IN_PER_1M / BENCH_OUT_PER_1M / BENCH_TAVILY_PER_CALL을 넣고 다시 실행하세요.")
-    print(f"\nLangSmith → {os.environ['LANGSMITH_PROJECT']} 프로젝트에서 "
-          f"'A-before', 'A-after', 'B-before', 'B-after' run으로 확인하세요.")
+    print(
+        f"\nLangSmith → {os.environ['LANGSMITH_PROJECT']} 프로젝트:\n"
+        f"  · 목록의 Output 칸만 봐도 호출 수가 보입니다 "
+        f"(B-before는 llm_calls {before_summary['llm_calls']}, "
+        f"B-after는 {after_summary['llm_calls']}).\n"
+        f"  · 각 run을 열면 그 안에 자식 LLM 호출이 실제로 그만큼 달려 있습니다."
+    )
     return 0
 
 
