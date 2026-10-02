@@ -191,7 +191,7 @@ React·FastAPI·LangGraph를 중심으로 ERPNext, 외부 검색 도구, 견적�
 
 ### 1.5 WBS
 
-> WBS 이미지 또는 문서 취합 후 추가 예정
+> WBS 이미지 추가 예정
 
 ---
 
@@ -366,14 +366,13 @@ npm run build
 프로젝트의 상세 명세와 테스트 결과는 아래 문서에서 확인할 수 있습니다.
 
 - [**📋 요구사항 정의서 및 자동화 명세**](docs/automation-spec.md)
-- [**🖥️ HTML 화면정의서 (브라우저에서 바로 보기)**](https://htmlpreview.github.io/?https://github.com/SKNETWORKS-FAMILY-AICAMP/SKN31-FINAL-3Team/blob/main/docs/%ED%99%94%EB%A9%B4%EC%A0%95%EC%9D%98%EC%84%9C.html)
+- [**🖥️ HTML 화면정의서**](https://htmlpreview.github.io/?https://github.com/SKNETWORKS-FAMILY-AICAMP/SKN31-FINAL-3Team/blob/main/docs/%ED%99%94%EB%A9%B4%EC%A0%95%EC%9D%98%EC%84%9C.html)
 - [**🏗️ 시스템 구성도**](presentation/current-architecture.png)
 - [**🔄 구매 프로세스 흐름도**](presentation/process-command-flow.png)
-- [**🧪 테스트 계획서 및 테스트 결과 보고서 (GitHub에서 바로 보기)**](docs/TEST_PLAN_AND_RESULTS.md)
+- [**🧪 테스트 계획서 및 테스트 결과 보고서**](docs/TEST_PLAN_AND_RESULTS.md)
 - [**📄 테스트 보고서 원본 DOCX 다운로드**](견적서%20학습%20데이터/reports/BiddingFlow_멀티에이전트_테스트계획및결과보고서_31기_3팀_파인튜닝결과반영.docx)
 - [**🤖 Qwen3.5-9B LoRA 파인튜닝 계획서**](견적서%20학습%20데이터/reports/Qwen3.5-9B_견적서_LoRA_파인튜닝_계획서.md)
 - [**📊 파인튜닝 전후 비교 분석**](견적서%20학습%20데이터/reports/Qwen3.5-9B_파인튜닝_전후_비교분석.md)
-- [**📁 전체 최종 산출물**](산출물_완성본/)
 
 ---
 
@@ -391,6 +390,7 @@ npm run build
 | Test | [`tests/`](tests/) |
 
 ---
+<br>
 
 <div align="center">
   <b>SK Networks Family AI Camp 31기 · Final Project 3팀</b>
