@@ -133,14 +133,10 @@ def build_source_queries(structured: dict) -> dict:
         core_phrase = f"{item_type} {safety_grade}"
         use_exact_match = True
 
-    exclude_suffix = " ".join(f"-{kw}" for kw in exclude_keywords)
-
     tavily_queries = []
     for suffix in suffixes:
         base = f'"{core_phrase}"' if use_exact_match else core_phrase
         query = f"{base} {suffix}"
-        if exclude_suffix:
-            query = f"{query} {exclude_suffix}"
         tavily_queries.append(query)
 
     return {

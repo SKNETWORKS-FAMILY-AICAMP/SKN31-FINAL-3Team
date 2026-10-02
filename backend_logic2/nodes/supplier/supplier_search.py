@@ -114,7 +114,7 @@ def _dedup_key(name):
     return key.strip()
 
 
-def supplier_search(item_name, target_count=10, case_id=None):
+def supplier_search(item_name, target_count=20, case_id=None):
     """
     case_id는 process_graph.py가 만든 MR 케이스를 그대로 받아씀(그래프
     경유 호출이면 항상 채워져 있음). 단독 실행(__main__ 등, MR 컨텍스트
