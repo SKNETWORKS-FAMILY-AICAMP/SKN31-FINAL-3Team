@@ -544,7 +544,7 @@ def _search_new_suppliers(item_codes: list[str], case_id: str = None) -> list[di
         item = erp_get_one("Item", item_code) or {}
         item_name = item.get("item_name") or item_code
         print(f"  [{item_code}] '{item_name}' 신규 공급사 탐색 중...")
-        searched = supplier_search(item_name, target_count=10, case_id=case_id)
+        searched = supplier_search(item_name, target_count=20, case_id=case_id)
         for c in searched:
             name = str(c.get("name") or "").strip()
             if name and name not in candidates_by_name:
