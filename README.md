@@ -31,22 +31,22 @@
     <td align="center"><a href="https://github.com/yoong1231"><img src="https://img.shields.io/badge/GitHub-181717?style=flat-square&logo=GitHub&logoColor=white" alt="이영창 GitHub"></a></td>
   </tr>
   <tr>
-    <td><img src="https://github.com/parkdongkwan0814.png" width="120" height="120" alt="박동관"></td>
-    <td><img src="https://github.com/Uranium10.png" width="120" height="120" alt="김동민"></td>
-    <td><img src="https://github.com/kimsehuikim.png" width="120" height="120" alt="김세희"></td>
-    <td><img src="https://github.com/hyomin0357.png" width="120" height="120" alt="김효민"></td>
-    <td><img src="https://github.com/yoong1231.png" width="120" height="120" alt="이영창"></td>
+    <td><img src="presentation/team/park-dongkwan.png" width="120" height="120" alt="박동관 캐릭터"></td>
+    <td><img src="presentation/team/kim-dongmin.png" width="120" height="120" alt="김동민 캐릭터"></td>
+    <td><img src="presentation/team/kim-sehui.png" width="120" height="120" alt="김세희 캐릭터"></td>
+    <td><img src="presentation/team/kim-hyomin.png" width="120" height="120" alt="김효민 캐릭터"></td>
+    <td><img src="presentation/team/lee-youngchang.png" width="120" height="120" alt="이영창 캐릭터"></td>
   </tr>
   <tr>
-    <td align="center"><b>PM · 자동화</b><br><sub>구매 워크플로 및 조건부 자동화</sub><br><sub>견적 평가·선정, ERPNext 연동</sub></td>
-    <td align="center"><b>백엔드 · DevOps</b><br><sub>인증·권한 및 배포 자동화</sub><br><sub>RunPod 운영, 워크플로 복구</sub></td>
-    <td align="center"><b>공급사 · 데이터</b><br><sub>공급사 평가·추천</sub><br><sub>담당자 배정, RFQ 포털 연동</sub></td>
-    <td align="center"><b>입찰 · 워크플로</b><br><sub>재입찰 프로세스</sub><br><sub>견적 차수 및 구매 흐름 관리</sub></td>
-    <td align="center"><b>AI · 견적 분석</b><br><sub>견적 추출·규격 평가 및 검증</sub><br><sub>공급사 추천, 구매 AI 어시스턴트</sub></td>
+    <td align="center"><b>AI 모델 · 백엔드</b><br><sub>AI 모델 개발, 백엔드 개발</sub><br><sub>데이터베이스 및 시스템 설계</sub><br><sub>인프라 배포 및 운영</sub></td>
+    <td align="center"><b>풀스택 · 인프라</b><br><sub>프론트엔드·AI 모델·백엔드 개발</sub><br><sub>데이터베이스 및 시스템 설계</sub><br><sub>인프라 배포 및 운영</sub></td>
+    <td align="center"><b>프로젝트 관리 · 풀스택</b><br><sub>프로젝트 기획 및 관리</sub><br><sub>프론트엔드·백엔드·AI 모델 개발</sub><br><sub>데이터베이스 및 시스템 설계</sub></td>
+    <td align="center"><b>백엔드 · 품질관리</b><br><sub>백엔드 및 AI 모델 개발</sub><br><sub>테스트 및 품질 개선</sub><br><sub>문서화·산출물 관리, 시스템 설계</sub></td>
+    <td align="center"><b>AI 모델 · 품질관리</b><br><sub>AI 모델 및 백엔드 개발</sub><br><sub>테스트 및 품질 개선</sub><br><sub>데이터베이스·시스템 설계, 인프라 운영</sub></td>
   </tr>
 </table>
 
-> 담당 업무는 저장소의 구현 및 커밋 이력을 기준으로 요약했습니다.
+> 담당 업무는 팀 역할 분담표를 기준으로 정리했습니다.
 
 ---
 
@@ -371,7 +371,8 @@ npm run build
 - [**🖥️ HTML 화면정의서**](docs/화면정의서.html)
 - [**🏗️ 시스템 구성도**](presentation/current-architecture.png)
 - [**🔄 구매 프로세스 흐름도**](presentation/process-command-flow.png)
-- [**🧪 테스트 계획서 및 테스트 결과 보고서**](견적서%20학습%20데이터/reports/BiddingFlow_멀티에이전트_테스트계획및결과보고서_31기_3팀_파인튜닝결과반영.docx)
+- [**🧪 테스트 계획서 및 테스트 결과 보고서 (GitHub에서 바로 보기)**](docs/TEST_PLAN_AND_RESULTS.md)
+- [**📄 테스트 보고서 원본 DOCX 다운로드**](견적서%20학습%20데이터/reports/BiddingFlow_멀티에이전트_테스트계획및결과보고서_31기_3팀_파인튜닝결과반영.docx)
 - [**🤖 Qwen3.5-9B LoRA 파인튜닝 계획서**](견적서%20학습%20데이터/reports/Qwen3.5-9B_견적서_LoRA_파인튜닝_계획서.md)
 - [**📊 파인튜닝 전후 비교 분석**](견적서%20학습%20데이터/reports/Qwen3.5-9B_파인튜닝_전후_비교분석.md)
 - [**📁 전체 최종 산출물**](산출물_완성본/)
