@@ -247,7 +247,7 @@ BiddingFlow는 구매 요청(Material Request) 접수부터 재고 확인, 공�
 
 ## 3. UI / 화면 구성
 
-- [화면정의서](https://sknetworks-family-aicamp.github.io/SKN31-FINAL-3Team/docs/화면정의서.html)
+- [화면정의서](https://htmlpreview.github.io/?https://github.com/SKNETWORKS-FAMILY-AICAMP/SKN31-FINAL-3Team/blob/main/docs/%ED%99%94%EB%A9%B4%EC%A0%95%EC%9D%98%EC%84%9C.html)
 
 ### 3.1 화면 흐름
 
@@ -368,7 +368,7 @@ npm run build
 프로젝트의 상세 명세와 테스트 결과는 아래 문서에서 확인할 수 있습니다.
 
 - [**📋 요구사항 정의서 및 자동화 명세**](docs/automation-spec.md)
-- [**🖥️ HTML 화면정의서**](docs/화면정의서.html)
+- [**🖥️ HTML 화면정의서 (브라우저에서 바로 보기)**](https://htmlpreview.github.io/?https://github.com/SKNETWORKS-FAMILY-AICAMP/SKN31-FINAL-3Team/blob/main/docs/%ED%99%94%EB%A9%B4%EC%A0%95%EC%9D%98%EC%84%9C.html)
 - [**🏗️ 시스템 구성도**](presentation/current-architecture.png)
 - [**🔄 구매 프로세스 흐름도**](presentation/process-command-flow.png)
 - [**🧪 테스트 계획서 및 테스트 결과 보고서 (GitHub에서 바로 보기)**](docs/TEST_PLAN_AND_RESULTS.md)
