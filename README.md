@@ -31,11 +31,11 @@
     <td align="center"><a href="https://github.com/yoong1231"><img src="https://img.shields.io/badge/GitHub-181717?style=flat-square&logo=GitHub&logoColor=white" alt="이영창 GitHub"></a></td>
   </tr>
   <tr>
-    <td><img src="presentation/team/park-dongkwan.png" width="120" height="120" alt="박동관 캐릭터"></td>
-    <td><img src="presentation/team/kim-dongmin.png" width="120" height="120" alt="김동민 캐릭터"></td>
-    <td><img src="presentation/team/kim-sehui.png" width="120" height="120" alt="김세희 캐릭터"></td>
-    <td><img src="presentation/team/kim-hyomin.png" width="120" height="120" alt="김효민 캐릭터"></td>
-    <td><img src="presentation/team/lee-youngchang.png" width="120" height="120" alt="이영창 캐릭터"></td>
+    <td><img src="presentation/team/박동관.png" width="120" height="120" alt="박동관 캐릭터"></td>
+    <td><img src="presentation/team/김동민.png" width="120" height="120" alt="김동민 캐릭터"></td>
+    <td><img src="presentation/team/김세희.png" width="120" height="120" alt="김세희 캐릭터"></td>
+    <td><img src="presentation/team/김효민.png" width="120" height="120" alt="김효민 캐릭터"></td>
+    <td><img src="presentation/team/이영창.png" width="120" height="120" alt="이영창 캐릭터"></td>
   </tr>
   <tr>
     <td align="center"><b>AI 모델 · 백엔드</b><br><sub>AI 모델 개발, 백엔드 개발</sub><br><sub>데이터베이스 및 시스템 설계</sub><br><sub>인프라 배포 및 운영</sub></td>
@@ -45,8 +45,6 @@
     <td align="center"><b>AI 모델 · 품질관리</b><br><sub>AI 모델 및 백엔드 개발</sub><br><sub>테스트 및 품질 개선</sub><br><sub>데이터베이스·시스템 설계, 인프라 운영</sub></td>
   </tr>
 </table>
-
-> 담당 업무는 팀 역할 분담표를 기준으로 정리했습니다.
 
 ---
 
