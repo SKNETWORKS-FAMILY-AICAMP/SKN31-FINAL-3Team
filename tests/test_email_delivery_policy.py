@@ -166,7 +166,7 @@ class EmailDeliveryPolicyTests(unittest.TestCase):
                 "EMAIL_RECIPIENT_ALLOWLIST_PATH": "",
             },
         ):
-            erp_client.erp_send_email(
+            result = erp_client.erp_send_email(
                 "Purchase Order",
                 "PO-1",
                 ["safe@example.com", "blocked@example.com"],
@@ -176,6 +176,9 @@ class EmailDeliveryPolicyTests(unittest.TestCase):
 
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["recipients"], ["safe@example.com"])
+        self.assertTrue(result["email_sent"])
+        self.assertEqual(result["email_policy"], "custom_only")
+        self.assertEqual(result["blocked_recipients"], ["blocked@example.com"])
 
     @patch.object(erp_client.ERP_SESSION, "post")
     def test_direct_email_custom_only_blocks_when_allowlist_is_empty(self, post):

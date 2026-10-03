@@ -57,6 +57,7 @@ from backend_logic2.integrations.erp_client import (
     erp_get_one,
     erp_send_email,
 )
+from backend_logic2.policies.reminder_schedule import reminder_window_open
 
 RFQ_DOCTYPE = "Request for Quotation"
 
@@ -432,13 +433,19 @@ def process_rfq_reminder(rfq: dict, now: datetime | None = None) -> list:
         )
 
         try:
-            erp_send_email(
+            delivery = erp_send_email(
                 doctype=RFQ_DOCTYPE,
                 name=rfq_name,
                 recipients=email,
                 subject=subject,
                 content=content,
             )
+            if not delivery.get("email_sent"):
+                entry["action"] = "blocked_by_email_policy"
+                entry["detail"] = "수신자가 현재 메일 허용목록에 없어 발송하지 않았습니다."
+                entry["email_policy"] = delivery.get("email_policy")
+                results.append(entry)
+                continue
             entry["action"] = "sent"
             entry["reminder_count"] = state["reminder_count"] + 1
             entry["deadline_date"] = deadline_date
@@ -458,6 +465,9 @@ def run_due_rfq_reminders(now: datetime | None = None) -> list:
     scheduler(jobs/rfq_reminder_job.py)가 매일 한 번씩 이 함수를 호출하는 것을 전제로 함.
     """
     now = now or datetime.now()
+
+    if not reminder_window_open(now):
+        return []
 
     rfqs = erp_get(RFQ_DOCTYPE, filters=[["docstatus", "=", 1]], fields=["name"]) or []
 

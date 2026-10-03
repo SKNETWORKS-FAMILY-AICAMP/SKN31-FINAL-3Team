@@ -569,7 +569,24 @@ def erp_send_email(doctype, name, recipients, subject, content):
     )
     if res.status_code != 200:
         raise ERPNextAPIError(f"EMAIL: {res.status_code} - {res.text[:500]}")
-    return res.json().get("message")
+    message = res.json().get("message")
+    # Normalize Frappe's version-dependent response so reminder callers can
+    # distinguish a real accepted send from a policy block.
+    if isinstance(message, dict):
+        return {
+            **message,
+            "email_sent": True,
+            "email_policy": policy,
+            "recipients": allowed_recipients,
+            "blocked_recipients": blocked_recipients,
+        }
+    return {
+        "message": message,
+        "email_sent": True,
+        "email_policy": policy,
+        "recipients": allowed_recipients,
+        "blocked_recipients": blocked_recipients,
+    }
 
 
 def erp_get_document_email_communications(doctype, name):

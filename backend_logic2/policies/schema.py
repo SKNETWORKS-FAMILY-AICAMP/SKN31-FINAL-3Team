@@ -17,6 +17,8 @@ class PurchasingRules(StrictModel):
     inactive_months: int = Field(default=12, ge=1, le=120)
     min_competing_suppliers: int = Field(default=3, ge=1, le=20)
     supplier_refresh_years: int = Field(default=3, ge=1, le=20)
+    # 미회신 RFQ/PR 독촉을 시작할 회사 현지 시각(Asia/Seoul, HH:MM).
+    reminder_send_time: str = Field(default="10:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     quotation_priority: Literal["price_then_delivery", "delivery_then_price"] = "price_then_delivery"
     # 견적 종합평가 4항목 가중치(합계 100). 예전의 '가격·납기 60 / 규격 40'
     # 두 칸은 가격 비율 점수가 이상치 하나에 끌려가고 납기·협력사 평가이력이

@@ -35,6 +35,13 @@ class ReminderTemplateTest(unittest.TestCase):
 
 
 class ReminderServiceTest(unittest.TestCase):
+    def setUp(self):
+        self.schedule = mock.patch.object(
+            reminder_service, "reminder_window_open", return_value=True
+        )
+        self.schedule.start()
+        self.addCleanup(self.schedule.stop)
+
     @mock.patch.object(reminder_service.repository, "mark_reminder_sent")
     @mock.patch.object(reminder_service.repository, "claim_reminder")
     @mock.patch.object(reminder_service.repository, "list_due_reminders")
@@ -55,6 +62,28 @@ class ReminderServiceTest(unittest.TestCase):
         self.assertEqual(summary["results"][0]["action"], "sent")
         send_email.assert_called_once()
         mark_sent.assert_called_once_with(pr["pr_id"], claimed_at=NOW)
+
+    @mock.patch.object(reminder_service.repository, "mark_reminder_failed")
+    @mock.patch.object(reminder_service.repository, "claim_reminder")
+    @mock.patch.object(reminder_service.repository, "list_due_reminders")
+    @mock.patch.object(reminder_service.repository, "expire_due_requests")
+    @mock.patch.object(reminder_service, "erp_send_email")
+    def test_blocked_email_is_not_recorded_as_sent(
+        self, send_email, expire, list_due, claim, mark_failed
+    ):
+        pr = make_pr()
+        expire.return_value = 0
+        list_due.return_value = [pr]
+        claim.return_value = pr
+        send_email.return_value = {
+            "email_sent": False,
+            "email_policy": "custom_only",
+        }
+
+        summary = reminder_service.run_due_pr_reminders(now=NOW)
+
+        self.assertEqual(summary["results"][0]["action"], "blocked_by_email_policy")
+        mark_failed.assert_called_once()
 
     @mock.patch.object(reminder_service.repository, "mark_reminder_failed")
     @mock.patch.object(reminder_service.repository, "claim_reminder")

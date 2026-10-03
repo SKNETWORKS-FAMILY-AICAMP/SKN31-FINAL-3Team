@@ -84,6 +84,17 @@ ERP 권한 조회가 실패하면 503으로 차단하며, 브라우저 localStor
 API: `GET/POST /api/company-policy/email-allowlist`. POST는 `expected_revision`, `recipients`, `reason`을 받으며,
 다른 정책 API와 동일하게 현재 ERPNext 역할을 재확인합니다.
 
+## 독촉 메일 발송 시각
+
+회사 구매 정책의 `rules.reminder_send_time`에서 미회신 RFQ와 PR 독촉을 시작할
+시각을 `HH:MM`으로 설정합니다. 기본값은 `10:00`이며 Asia/Seoul 기준입니다.
+타이머는 매분 실행하지만 설정 시각 전에는 ERPNext를 조회하거나 메일을 보내지
+않습니다. 설정 시각 이후 실행이 지연되더라도 그날 첫 실행에서 처리하며, RFQ는
+기존 중복 방지 규칙에 따라 공급사별 하루 한 번만 발송합니다.
+
+메일 수신 화이트리스트는 그대로 최종 안전 게이트로 적용됩니다. 정책에 의해
+차단된 수신자는 발송 성공이나 독촉 횟수 증가로 기록하지 않습니다.
+
 운영 설정: `EMAIL_RECIPIENT_ALLOWLIST_PATH=/var/lib/biddingflow/email-policy/allowlist.json`.
 이 디렉터리만 서비스 사용자 `ubuntu` 소유 0700, 파일 0600으로 지정합니다.
 `/etc/biddingflow` 전체 쓰기 권한을 부여하거나 서비스를 root로 실행하지 않습니다.

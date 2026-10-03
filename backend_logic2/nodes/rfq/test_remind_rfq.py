@@ -315,6 +315,7 @@ class RunDueRfqRemindersTest(unittest.TestCase):
             return comms_by_rfq[name]
 
         with mock.patch.object(rr, "erp_get", return_value=[{"name": "RFQ-0001"}, {"name": "RFQ-0002"}]), \
+             mock.patch.object(rr, "reminder_window_open", return_value=True), \
              mock.patch.object(rr, "erp_get_one", side_effect=fake_get_one), \
              mock.patch.object(rr, "erp_get_document_email_communications", side_effect=fake_get_comms), \
              mock.patch.object(rr, "erp_send_email") as mock_send, \

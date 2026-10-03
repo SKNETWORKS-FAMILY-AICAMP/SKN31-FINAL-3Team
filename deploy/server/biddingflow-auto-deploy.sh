@@ -137,6 +137,20 @@ deploy_backend() {
     return 1
   fi
 
+  # Reminder services are deployed with the backend. The timers wake every
+  # minute; the live company policy decides when today's send window opens.
+  install -m 644 "$backend_dir/deploy/systemd/biddingflow-rfq-reminder.service.example" \
+    /etc/systemd/system/biddingflow-rfq-reminder.service
+  install -m 644 "$backend_dir/deploy/systemd/biddingflow-rfq-reminder.timer.example" \
+    /etc/systemd/system/biddingflow-rfq-reminder.timer
+  install -m 644 "$backend_dir/deploy/systemd/biddingflow-pr-reminder.service.example" \
+    /etc/systemd/system/biddingflow-pr-reminder.service
+  install -m 644 "$backend_dir/deploy/systemd/biddingflow-pr-reminder.timer.example" \
+    /etc/systemd/system/biddingflow-pr-reminder.timer
+  systemctl daemon-reload
+  systemctl enable --now biddingflow-rfq-reminder.timer biddingflow-pr-reminder.timer
+  systemctl try-restart biddingflow-rfq-reminder.timer biddingflow-pr-reminder.timer
+
   # systemd restart 직후에는 소켓이 열리기 전 잠깐 connection refused가 날 수 있다.
   # 일반 --retry는 이 오류를 재시도하지 않으므로 명시적으로 허용한다.
   if ! curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-connrefused \
