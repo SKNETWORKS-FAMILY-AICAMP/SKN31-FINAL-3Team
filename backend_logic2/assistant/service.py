@@ -37,6 +37,16 @@ MR_PATTERN = re.compile(r"\bMAT-MR-[0-9]{4}-[0-9]+\b", re.IGNORECASE)
 ACTION_WORDS = ("시작해", "승인해", "반려해", "발송해", "보내줘", "삭제해", "진행해")
 CASE_WORDS = ("mr", "구매 요청", "승인 대기", "납기", "견적 회신", "진행 중", "반려")
 HELP_WORDS = ("왜", "어떻게", "오류", "안 돼", "안돼", "실패", "설명", "사용법")
+# Only presentation context is added. This never changes workflow state or permissions.
+SCREEN_GUIDE_QUERIES = {
+    "dashboard": "대시보드 사용법",
+    "item-register": "아이템 목록 사용법",
+    "mr-list": "구매 요청 검토 사용법",
+    "vendor-select": "협력사 선정 화면 사용법",
+    "po-manage": "PO 관리 화면 사용법",
+    "company-policy": "회사 구매 정책 사용법",
+    "ai-decision-log": "AI 판단 기록 사용법",
+}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -74,6 +84,9 @@ def _heuristic_plan(message: str) -> AssistantPlan:
         )
     if any(word in lowered for word in ACTION_WORDS):
         return AssistantPlan(intent="feature_guide", query=message)
+    # A usage question mentioning MR/납기 is not a request to query live cases.
+    if any(word in lowered for word in (*HELP_WORDS, "어디", "방법", "버튼")):
+        return AssistantPlan(intent="help", query=message)
     if any(word in lowered for word in CASE_WORDS):
         if "승인 대기" in lowered or "확인 대기" in lowered:
             filters.status = "WAITING_INPUT"
@@ -119,10 +132,15 @@ class AssistantService:
         current_user: dict[str, Any],
     ) -> AssistantMessageResponse:
         message = request.message.strip()
+        screen_question = (
+            not MR_PATTERN.search(message)
+            and any(word in message for word in ("현재 화면", "이 화면", "지금 화면"))
+        )
+        lookup_query = SCREEN_GUIDE_QUERIES[request.context.current_tab] if screen_question else message
         # Retrieve a small candidate set before model routing. This keeps the
         # prompt compact and provides a deterministic fallback if Luna is down.
-        feature_candidates = self.feature_catalog.search(message, limit=5)
-        help_candidates = self.help_knowledge.search(message, limit=4)
+        feature_candidates = self.feature_catalog.search(lookup_query, limit=5)
+        help_candidates = self.help_knowledge.search(lookup_query, limit=4)
         recent = [entry.model_dump() for entry in request.conversation[-6:]]
         # Luna only produces a validated query plan here. It never receives a
         # database connection or a callable purchase-mutation tool.
@@ -133,6 +151,8 @@ class AssistantService:
             feature_candidates=feature_candidates,
             help_candidates=help_candidates,
         ) or _heuristic_plan(message)
+        if screen_question:
+            plan = AssistantPlan(intent="help", query=lookup_query)
 
         # Never allow the model to widen the closed-record boundary implicitly.
         lowered = message.casefold()
@@ -198,7 +218,11 @@ class AssistantService:
 
         # Navigation actions come from trusted catalog/record values, never
         # directly from free-form model output.
-        actions = self._actions(records, features, help_matches)
+        # The fallback answer quotes the first help article: link that article's
+        # screen too, rather than a different feature matched by a shared word.
+        actions = self._actions(
+            records, [] if plan.intent == "help" and help_matches else features, help_matches,
+        )
         return AssistantMessageResponse(
             answer=answer,
             intent=plan.intent,

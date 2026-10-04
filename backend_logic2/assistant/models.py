@@ -15,6 +15,8 @@ NavigationTarget = Literal[
     "mr-list",
     "vendor-select",
     "po-manage",
+    "company-policy",
+    "ai-decision-log",
 ]
 
 
