@@ -471,7 +471,15 @@ def run_due_rfq_reminders(now: datetime | None = None) -> list:
         return []
     now = now or datetime.now()
 
-    rfqs = erp_get(RFQ_DOCTYPE, filters=[["docstatus", "=", 1]], fields=["name"]) or []
+    # A production site can contain hundreds of historical submitted RFQs.
+    # Process recent documents first so a long legacy sweep cannot delay the
+    # RFQ sent yesterday (and every later timer invocation behind it).
+    rfqs = erp_get(
+        RFQ_DOCTYPE,
+        filters=[["docstatus", "=", 1]],
+        fields=["name"],
+        order_by="modified desc",
+    ) or []
 
     all_results = []
     for row in rfqs:

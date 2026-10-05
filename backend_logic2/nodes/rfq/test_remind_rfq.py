@@ -314,7 +314,7 @@ class RunDueRfqRemindersTest(unittest.TestCase):
         def fake_get_comms(doctype, name):
             return comms_by_rfq[name]
 
-        with mock.patch.object(rr, "erp_get", return_value=[{"name": "RFQ-0001"}, {"name": "RFQ-0002"}]), \
+        with mock.patch.object(rr, "erp_get", return_value=[{"name": "RFQ-0002"}, {"name": "RFQ-0001"}]) as mock_get, \
              mock.patch.object(rr, "reminder_window_open", return_value=True), \
              mock.patch.object(rr, "erp_get_one", side_effect=fake_get_one), \
              mock.patch.object(rr, "erp_get_document_email_communications", side_effect=fake_get_comms), \
@@ -325,6 +325,8 @@ class RunDueRfqRemindersTest(unittest.TestCase):
         rfq_names = {r["rfq"] for r in results}
         self.assertEqual(rfq_names, {"RFQ-0001", "RFQ-0002"})
         self.assertEqual(mock_send.call_count, 2)
+        self.assertEqual(mock_send.call_args_list[0].kwargs["name"], "RFQ-0002")
+        self.assertEqual(mock_get.call_args.kwargs["order_by"], "modified desc")
 
 
 if __name__ == "__main__":
