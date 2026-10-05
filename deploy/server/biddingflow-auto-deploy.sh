@@ -131,25 +131,21 @@ deploy_backend() {
     .venv/bin/python -m procurement_db.migrate
   )
 
+  # Run reminders inside the single-worker API process. This makes failures
+  # visible in the main service log and avoids an unobserved oneshot timer.
+  install -d -m 755 /etc/systemd/system/biddingflow-api.service.d
+  cat > /etc/systemd/system/biddingflow-api.service.d/email-reminders.conf <<'EOF'
+[Service]
+Environment=EMAIL_REMINDER_SCHEDULER_ENABLED=true
+EOF
+  systemctl disable --now biddingflow-rfq-reminder.timer biddingflow-pr-reminder.timer 2>/dev/null || true
+  systemctl daemon-reload
+
   if ! systemctl restart biddingflow-api; then
     as_ubuntu git -C "$backend_dir" checkout --quiet "$previous_sha"
     systemctl restart biddingflow-api || true
     return 1
   fi
-
-  # Reminder services are deployed with the backend. The timers wake every
-  # minute; the live company policy decides when today's send window opens.
-  install -m 644 "$backend_dir/deploy/systemd/biddingflow-rfq-reminder.service.example" \
-    /etc/systemd/system/biddingflow-rfq-reminder.service
-  install -m 644 "$backend_dir/deploy/systemd/biddingflow-rfq-reminder.timer.example" \
-    /etc/systemd/system/biddingflow-rfq-reminder.timer
-  install -m 644 "$backend_dir/deploy/systemd/biddingflow-pr-reminder.service.example" \
-    /etc/systemd/system/biddingflow-pr-reminder.service
-  install -m 644 "$backend_dir/deploy/systemd/biddingflow-pr-reminder.timer.example" \
-    /etc/systemd/system/biddingflow-pr-reminder.timer
-  systemctl daemon-reload
-  systemctl enable --now biddingflow-rfq-reminder.timer biddingflow-pr-reminder.timer
-  systemctl try-restart biddingflow-rfq-reminder.timer biddingflow-pr-reminder.timer
 
   # systemd restart 직후에는 소켓이 열리기 전 잠깐 connection refused가 날 수 있다.
   # 일반 --retry는 이 오류를 재시도하지 않으므로 명시적으로 허용한다.

@@ -310,6 +310,33 @@ async def _resync_waiting_cases() -> None:
         await asyncio.sleep(interval)
 
 
+def _email_reminder_scheduler_enabled() -> bool:
+    return os.getenv("EMAIL_REMINDER_SCHEDULER_ENABLED", "false").strip().lower() in {
+        "true", "1", "on", "yes"
+    }
+
+
+async def _run_email_reminders() -> None:
+    """Run RFQ/PR reminders in the API process with no overlapping sweeps."""
+    from backend_logic2.nodes.rfq.remind_rfq import run_due_rfq_reminders
+    from backend_logic2.pr.reminder_service import run_due_pr_reminders
+
+    while True:
+        try:
+            rfq_results = await asyncio.to_thread(run_due_rfq_reminders)
+            pr_summary = await asyncio.to_thread(run_due_pr_reminders)
+            LOGGER.info(
+                "Email reminder sweep completed: rfq=%d pr=%d",
+                len(rfq_results),
+                len(pr_summary.get("results") or []),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("Email reminder sweep failed; retrying in 60 seconds")
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 재시작 전에 처리 중이던 건(RUNNING/PROCESSING)을 되돌린다. 작업 큐는
@@ -325,6 +352,11 @@ async def lifespan(app: FastAPI):
     resync_task = asyncio.create_task(
         _resync_waiting_cases(), name="case-waiting-stage-resync"
     )
+    reminder_task = None
+    if _email_reminder_scheduler_enabled():
+        reminder_task = asyncio.create_task(
+            _run_email_reminders(), name="supplier-email-reminders"
+        )
     from backend_logic2.services import deadline_scheduler
     # Opt-in instance + DB admin switch. This is NOT the old graph-lane sweep.
     deadline_task = None
@@ -381,6 +413,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if reminder_task is not None:
+            reminder_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reminder_task
         if deadline_task is not None:
             deadline_task.cancel()
             with suppress(asyncio.CancelledError):
