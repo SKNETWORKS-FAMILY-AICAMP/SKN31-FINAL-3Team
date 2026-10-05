@@ -464,10 +464,12 @@ def run_due_rfq_reminders(now: datetime | None = None) -> list:
 
     scheduler(jobs/rfq_reminder_job.py)가 매일 한 번씩 이 함수를 호출하는 것을 전제로 함.
     """
-    now = now or datetime.now()
-
+    # When the scheduler supplies no explicit time, let the schedule helper
+    # create an aware UTC timestamp and convert it to KST.  Creating a naive
+    # datetime first made an Ubuntu/UTC server treat 10:00 UTC as 10:00 KST.
     if not reminder_window_open(now):
         return []
+    now = now or datetime.now()
 
     rfqs = erp_get(RFQ_DOCTYPE, filters=[["docstatus", "=", 1]], fields=["name"]) or []
 
