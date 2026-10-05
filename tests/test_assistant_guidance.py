@@ -144,6 +144,13 @@ class GuidanceRegressionTests(unittest.TestCase):
                 self.assertTrue(response.actions)
                 self.assertTrue(all(a.type in ('navigate', 'navigate_with_filters') for a in response.actions))
 
+    def test_prompt_distinguishes_overview_from_execution_and_unqueried_records(self):
+        # Guard the factual instructions; live-model QA separately reviews wording.
+        from backend_logic2.assistant.prompting import COMPOSER_INSTRUCTIONS
+        self.assertIn('대시보드에서도 PO 승인 대기', COMPOSER_INSTRUCTIONS)
+        self.assertIn('실제 PO 승인은 PO 관리', COMPOSER_INSTRUCTIONS)
+        self.assertIn('조회하지 않은 상태와 조회 결과가 빈 상태를 구분', COMPOSER_INSTRUCTIONS)
+
     def test_sqlite_help_index_rebuilds_after_source_change_on_startup(self):
         path = Path(self.temp.name) / 'help.json'
         db = Path(self.temp.name) / 'reload.sqlite3'
