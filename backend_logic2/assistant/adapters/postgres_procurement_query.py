@@ -15,6 +15,7 @@ from backend_logic2.repositories import cases as case_repository
 
 from ..models import AssistantRecord, CaseQueryFilters
 from ..stage_presenter import summarize_case
+from ..query_routing import matches_waiting
 
 
 def _as_date(value: Any) -> date | None:
@@ -67,12 +68,6 @@ class PostgresProcurementQuery:
         # Administrators may inspect all cases; ordinary buyers are restricted
         # to the assignment already projected by the procurement backend.
         assigned_user_id = None if is_super_admin(actor) else actor
-        rows = case_repository.list_cases(
-            assigned_user_id=assigned_user_id,
-            include_closed=filters.include_closed,
-            limit=200,
-            offset=0,
-        )
         exact = (filters.exact_reference or "").strip().casefold()
         keyword = (filters.keyword or "").strip().casefold()
         today = date.today()
@@ -80,12 +75,29 @@ class PostgresProcurementQuery:
         matched: list[dict[str, Any]] = []
         # Only canonical fields are filtered. User text is never interpolated
         # into SQL, and moving ERP-specific fields here remains unnecessary.
-        for row in rows:
+        def pages():
+            # Do not claim "none" after silently searching only the first 200.
+            # Bound work; an incomplete search becomes an explicit query error.
+            for offset in range(0, 2000, 200):
+                rows = case_repository.list_cases(
+                    assigned_user_id=assigned_user_id,
+                    include_closed=filters.include_closed,
+                    status=filters.status, stage=filters.stage,
+                    limit=200, offset=offset,
+                )
+                yield from rows
+                if len(rows) < 200:
+                    return
+            raise RuntimeError("Assistant query coverage limit reached; narrow the filters")
+
+        for row in pages():
             if exact and str(row.get("mr_name") or "").strip().casefold() != exact:
                 continue
             if filters.status and str(row.get("status") or "").upper() != filters.status.upper():
                 continue
             if filters.stage and str(row.get("stage") or "").upper() != filters.stage.upper():
+                continue
+            if filters.waiting_for and not matches_waiting(row, filters.waiting_for):
                 continue
             if keyword and keyword not in _text_values(row):
                 continue
@@ -97,6 +109,8 @@ class PostgresProcurementQuery:
                 if schedule_date is None or not (today <= schedule_date <= due_until):
                     continue
             matched.append(row)
+            if len(matched) >= filters.limit:
+                break
 
         return [self._record(row) for row in matched[: filters.limit]]
 

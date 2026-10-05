@@ -42,6 +42,7 @@ class CaseQueryFilters(BaseModel):
     keyword: str | None = Field(default=None, max_length=200)
     status: str | None = Field(default=None, max_length=50)
     stage: str | None = Field(default=None, max_length=80)
+    waiting_for: Literal["external", "requester", "quotation", "supplier_confirmation", "delivery", "po_approval"] | None = None
     due_within_days: int | None = Field(default=None, ge=0, le=365)
     has_attachments: bool | None = None
     include_closed: bool = False

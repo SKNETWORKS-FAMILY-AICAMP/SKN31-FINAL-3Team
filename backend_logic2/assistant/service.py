@@ -31,6 +31,7 @@ from .ports import (
     ProcurementFreshnessPort,
     ProcurementQueryPort,
 )
+from .query_routing import waiting_group, item_keyword
 
 
 MR_PATTERN = re.compile(r"\bMAT-MR-[0-9]{4}-[0-9]+\b", re.IGNORECASE)
@@ -87,6 +88,14 @@ def _heuristic_plan(message: str) -> AssistantPlan:
     # A usage question mentioning MR/납기 is not a request to query live cases.
     if any(word in lowered for word in (*HELP_WORDS, "어디", "방법", "버튼")):
         return AssistantPlan(intent="help", query=message)
+    group = waiting_group(message)
+    if group:
+        filters.waiting_for = group
+        due_match = re.search(r"(\d+)\s*일\s*(?:이내|안)", message)
+        if due_match:
+            filters.due_within_days = min(int(due_match.group(1)), 365)
+        filters.has_attachments = True if "첨부" in lowered else None
+        return AssistantPlan(intent="case_query", query=message, filters=filters)
     if any(word in lowered for word in CASE_WORDS):
         if "승인 대기" in lowered or "확인 대기" in lowered:
             filters.status = "WAITING_INPUT"
@@ -151,6 +160,16 @@ class AssistantService:
             feature_candidates=feature_candidates,
             help_candidates=help_candidates,
         ) or _heuristic_plan(message)
+        fallback_plan = _heuristic_plan(message)
+        if MR_PATTERN.search(message):
+            # An exact identifier must not be lost or combined with a guessed keyword.
+            plan = fallback_plan
+        elif any(word in message.casefold() for word in ACTION_WORDS):
+            plan = fallback_plan
+        elif fallback_plan.filters.waiting_for:
+            plan.intent = "case_query"
+            keyword = item_keyword(plan.filters.keyword, message)
+            plan.filters = fallback_plan.filters.model_copy(update={"keyword": keyword})
         if screen_question:
             plan = AssistantPlan(intent="help", query=lookup_query)
 
@@ -191,7 +210,10 @@ class AssistantService:
 
         features = self.feature_catalog.search(plan.query or message, limit=3)
         help_matches = self.help_knowledge.search(plan.query or message, limit=3)
-        model_answer = None if not query_available else self.model.compose(
+        # The model may phrase help, but must never turn real records into
+        # "none" or invent counts. Case answers are grounded by construction.
+        query_executed = plan.intent in {"case_query", "case_status"}
+        model_answer = None if not query_available or query_executed else self.model.compose(
             message=message,
             context=request.context,
             plan=plan,
@@ -237,6 +259,8 @@ class AssistantService:
                 "freshness_attempted": freshness_attempted,
                 "freshness_refreshed": freshness_refreshed,
                 "query_available": query_available,
+                "query_executed": query_executed,
+                "applied_filters": plan.filters.model_dump() if query_executed else None,
             },
         )
 
@@ -259,7 +283,10 @@ class AssistantService:
                     followups=["이 단계에서 무엇을 확인해야 해?", "관련 화면으로 이동"],
                 )
             return ModelAnswer(
-                answer=f"조건에 맞는 구매 요청 {len(records)}건을 찾았습니다. 각 카드에서 현재 단계와 다음 행동을 확인하고 바로 이동할 수 있습니다.",
+                answer=(f"조회 가능한 담당 범위에서 조건에 맞는 구매 요청 {len(records)}건을 표시합니다. "
+                        f"{', '.join(f'{r.reference}({r.stage_label})' for r in records[:3])}"
+                        f"{' 등' if len(records) > 3 else ''}입니다. "
+                        f"한 번에 최대 {plan.filters.limit}건까지 표시하며, 각 카드에서 현재 단계와 다음 행동을 확인할 수 있습니다."),
                 followups=["승인 대기 항목만 보여줘", "납기가 가까운 항목 찾아줘"],
             )
         if plan.intent == "help" and help_matches:
