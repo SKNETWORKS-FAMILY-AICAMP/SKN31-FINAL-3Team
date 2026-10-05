@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 import main
+from fastapi import FastAPI
 
 
 def test_email_reminder_scheduler_is_explicitly_enabled(monkeypatch):
@@ -23,7 +24,8 @@ def test_email_reminder_loop_runs_immediately_and_does_not_overlap(monkeypatch):
     monkeypatch.setattr(reminder_service, "run_due_pr_reminders", pr)
 
     async def scenario():
-        task = asyncio.create_task(main._run_email_reminders())
+        app = FastAPI()
+        task = asyncio.create_task(main._run_email_reminders(app))
         for _ in range(20):
             if rfq.called and pr.called:
                 break
@@ -31,8 +33,11 @@ def test_email_reminder_loop_runs_immediately_and_does_not_overlap(monkeypatch):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        return app
 
-    asyncio.run(scenario())
+    app = asyncio.run(scenario())
 
     rfq.assert_called_once_with()
     pr.assert_called_once_with()
+    assert app.state.email_reminder_status["actions"] == {}
+    assert app.state.email_reminder_status["error"] is None

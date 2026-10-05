@@ -3,7 +3,9 @@
 import asyncio
 import logging
 import os
+from collections import Counter
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -316,7 +318,7 @@ def _email_reminder_scheduler_enabled() -> bool:
     }
 
 
-async def _run_email_reminders() -> None:
+async def _run_email_reminders(app_instance: FastAPI) -> None:
     """Run RFQ/PR reminders in the API process with no overlapping sweeps."""
     from backend_logic2.nodes.rfq.remind_rfq import run_due_rfq_reminders
     from backend_logic2.pr.reminder_service import run_due_pr_reminders
@@ -325,6 +327,16 @@ async def _run_email_reminders() -> None:
         try:
             rfq_results = await asyncio.to_thread(run_due_rfq_reminders)
             pr_summary = await asyncio.to_thread(run_due_pr_reminders)
+            actions = Counter(
+                str(row.get("action") or "unknown")
+                for row in [*rfq_results, *(pr_summary.get("results") or [])]
+            )
+            app_instance.state.email_reminder_status = {
+                "last_run_at": datetime.now(timezone.utc).isoformat(),
+                "running": True,
+                "actions": dict(actions),
+                "error": None,
+            }
             LOGGER.info(
                 "Email reminder sweep completed: rfq=%d pr=%d",
                 len(rfq_results),
@@ -332,7 +344,13 @@ async def _run_email_reminders() -> None:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            app_instance.state.email_reminder_status = {
+                "last_run_at": datetime.now(timezone.utc).isoformat(),
+                "running": True,
+                "actions": {},
+                "error": f"{type(exc).__name__}: {exc}",
+            }
             LOGGER.exception("Email reminder sweep failed; retrying in 60 seconds")
         await asyncio.sleep(60)
 
@@ -355,8 +373,9 @@ async def lifespan(app: FastAPI):
     reminder_task = None
     if _email_reminder_scheduler_enabled():
         reminder_task = asyncio.create_task(
-            _run_email_reminders(), name="supplier-email-reminders"
+            _run_email_reminders(app), name="supplier-email-reminders"
         )
+        app.state.email_reminder_task = reminder_task
     from backend_logic2.services import deadline_scheduler
     # Opt-in instance + DB admin switch. This is NOT the old graph-lane sweep.
     deadline_task = None
@@ -535,6 +554,7 @@ def health_check():
     purchase_document_task = getattr(app.state, "purchase_document_polling_task", None)
     quotation_task = getattr(app.state, "quotation_polling_task", None)
     item_task = getattr(app.state, "item_polling_task", None)
+    reminder_task = getattr(app.state, "email_reminder_task", None)
     startup_reconciliation_task = getattr(
         app.state, "mr_startup_reconciliation_task", None
     )
@@ -557,6 +577,8 @@ def health_check():
             quotation_task and not quotation_task.done()
         ),
         "item_reconciliation_active": bool(item_task and not item_task.done()),
+        "email_reminder_active": bool(reminder_task and not reminder_task.done()),
+        "email_reminder": getattr(app.state, "email_reminder_status", None),
     }
 
 
