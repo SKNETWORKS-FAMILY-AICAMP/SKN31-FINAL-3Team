@@ -313,9 +313,13 @@ async def _resync_waiting_cases() -> None:
 
 
 def _email_reminder_scheduler_enabled() -> bool:
-    return os.getenv("EMAIL_REMINDER_SCHEDULER_ENABLED", "false").strip().lower() in {
-        "true", "1", "on", "yes"
-    }
+    configured = os.getenv("EMAIL_REMINDER_SCHEDULER_ENABLED")
+    if configured is not None:
+        return configured.strip().lower() in {"true", "1", "on", "yes"}
+    # Production must work after an ordinary API restart even when the
+    # separately installed deploy helper has not been refreshed. Pytest owns
+    # no production scheduler and must never contact ERP from TestClient.
+    return "PYTEST_CURRENT_TEST" not in os.environ
 
 
 async def _run_email_reminders(app_instance: FastAPI) -> None:

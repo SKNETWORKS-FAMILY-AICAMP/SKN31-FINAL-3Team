@@ -9,9 +9,12 @@ from fastapi import FastAPI
 
 def test_email_reminder_scheduler_is_explicitly_enabled(monkeypatch):
     monkeypatch.delenv("EMAIL_REMINDER_SCHEDULER_ENABLED", raising=False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "scheduler safety")
     assert not main._email_reminder_scheduler_enabled()
     monkeypatch.setenv("EMAIL_REMINDER_SCHEDULER_ENABLED", "true")
     assert main._email_reminder_scheduler_enabled()
+    monkeypatch.setenv("EMAIL_REMINDER_SCHEDULER_ENABLED", "false")
+    assert not main._email_reminder_scheduler_enabled()
 
 
 def test_email_reminder_loop_runs_immediately_and_does_not_overlap(monkeypatch):
