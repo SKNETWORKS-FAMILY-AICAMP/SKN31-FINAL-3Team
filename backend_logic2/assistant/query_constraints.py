@@ -73,4 +73,9 @@ def apply_explicit_conditions(filters, message):
         else:
             result.status, result.include_closed = status, True
             result.stage = result.waiting_for = None
+    # FAILED is not terminal, but it was an explicit supported subset before
+    # condition merging was extracted. Preserve that behavior too.
+    if '실패' in message:
+        result.status = 'FAILED'
+        result.stage = result.waiting_for = None
     return result

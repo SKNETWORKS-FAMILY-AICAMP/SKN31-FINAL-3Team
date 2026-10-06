@@ -144,3 +144,13 @@ def test_explicit_item_replacement_does_not_invent_old_attributes(replacement):
 def test_scope_correction_is_not_an_item_replacement():
     filters = apply_explicit_conditions(CaseQueryFilters(keyword='마우스'), '외부 말고 내가 승인할 작업으로 조회해줘')
     assert filters.keyword == '마우스'
+
+
+def test_failed_subset_remains_supported_after_merge_refactor():
+    previous = DialogueContext(filters=CaseQueryFilters(keyword='마우스', waiting_for='external'))
+    with patch(PATH, return_value=[row('PO_CREATION_FAILED', 'FAILED', reference='failed'), row(reference='waiting')]):
+        result = turn(service(), '그중 실패한 작업 세어줘', previous)
+    assert result.meta['total_count'] == 1
+    assert result.dialogue.filters.keyword == '마우스'
+    assert result.dialogue.filters.status == 'FAILED'
+    assert result.dialogue.filters.waiting_for is None
