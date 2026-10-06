@@ -31,7 +31,8 @@ from .ports import (
     ProcurementFreshnessPort,
     ProcurementQueryPort,
 )
-from .query_routing import waiting_group, item_keyword
+from .query_routing import waiting_group, item_keyword, asks_for_count, explicit_item_prefix, due_window, due_item_keyword, business_today
+from datetime import timedelta
 
 
 MR_PATTERN = re.compile(r"\bMAT-MR-[0-9]{4}-[0-9]+\b", re.IGNORECASE)
@@ -95,6 +96,14 @@ def _heuristic_plan(message: str) -> AssistantPlan:
         if due_match:
             filters.due_within_days = min(int(due_match.group(1)), 365)
         filters.has_attachments = True if "첨부" in lowered else None
+        return AssistantPlan(intent="case_query", query=message, filters=filters)
+    window = due_window(message)
+    if window is not None:
+        filters.due_within_days = window
+        return AssistantPlan(intent="case_query", query=message, filters=filters)
+    if asks_for_count(message) and any(word in lowered for word in ("구매", "작업", "mr", "품목")):
+        filters.keyword = explicit_item_prefix(message)
+        filters.count_requested = True
         return AssistantPlan(intent="case_query", query=message, filters=filters)
     if any(word in lowered for word in CASE_WORDS):
         if "승인 대기" in lowered or "확인 대기" in lowered:
@@ -168,8 +177,15 @@ class AssistantService:
             plan = fallback_plan
         elif fallback_plan.filters.waiting_for:
             plan.intent = "case_query"
-            keyword = item_keyword(plan.filters.keyword, message)
+            keyword = (due_item_keyword(plan.filters.keyword, message) if due_window(message) is not None
+                       else item_keyword(plan.filters.keyword, message))
             plan.filters = fallback_plan.filters.model_copy(update={"keyword": keyword})
+        elif fallback_plan.intent == "case_query" and due_window(message) is not None:
+            # A missing LLM date constraint must not silently mean "all jobs".
+            plan.intent = "case_query"
+            plan.filters = fallback_plan.filters.model_copy(update={"keyword": due_item_keyword(plan.filters.keyword, message)})
+        elif fallback_plan.filters.count_requested and plan.intent not in {"case_query", "case_status"}:
+            plan = fallback_plan
         if screen_question:
             plan = AssistantPlan(intent="help", query=lookup_query)
 
@@ -183,6 +199,10 @@ class AssistantService:
             plan.filters.include_closed = False
         if plan.filters.limit > 10:
             plan.filters.limit = 10
+        if plan.intent in {"case_query", "case_status"}:
+            plan.filters.count_requested = asks_for_count(message)
+            if not plan.filters.exact_reference and due_window(message) is not None:
+                plan.filters.due_within_days = due_window(message)
 
         actor = actor_id(current_user)
         freshness_attempted = False
@@ -242,9 +262,21 @@ class AssistantService:
         # directly from free-form model output.
         # The fallback answer quotes the first help article: link that article's
         # screen too, rather than a different feature matched by a shared word.
-        actions = self._actions(
-            records, [] if plan.intent == "help" and help_matches else features, help_matches,
-        )
+        if query_executed:
+            # Item searches must never navigate to an unrelated feature merely
+            # because a catalog token (e.g. '작업') happened to overlap.
+            actions = self._actions(records, [], [])
+            if not actions:
+                group = plan.filters.waiting_for
+                target = ("po-manage" if group in {"po_approval", "supplier_confirmation", "delivery"}
+                          else "vendor-select" if group == "quotation"
+                          else "dashboard" if group in {"external", "approval"}
+                          else "mr-list")
+                actions = [AssistantAction(label="구매 작업 확인", target=target)]
+        else:
+            actions = self._actions(
+                records, [] if plan.intent == "help" and help_matches else features, help_matches,
+            )
         return AssistantMessageResponse(
             answer=answer,
             intent=plan.intent,
@@ -256,6 +288,7 @@ class AssistantService:
             meta={
                 "read_only": True,
                 "record_count": len(records),
+                "total_count": getattr(records, "total_count", None),
                 "freshness_attempted": freshness_attempted,
                 "freshness_refreshed": freshness_refreshed,
                 "query_available": query_available,
@@ -267,24 +300,47 @@ class AssistantService:
     @staticmethod
     def _deterministic_answer(plan, records, features, help_matches) -> ModelAnswer:
         if plan.intent in {"case_query", "case_status"}:
-            if not records:
+            total_count = getattr(records, "total_count", None)
+            date_scope = ""
+            if plan.filters.due_within_days is not None:
+                today = business_today()
+                end = today + timedelta(days=plan.filters.due_within_days)
+                date_scope = (f"한국 시간 기준 오늘({today.isoformat()})부터 {end.isoformat()}까지, "
+                              f"{plan.filters.due_within_days}일 이내 납기인 작업을 납기순으로 조회했습니다. ")
+            def display_record(record):
+                due = f", 납기 {record.schedule_date}" if date_scope and record.schedule_date else ""
+                return f"{record.reference}({record.stage_label}{due})"
+            if total_count is not None and records:
+                names = ', '.join(display_record(r) for r in records[:3])
                 return ModelAnswer(
-                    answer="조회할 수 있는 담당 범위에서 조건에 맞는 구매 요청을 찾지 못했습니다. 완료·취소 항목을 찾는 경우에는 해당 상태를 함께 말씀해 주세요.",
+                    answer=(date_scope + f"조회 가능한 담당 범위에서 조건에 맞는 구매 작업은 총 {total_count}건입니다. "
+                            f"{'완료·취소·반려를 포함한' if plan.filters.include_closed else '완료·취소·반려를 제외한'} 결과이며, "
+                            f"{names}{' 등' if total_count > 3 else ''}이 있습니다. "
+                            f"아래에 {len(records)}건을 표시합니다."),
+                    followups=["승인 대기 중인 MR 보여줘", "완료된 MR 보여줘"],
+                )
+            if not records:
+                group = plan.filters.waiting_for
+                clarification = ("여기서 승인 대기는 구매 요청 검토와 PO 최종 승인을 뜻하며, RFQ 대상 선택이나 외부 회신 대기는 별도입니다. "
+                                 if group == "approval" else "")
+                return ModelAnswer(
+                    answer=(date_scope + "조회할 수 있는 담당 범위에서 조건에 맞는 구매 요청을 찾지 못했습니다. "
+                            + clarification + "완료·취소 항목을 찾는 경우에는 해당 상태를 함께 말씀해 주세요."),
                     followups=["승인 대기 중인 MR 보여줘", "MAT-MR 번호로 현재 단계 알려줘"],
                 )
             if len(records) == 1:
                 record = records[0]
                 return ModelAnswer(
                     answer=(
-                        f"{record.reference}은(는) 현재 ‘{record.stage_label}’ 단계입니다. "
+                        date_scope + f"{display_record(record)}은(는) 현재 ‘{record.stage_label}’ 단계입니다. "
                         f"지금은 {record.waiting_on}의 처리를 기다리고 있으며, 다음 행동은 “{record.next_action}”입니다. "
                         "아래 바로가기로 해당 업무 화면을 열 수 있습니다."
                     ),
                     followups=["이 단계에서 무엇을 확인해야 해?", "관련 화면으로 이동"],
                 )
             return ModelAnswer(
-                answer=(f"조회 가능한 담당 범위에서 조건에 맞는 구매 요청 {len(records)}건을 표시합니다. "
-                        f"{', '.join(f'{r.reference}({r.stage_label})' for r in records[:3])}"
+                answer=(date_scope + f"조회 가능한 담당 범위에서 조건에 맞는 구매 요청 {len(records)}건을 표시합니다. "
+                        f"{', '.join(display_record(r) for r in records[:3])}"
                         f"{' 등' if len(records) > 3 else ''}입니다. "
                         f"한 번에 최대 {plan.filters.limit}건까지 표시하며, 각 카드에서 현재 단계와 다음 행동을 확인할 수 있습니다."),
                 followups=["승인 대기 항목만 보여줘", "납기가 가까운 항목 찾아줘"],

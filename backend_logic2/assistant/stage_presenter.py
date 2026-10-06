@@ -36,6 +36,7 @@ STAGE_PRESENTATION: dict[str, tuple[str, str, str, NavigationTarget]] = {
 
 
 STATUS_LABELS = {
+    "AWAITING_MR_REVIEW": "구매 요청 승인 대기",
     "DRAFT": "시작 전",
     "PENDING": "진행 대기",
     "RUNNING": "진행 중",
@@ -63,7 +64,9 @@ def summarize_case(row: dict[str, Any]) -> dict[str, str]:
     label, waiting_on, next_action, target = present_stage(stage)
     item_name = str(
         summary.get("item_name")
+        or row.get("item_name")
         or summary.get("item_code")
+        or row.get("item_code")
         or "품목명 미지정"
     )
     return {

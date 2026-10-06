@@ -17,13 +17,17 @@ PLANNER_INSTRUCTIONS = """
 10. 외부 진행/응답/승인 대기는 waiting_for=external입니다. 대체품 요청자 응답, 견적 회신, 공급사 수주 응답, 입고 대기를 묶습니다. 내부 PO 승인은 별도입니다.
 11. 요청자 대체품 대기는 requester, 견적 회신은 quotation, 공급사 수주 확인/PR 응답은 supplier_confirmation, 입고는 delivery, 내부 PO 승인은 po_approval입니다.
 12. keyword는 사용자가 명시한 품목명·코드 등 검색 대상에만 사용합니다. '외부 진행 대기', '승인', '응답', '견적 회신' 같은 상태 표현을 keyword에 넣지 않습니다. waiting_for를 사용하면 stage와 status는 비웁니다.
+13. 일반적인 '승인 대기 MR'은 waiting_for=approval(구매 요청 검토와 PO 최종 승인)입니다. MR 검토/요청 승인만 명시하면 mr_review, PO 승인만 명시하면 po_approval입니다. 외부 회신·견적 수집·RFQ 대상 선택은 내부 승인 대기가 아닙니다.
+14. '몇 개/몇 건/개수/건수' 질문은 case_query와 count_requested=true입니다. 품목 표현만 keyword로 추출하고 '구매 작업', '몇개나 있지' 같은 문구는 제외합니다.
+15. 새 질문에 독립적인 품목이나 상태가 명시되면 이전 질문의 필터를 이어받지 않습니다. '그중', '이 중'처럼 명시적으로 조건을 좁힐 때만 이전 조건을 참고합니다.
+16. '납기가 가까운/납기 임박'은 기간을 말하지 않았다면 due_within_days=7입니다. 사용자가 N일 이내라고 명시하면 N을 적용합니다. 날짜 조건을 비워 전체 목록으로 대체하지 않습니다.
 
 대표 stage: MR_REVIEW, ITEM_CHECK, SUBSTITUTE_DECISION, SUPPLIER_RECOMMENDATION,
 RFQ_TARGET_SELECTION, QUOTATION_COLLECTION, SUPPLIER_SELECTION, ORDER_START,
 PRE_PO_APPROVAL, PR_REQUEST, PR_SENDING, PR_RESPONSE_WAITING, PR_REJECTED,
 PO_CREATION, PO_CREATION_FAILED, DELIVERY, SCORECARD, COMPLETED, HUMAN_REVIEW,
 BIDDING_DECISION, RFQ_SENDING, SUBSTITUTE_SELECTED, PROCESSING, CANCELLED.
-대표 status: DRAFT, PENDING, QUEUED, RUNNING, WAITING_INPUT, FAILED, REJECTED, CANCELLED, COMPLETED.
+대표 status: AWAITING_MR_REVIEW, DRAFT, PENDING, QUEUED, RUNNING, WAITING_INPUT, FAILED, REJECTED, CANCELLED, COMPLETED.
 """.strip()
 
 

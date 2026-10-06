@@ -42,7 +42,8 @@ class CaseQueryFilters(BaseModel):
     keyword: str | None = Field(default=None, max_length=200)
     status: str | None = Field(default=None, max_length=50)
     stage: str | None = Field(default=None, max_length=80)
-    waiting_for: Literal["external", "requester", "quotation", "supplier_confirmation", "delivery", "po_approval"] | None = None
+    waiting_for: Literal["external", "requester", "quotation", "supplier_confirmation", "delivery", "po_approval", "mr_review", "approval"] | None = None
+    count_requested: bool = False
     due_within_days: int | None = Field(default=None, ge=0, le=365)
     has_attachments: bool | None = None
     include_closed: bool = False
@@ -54,6 +55,17 @@ class AssistantPlan(BaseModel):
     query: str = Field(default="", max_length=300)
     filters: CaseQueryFilters = Field(default_factory=CaseQueryFilters)
     require_freshness: bool = False
+
+
+class CaseQueryRecords(list):
+    """Authorized display records, with an exact count only after a full scan.
+
+    Remains list-compatible with query ports and test adapters. Never treat the
+    display limit as the total number of matching purchases.
+    """
+    def __init__(self, records, *, total_count: int | None = None):
+        super().__init__(records)
+        self.total_count = total_count
 
 
 class AssistantAction(BaseModel):
@@ -72,6 +84,7 @@ class AssistantRecord(BaseModel):
     stage_label: str
     status: str
     status_label: str
+    schedule_date: str | None = None
     waiting_on: str
     next_action: str
     updated_at: str | None = None

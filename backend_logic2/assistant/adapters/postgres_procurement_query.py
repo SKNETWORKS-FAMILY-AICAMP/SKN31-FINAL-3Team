@@ -8,14 +8,16 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+import re
+import unicodedata
 from typing import Any
 
 from backend_logic2.integrations.assignment_config import is_super_admin
 from backend_logic2.repositories import cases as case_repository
 
-from ..models import AssistantRecord, CaseQueryFilters
+from ..models import AssistantRecord, CaseQueryFilters, CaseQueryRecords
 from ..stage_presenter import summarize_case
-from ..query_routing import matches_waiting
+from ..query_routing import matches_waiting, business_today
 
 
 def _as_date(value: Any) -> date | None:
@@ -31,12 +33,15 @@ def _as_date(value: Any) -> date | None:
         return None
 
 
-def _text_values(row: dict[str, Any]) -> str:
+def _search_values(row: dict[str, Any]) -> list[str]:
     summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
-    return " ".join(
+    return [
         str(value or "")
         for value in (
             row.get("mr_name"),
+            row.get("item_code"),
+            row.get("item_name"),
+            row.get("requester_id"),
             summary.get("item_code"),
             summary.get("item_name"),
             summary.get("requester"),
@@ -44,7 +49,21 @@ def _text_values(row: dict[str, Any]) -> str:
             summary.get("item_group"),
             summary.get("description"),
         )
-    ).casefold()
+    ]
+
+
+def _text_values(row: dict[str, Any]) -> str:
+    return " ".join(_search_values(row)).casefold()
+
+
+def _normalized(value: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).casefold()
+
+
+def _matches_keyword(row: dict[str, Any], keyword: str) -> bool:
+    # Ignore presentation spacing within each field, not field boundaries.
+    needle = _normalized(keyword)
+    return any(needle in _normalized(value) for value in _search_values(row))
 
 
 def _has_attachments(row: dict[str, Any]) -> bool:
@@ -70,9 +89,10 @@ class PostgresProcurementQuery:
         assigned_user_id = None if is_super_admin(actor) else actor
         exact = (filters.exact_reference or "").strip().casefold()
         keyword = (filters.keyword or "").strip().casefold()
-        today = date.today()
+        today = business_today()
         due_until = today + timedelta(days=filters.due_within_days or 0)
         matched: list[dict[str, Any]] = []
+        total_count = 0
         # Only canonical fields are filtered. User text is never interpolated
         # into SQL, and moving ERP-specific fields here remains unnecessary.
         def pages():
@@ -99,7 +119,7 @@ class PostgresProcurementQuery:
                 continue
             if filters.waiting_for and not matches_waiting(row, filters.waiting_for):
                 continue
-            if keyword and keyword not in _text_values(row):
+            if keyword and not _matches_keyword(row, keyword):
                 continue
             if filters.has_attachments is not None and _has_attachments(row) != filters.has_attachments:
                 continue
@@ -108,15 +128,22 @@ class PostgresProcurementQuery:
                 schedule_date = _as_date(summary.get("schedule_date"))
                 if schedule_date is None or not (today <= schedule_date <= due_until):
                     continue
-            matched.append(row)
-            if len(matched) >= filters.limit:
+            total_count += 1
+            if len(matched) < filters.limit:
+                matched.append(row)
+            if len(matched) >= filters.limit and not filters.count_requested:
                 break
 
-        return [self._record(row) for row in matched[: filters.limit]]
+        return CaseQueryRecords(
+            [self._record(row) for row in matched],
+            total_count=total_count if filters.count_requested else None,
+        )
 
     @staticmethod
     def _record(row: dict[str, Any]) -> AssistantRecord:
         view = summarize_case(row)
+        summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+        schedule_date = _as_date(summary.get("schedule_date"))
         updated_at = row.get("updated_at")
         return AssistantRecord(
             case_id=str(row.get("case_id") or ""),
@@ -126,6 +153,7 @@ class PostgresProcurementQuery:
             stage_label=view["stage_label"],
             status=view["status"],
             status_label=view["status_label"],
+            schedule_date=schedule_date.isoformat() if schedule_date else None,
             waiting_on=view["waiting_on"],
             next_action=view["next_action"],
             updated_at=updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at or "") or None,
