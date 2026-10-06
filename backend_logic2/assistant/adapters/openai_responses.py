@@ -44,7 +44,7 @@ class OpenAIResponsesAssistant:
             "ASSISTANT_TIMEOUT_SECONDS", 25, minimum=5, maximum=120
         )
         self._max_output_tokens = _int_setting(
-            "ASSISTANT_MAX_OUTPUT_TOKENS", 1200, minimum=500, maximum=4000
+            "ASSISTANT_MAX_OUTPUT_TOKENS", 2000, minimum=500, maximum=4000
         )
         self._client = client
         self._api_key_present = bool(os.getenv("OPENAI_API_KEY", "").strip())
@@ -59,7 +59,9 @@ class OpenAIResponsesAssistant:
 
     def _get_client(self) -> OpenAI:
         if self._client is None:
-            self._client = OpenAI(timeout=self._timeout)
+            # Bounded user-facing latency; an outage falls back/clarifies rather
+            # than keeping both assistant slots occupied by SDK retries.
+            self._client = OpenAI(timeout=self._timeout, max_retries=0)
         return self._client
 
     def plan(
@@ -70,19 +72,25 @@ class OpenAIResponsesAssistant:
         recent_conversation: list[dict[str, str]],
         feature_candidates: list[FeatureMatch],
         help_candidates: list[HelpMatch],
+        memory: dict | None = None,
+        feature_index: list[dict] | None = None,
     ) -> AssistantPlan | None:
         if not self.available:
             return None
         payload = {
             "message": message,
             "current_screen": context.model_dump(),
-            "recent_conversation": recent_conversation[-6:],
+            "recent_conversation": recent_conversation[-8:],
+            "conversation_memory": memory or {},
+            "feature_index": feature_index or [],
             "feature_candidates": [entry.model_dump() for entry in feature_candidates[:5]],
             "help_candidates": [
                 {"id": entry.id, "title": entry.title, "target": entry.target}
                 for entry in help_candidates[:4]
             ],
         }
+        from ..capabilities import CAPABILITIES
+        payload['available_capabilities'] = CAPABILITIES
         try:
             # The SDK validates output against AssistantPlan. store=False keeps
             # operational questions out of durable Responses history.

@@ -17,7 +17,7 @@ from backend_logic2.repositories import cases as case_repository
 
 from ..models import AssistantRecord, CaseQueryFilters, CaseQueryRecords
 from ..stage_presenter import summarize_case
-from ..query_routing import matches_waiting, business_today
+from ..query_routing import matches_waiting, business_today, needs_buyer_action
 
 
 def _as_date(value: Any) -> date | None:
@@ -86,7 +86,8 @@ class PostgresProcurementQuery:
     ) -> list[AssistantRecord]:
         # Administrators may inspect all cases; ordinary buyers are restricted
         # to the assignment already projected by the procurement backend.
-        assigned_user_id = None if is_super_admin(actor) else actor
+        assigned_user_id = None if is_super_admin(actor) and filters.task_scope != 'assigned' else actor
+        po_allowed = None
         exact = (filters.exact_reference or "").strip().casefold()
         keyword = (filters.keyword or "").strip().casefold()
         today = business_today()
@@ -120,6 +121,17 @@ class PostgresProcurementQuery:
                 continue
             if filters.waiting_for and not matches_waiting(row, filters.waiting_for):
                 continue
+            if filters.task_scope == 'actionable':
+                if not needs_buyer_action(row):
+                    continue
+                if str(row.get('stage') or '').upper() in {'PRE_PO_APPROVAL', 'PO_CREATION_FAILED'}:
+                    # Same server-side role check as the existing PO API, at most
+                    # once per query. A lookup failure is an error, never zero.
+                    if po_allowed is None:
+                        from .user_access import may_approve_po
+                        po_allowed = may_approve_po(actor)
+                    if not po_allowed:
+                        continue
             if keyword and not _matches_keyword(row, keyword):
                 continue
             if filters.has_attachments is not None and _has_attachments(row) != filters.has_attachments:

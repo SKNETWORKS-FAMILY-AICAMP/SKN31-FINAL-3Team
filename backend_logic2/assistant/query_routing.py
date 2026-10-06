@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 WAITING_STAGES = {
+    "decision": {"MR_REVIEW", "RFQ_TARGET_SELECTION", "SUPPLIER_SELECTION", "ORDER_START", "PRE_PO_APPROVAL", "PR_REJECTED", "SCORECARD", "HUMAN_REVIEW", "PO_CREATION_FAILED"},
     "external": {"SUBSTITUTE_DECISION", "QUOTATION_COLLECTION", "PR_RESPONSE_WAITING", "DELIVERY"},
     "requester": {"SUBSTITUTE_DECISION"},
     "quotation": {"QUOTATION_COLLECTION"},
@@ -19,6 +20,8 @@ WAITING_STAGES = {
 
 
 def waiting_group(message: str) -> str | None:
+    if decision_question(message):
+        return 'decision'
     text = re.sub(r"\s+", "", message).casefold()
     if not any(word in text for word in ("대기", "기다", "미회신", "응답전", "회신전")):
         return None
@@ -76,6 +79,8 @@ def auto_progress_blockers(row: dict) -> list[dict]:
 def matches_waiting(row: dict, group: str) -> bool:
     stage = str(row.get("stage") or "").upper()
     status = str(row.get("status") or "").upper()
+    if group == "decision":
+        return needs_buyer_action(row)
     if group == "external" and auto_progress_blockers(row):
         return False
     # Delivery can remain RUNNING while waiting for an ERP receipt.
@@ -87,13 +92,58 @@ def matches_waiting(row: dict, group: str) -> bool:
 
 
 def asks_for_count(message: str) -> bool:
-    return bool(re.search(r"몇\s*(?:개|건)|개수|갯수|건수", message))
+    return bool(re.search(r"몇\s*(?:개|건)|개수|갯수|건수|총\s*얼마|얼마나\s*(?:남|있)", message))
+
+
+def personal_scope(message: str) -> str | None:
+    compact = re.sub(r"\s+", "", message)
+    if any(word in compact for word in ("내담당", "제가담당", "내게배정", "나한테배정")):
+        return "assigned"
+    if any(word in compact for word in ("내가", "제가", "내승인", "내결재", "내할일", "나한테")):
+        if any(word in compact for word in ('외부', '회신', '답장', '공급사응답')):
+            return 'assigned'
+        return "actionable"
+    return None
+
+
+def decision_question(message: str) -> bool:
+    compact = re.sub(r"\s+", "", message)
+    if any(word in compact for word in ('요청자', '요청부서', '대체품', '외부')):
+        return False
+    return any(word in compact for word in ("결정대기", "결정할작업", "선택대기", "내할일")) or (
+        personal_scope(message) == "actionable" and any(word in compact for word in ("처리할", "해야할", "할일", "결정", "확인할", "선택할")))
+
+
+def ambiguous_personal_approval(message: str) -> bool:
+    compact = re.sub(r"\s+", "", message).casefold()
+    if requests_mutation(message) or any(word in compact for word in ("po", "발주승인", "mr승인", "요청승인", "결재", "어떻게", "방법", "버튼", "어디")):
+        return False
+    return personal_scope(message) == "actionable" and "승인" in compact
+
+
+def requests_mutation(message: str) -> bool:
+    # '승인해야 하는 작업' is a query, not the imperative '승인해 줘'.
+    return bool(re.search(r'(?:시작|승인|반려|발송|삭제|진행)\s*해\s*(?:줘|주세요|주실|줄래|줄\s*수|[.!?]*$)|보내\s*줘', message))
+
+
+def needs_buyer_action(row: dict) -> bool:
+    stage, status = str(row.get('stage') or '').upper(), str(row.get('status') or '').upper()
+    if status in {'COMPLETED', 'CANCELLED', 'REJECTED'}:
+        return False
+    if auto_progress_blockers(row):
+        return True
+    if status == 'FAILED' or stage in {'HUMAN_REVIEW', 'PO_CREATION_FAILED', 'PR_REJECTED', 'SCORECARD'}:
+        return True
+    return stage in WAITING_STAGES['decision'] and status in {'WAITING_INPUT', 'AWAITING_MR_REVIEW'}
 
 
 def explicit_item_prefix(message: str) -> str | None:
     """Conservative offline fallback for '<item> 구매 작업 ...' questions."""
     match = re.match(r"^(.+?)\s+(?:구매\s*(?:작업|요청|건)|관련\s*MR)", message, re.I)
-    return match.group(1).strip() if match else None
+    value = match.group(1).strip() if match else None
+    if value and any(word in value for word in ('처음', '검색했던', '돌아가', '그중', '내 담당', '내가', '제가', '조건', '승인', '첨부', '완료', '진행', '대기', '납기', '마감')):
+        return None
+    return value
 
 
 def business_today():

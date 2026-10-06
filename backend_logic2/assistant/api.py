@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 
 from auth_service.dependencies import CurrentUser
 
-from .models import AssistantCapabilities, AssistantMessageRequest, AssistantMessageResponse, AssistantSessionCreate, DialogueContext, ConversationMessage
+from .models import AssistantCapabilities, AssistantMessageRequest, AssistantMessageResponse, AssistantSessionCreate, ConversationMessage
 from .service import assistant_enabled, get_assistant_service, actor_id
 from .session_store import AssistantSessionStore, SessionNotFound, SessionConflict
 
@@ -75,6 +75,9 @@ def capabilities(current_user: CurrentUser) -> AssistantCapabilities:
             "MR 현재 단계와 다음 행동 안내",
             "같은 대화의 조건 좁히기와 목록 이어보기",
             "조회 목록의 순서로 MR 선택",
+            "담당 업무와 직접 결정할 업무 구분",
+            "모호한 요청 확인 질문과 선택지",
+            "최근 8턴 기억과 이전 대화 의도 요약",
         ],
     )
 
@@ -101,10 +104,11 @@ def create_message(
         if body.session_version is not None and body.session_version != session["version"]:
             raise SessionConflict("다른 탭에서 대화가 변경되었습니다. 세션 목록에서 다시 열어 주세요.")
         # Ignore browser-provided conversation/context once a persisted session is selected.
+        from .memory import restore_memory
         request = body.model_copy(update={
-            "dialogue": DialogueContext.model_validate(session["dialogue"]) if session["dialogue"] else None,
+            "dialogue": restore_memory(session),
             "conversation": [ConversationMessage(role="user", content=m["text"][:3000])
-                             for m in session["messages"] if m["sender"] == "user"][-6:],
+                             for m in session["messages"] if m["sender"] == "user"][-8:],
         })
         response = get_assistant_service().answer(request, current_user=current_user)
         version = session["version"]

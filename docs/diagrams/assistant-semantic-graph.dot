@@ -1,0 +1,35 @@
+// Render: dot -Tpng -Gdpi=150 assistant-semantic-graph.dot -o assistant-semantic-graph.png
+digraph Assistant {
+  graph [rankdir=TB, bgcolor=white, pad=0.4, nodesep=0.6, ranksep=0.48, fontname="Malgun Gothic", fontsize=25,
+    label="BiddingFlow  |  의미 기반 읽기 전용 챗봇", labelloc=t];
+  node [shape=box, style="rounded,filled", fillcolor=white, color="#C4C7CE", penwidth=1.4,
+    fontname="Malgun Gothic", fontsize=17, margin="0.25,0.17"];
+  edge [fontname="Malgun Gothic", fontsize=12, color="#41414A", penwidth=1.4, arrowsize=0.75];
+  start [label="로그인 · 세션 소유권 확인\nDB에서 대화 기억 복원", fillcolor="#18181B", fontcolor=white];
+  subgraph cluster_graph {
+    label="챗봇 전용 LangGraph  ·  구매 실행 그래프와 분리"; labeljust=l; fontsize=17;
+    color="#D4D4D8"; fontcolor="#52525B"; style=rounded; margin=24;
+    context [label="문맥 해석\nresolve_context\n\n확인 질문의 선택지 · MR 지칭\n이전 목록의 조건 · 다음 페이지"];
+    plan [label="의도 이해 · 기능 선택 · 검증\nplan_and_validate\n\nGPT-5.6 Luna / medium\n8종 기능 + 27개 화면 기능사전\n최근 8턴 + 이전 의도 요약"];
+    clarify [label="애매하면 확인 질문\nclarify\n\n정식 결재만? 결정 업무 전체?\n원래 질문의 건수·조건 유지", fillcolor="#F4F4F5"];
+    read [label="권한 범위에서 구매 조회\nauthorized_read\n\n조회 가능 / 내 담당 / 내 결정 구분\n구매 DB 읽기 전용 어댑터\nPO 권한은 기존 서버 판정 재사용"];
+    guide [label="화면 · 사용법 검색\nguide_lookup\n\n검증된 feature_id 선택\n기능사전 + SQLite 도움말\n승인·발송은 실행하지 않음"];
+    answer [label="근거 기반 응답\ngrounded_response\n\n건수·상태는 조회 결과로만 답변\n사용법과 안전한 바로가기\n조회 실패와 0건을 구분"];
+    memory [label="8턴 기억 · 이전 의도 압축\nremember_context\n\n오래된 검색 목적·조건을 로컬 요약\n구매 결과·권한은 기억으로 대체하지 않음\n대화 원문 보관과 작업 기억을 분리"];
+    context -> plan;
+    context -> clarify [label="의미·대상 불명확"];
+    plan -> clarify [label="낮은 확신 / 미지원 조건"];
+    plan -> read [label="검색 · 건수 · 상세 · 내 업무"];
+    plan -> guide [label="기능 위치 · 사용법"];
+    {rank=same; read; guide;}
+    read -> answer;
+    guide -> answer;
+    answer -> memory;
+    clarify -> memory;
+  }
+  start -> context;
+  finish [label="내 세션에 저장 · 응답 표시\n\n세션 버전 일치 시에만 대화 DB 갱신\n삭제된 세션은 늦은 응답으로 복원하지 않음", fillcolor="#18181B", fontcolor=white];
+  memory -> finish;
+  guard [shape=plaintext, fontsize=14, fontcolor="#52525B", label="승인·발송·반려·구매 삭제 도구 없음\n구매 체크포인트·전역 잠금·스케줄러 사용 없음\n모델에 구매 카드·가격·상태를 재전송하지 않음"];
+  finish -> guard [style=invis];
+}

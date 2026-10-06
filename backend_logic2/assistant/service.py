@@ -25,6 +25,7 @@ from .models import (
     HelpMatch,
     ModelAnswer,
     DialogueContext,
+    PendingClarification,
 )
 from .ports import (
     AssistantModelPort,
@@ -33,12 +34,13 @@ from .ports import (
     ProcurementFreshnessPort,
     ProcurementQueryPort,
 )
-from .query_routing import waiting_group, item_keyword, asks_for_count, explicit_item_prefix, due_window, due_item_keyword, business_today
+from .query_routing import waiting_group, item_keyword, asks_for_count, explicit_item_prefix, due_window, due_item_keyword, business_today, personal_scope, decision_question, requests_mutation
+from .capabilities import normalize_capability
+from .memory import planner_memory
 from datetime import timedelta
 
 
 MR_PATTERN = re.compile(r"\bMAT-MR-[0-9]{4}-[0-9]+\b", re.IGNORECASE)
-ACTION_WORDS = ("시작해", "승인해", "반려해", "발송해", "보내줘", "삭제해", "진행해")
 CASE_WORDS = ("mr", "구매 요청", "승인 대기", "납기", "견적 회신", "진행 중", "반려")
 HELP_WORDS = ("왜", "어떻게", "오류", "안 돼", "안돼", "실패", "설명", "사용법")
 # Only presentation context is added. This never changes workflow state or permissions.
@@ -86,11 +88,14 @@ def _heuristic_plan(message: str) -> AssistantPlan:
             filters=filters,
             require_freshness=any(word in lowered for word in ("erp", "최신", "방금", "갱신")),
         )
-    if any(word in lowered for word in ACTION_WORDS):
+    if requests_mutation(message):
         return AssistantPlan(intent="feature_guide", query=message)
     # A usage question mentioning MR/납기 is not a request to query live cases.
     if any(word in lowered for word in (*HELP_WORDS, "어디", "방법", "버튼")):
         return AssistantPlan(intent="help", query=message)
+    if decision_question(message):
+        return AssistantPlan(intent='case_query', capability='my_tasks', query=message,
+            filters=CaseQueryFilters(waiting_for='decision', task_scope=personal_scope(message) or 'visible', count_requested=asks_for_count(message)))
     group = waiting_group(message)
     if group:
         filters.waiting_for = group
@@ -173,8 +178,8 @@ class AssistantService:
             )
         try:
             result = self.graph.invoke(
-                {"request": request, "current_user": current_user},
-                config={"recursion_limit": 12},
+                {"request": request, "current_user": current_user, "original_message": request.message},
+                config={"recursion_limit": 16},
             )
             return result["response"]
         finally:
@@ -183,6 +188,8 @@ class AssistantService:
     def _plan_node(self, state):
         request = state["request"]
         message = request.message.strip()
+        if state.get('resolved_plan'):
+            return {'plan': normalize_capability(state['resolved_plan']), 'clarification': None}
         screen_question = (
             not MR_PATTERN.search(message)
             and any(word in message for word in ("현재 화면", "이 화면", "지금 화면"))
@@ -194,57 +201,101 @@ class AssistantService:
         help_candidates = self.help_knowledge.search(lookup_query, limit=4)
         # Assistant answers may contain private purchase facts. The planner
         # needs user utterances only; structured follow-ups are resolved locally.
-        recent = [entry.model_dump() for entry in request.conversation[-6:] if entry.role == "user"]
+        recent = [entry.model_dump() for entry in request.conversation[-16:] if entry.role == "user"][-8:]
+        if request.dialogue and request.dialogue.memory.recent:
+            recent = []  # Already represented with its paired interpretation.
         # Luna only produces a validated query plan here. It never receives a
         # database connection or a callable purchase-mutation tool.
-        deterministic_route = bool(MR_PATTERN.search(message) or screen_question or state.get("inherit")
-                                   or any(word in message.casefold() for word in ACTION_WORDS))
+        known_refinement = state.get('inherit') and (state.get('next_page') or waiting_group(message) or due_window(message) is not None or any(w in message for w in ('첨부', '완료', '반려', '취소', '실패')))
+        deterministic_route = bool(MR_PATTERN.search(message) or screen_question or known_refinement
+                                   or requests_mutation(message))
         plan = (None if deterministic_route else self.model.plan(
             message=message,
             context=request.context,
             recent_conversation=recent,
             feature_candidates=feature_candidates,
             help_candidates=help_candidates,
+            memory=planner_memory(request.dialogue),
+            feature_index=[{'id': f.id, 'title': f.title, 'purpose': f.summary, 'screen': f.target}
+                for f in getattr(self.feature_catalog, 'all', lambda: [])()],
         )) or _heuristic_plan(message)
+        plan = normalize_capability(plan)
+        if plan.intent == 'clarification' or (plan.confidence == 'low' and plan.intent != 'unsupported'):
+            question = plan.clarification_question or '어떤 작업을 찾으시나요? 구매 건 조회인지, 기능 사용법 안내인지 알려주세요.'
+            return {'plan': plan, 'clarification': question,
+                'pending': PendingClarification(original_message=message, question=question, choices=plan.choices, filters=plan.filters)}
         fallback_plan = _heuristic_plan(message)
         if MR_PATTERN.search(message):
             # An exact identifier must not be lost or combined with a guessed keyword.
             plan = fallback_plan
-        elif any(word in message.casefold() for word in ACTION_WORDS):
+        elif requests_mutation(message):
             plan = fallback_plan
-        elif fallback_plan.filters.waiting_for:
+        elif fallback_plan.filters.waiting_for and plan.filters.waiting_for != 'decision':
             plan.intent = "case_query"
+            plan.capability = None
             keyword = (due_item_keyword(plan.filters.keyword, message) if due_window(message) is not None
                        else item_keyword(plan.filters.keyword, message))
             plan.filters = fallback_plan.filters.model_copy(update={"keyword": keyword})
         elif fallback_plan.intent == "case_query" and due_window(message) is not None:
             # A missing LLM date constraint must not silently mean "all jobs".
             plan.intent = "case_query"
+            plan.capability = None
             plan.filters = fallback_plan.filters.model_copy(update={"keyword": due_item_keyword(plan.filters.keyword, message)})
         elif fallback_plan.filters.count_requested and plan.intent not in {"case_query", "case_status"}:
             plan = fallback_plan
-        elif fallback_plan.filters.keyword and plan.intent in {"case_query", "case_status"}:
+        elif fallback_plan.filters.keyword and not plan.filters.keyword and plan.intent in {"case_query", "case_status"}:
             plan.filters.keyword = fallback_plan.filters.keyword
         if screen_question:
             plan = AssistantPlan(intent="help", query=lookup_query)
+
+        if decision_question(message) and plan.intent in {'case_query', 'case_status'}:
+            plan.filters.waiting_for = 'decision'
+            plan.filters.stage = plan.filters.status = None
+            plan.filters.keyword = item_keyword(plan.filters.keyword, message)
+        scope = personal_scope(message)
+        if scope and plan.intent in {'case_query', 'case_status'}:
+            plan.filters.task_scope = scope
+        if plan.context_mode == 'refine' and plan.intent in {'case_query', 'case_status'} and not state.get('inherit'):
+            previous = request.dialogue.filters if request.dialogue else None
+            if previous is None and request.dialogue and request.dialogue.pending:
+                previous = request.dialogue.pending.filters
+            if previous is None:
+                return {'plan': plan, 'clarification': '어떤 목록을 기준으로 좁힐까요? 품목이나 작업 단계를 먼저 알려주세요.'}
+            merged = previous.model_copy(deep=True)
+            changes = plan.filters.model_dump(exclude_none=True, exclude_defaults=True)
+            changes.pop('offset', None)
+            if 'waiting_for' in changes:
+                merged.stage = merged.status = None
+            elif 'status' in changes or 'stage' in changes:
+                merged.waiting_for = None
+            for key in plan.clear_filters:
+                setattr(merged, key, None)
+            plan.filters = merged.model_copy(update={**changes, 'offset': 0})
 
         # Never allow the model to widen the closed-record boundary implicitly.
         lowered = message.casefold()
         if plan.filters.exact_reference:
             plan.filters.include_closed = True
-        elif plan.filters.include_closed and not any(
+        elif plan.filters.include_closed and plan.context_mode != 'refine' and not any(
             word in lowered for word in ("완료", "취소", "반려", "종료", "전체")
         ):
             plan.filters.include_closed = False
         if plan.filters.limit > 10:
             plan.filters.limit = 10
         if plan.intent in {"case_query", "case_status"}:
-            plan.filters.count_requested = asks_for_count(message)
+            plan.filters.count_requested = plan.filters.count_requested or asks_for_count(message)
             if not plan.filters.exact_reference and due_window(message) is not None:
                 plan.filters.due_within_days = due_window(message)
         from .graph import apply_context_filters, validate_plan
         plan = apply_context_filters(state, plan)
+        plan = normalize_capability(plan)
         error = validate_plan(plan)
+        if plan.feature_id:
+            selected = next((f for f in getattr(self.feature_catalog, 'all', lambda: [])() if f.id == plan.feature_id), None)
+            if selected is None:
+                error = '어떤 화면의 기능을 찾으시나요? MR 목록, 협력사 선정, PO 관리 중에서 알려주세요.'
+            elif plan.intent not in {'case_query', 'case_status'}:
+                plan.query = selected.title
         return {"plan": plan, "clarification": error}
 
     def _read_node(self, state):
@@ -277,6 +328,16 @@ class AssistantService:
             "freshness_attempted": freshness_attempted, "freshness_refreshed": freshness_refreshed,
         }
 
+    def _guide_node(self, state):
+        if state['plan'].intent == 'unsupported':
+            return {'records': [], 'query_available': True, 'freshness_attempted': False, 'freshness_refreshed': False,
+                'features': [], 'help_matches': []}
+        query = state['plan'].query or state['request'].message
+        selected = next((f for f in getattr(self.feature_catalog, 'all', lambda: [])() if f.id == state['plan'].feature_id), None)
+        return {'records': [], 'query_available': True, 'freshness_attempted': False, 'freshness_refreshed': False,
+            'features': [selected] if selected else self.feature_catalog.search(query, limit=3),
+            'help_matches': self.help_knowledge.search(query, limit=3)}
+
     def _respond_node(self, state):
         request, plan = state["request"], state["plan"]
         message = request.message.strip()
@@ -284,12 +345,12 @@ class AssistantService:
         query_available = state["query_available"]
         freshness_attempted = state["freshness_attempted"]
         freshness_refreshed = state["freshness_refreshed"]
-        features = self.feature_catalog.search(plan.query or message, limit=3)
-        help_matches = self.help_knowledge.search(plan.query or message, limit=3)
+        features = state.get('features', [])
+        help_matches = state.get('help_matches', [])
         # The model may phrase help, but must never turn real records into
         # "none" or invent counts. Case answers are grounded by construction.
         query_executed = plan.intent in {"case_query", "case_status"}
-        model_answer = None if not query_available or query_executed else self.model.compose(
+        model_answer = None if not query_available or query_executed or plan.intent == 'unsupported' else self.model.compose(
             message=message,
             context=request.context,
             plan=plan,
@@ -297,10 +358,14 @@ class AssistantService:
             features=features,
             help_matches=help_matches,
         )
+        if plan.intent == 'unsupported':
+            # Do not turn an unsupported live-data request into a fabricated
+            # answer merely because some vaguely related help was retrieved.
+            model_answer = ModelAnswer(answer='현재 챗봇은 구매 작업의 목록·건수·단계 조회와 화면 사용법 안내를 지원합니다. 요청하신 데이터는 여기서 직접 조회할 수 없습니다. 관련 화면에서 확인하는 방법을 안내해 드릴까요?', followups=['현재 화면 사용법 알려줘', '내가 결정할 작업 보여줘'])
         if model_answer:
             answer = model_answer.answer
             followups = model_answer.followups[:3]
-            source = "model"
+            source = "deterministic" if plan.intent == 'unsupported' else "model"
         else:
             fallback = (
                 ModelAnswer(
@@ -331,7 +396,7 @@ class AssistantService:
                 actions = [AssistantAction(label="구매 작업 확인", target=target)]
         else:
             actions = self._actions(
-                records, [] if plan.intent == "help" and help_matches else features, help_matches,
+                records, [] if plan.intent == "help" and help_matches and not plan.feature_id else features, help_matches,
             )
         has_more = getattr(records, "has_more", False)
         if query_executed and has_more:
@@ -355,6 +420,7 @@ class AssistantService:
                 "applied_filters": plan.filters.model_dump() if query_executed else None,
                 "has_more": has_more,
                 "graph": "read-only-assistant-v1",
+                "capability": plan.capability,
             },
             dialogue=(DialogueContext(
                 filters=plan.filters if query_executed else None,
@@ -370,6 +436,7 @@ class AssistantService:
         if plan.intent in {"case_query", "case_status"}:
             total_count = getattr(records, "total_count", None)
             date_scope = ""
+            scope_text = {'visible': '조회 가능한 담당 범위', 'assigned': '현재 계정에 배정된 작업', 'actionable': '현재 계정의 담당 범위·권한에서 직접 확인하거나 결정할 작업'}[plan.filters.task_scope]
             if plan.filters.due_within_days is not None:
                 today = business_today()
                 end = today + timedelta(days=plan.filters.due_within_days)
@@ -381,7 +448,7 @@ class AssistantService:
             if total_count is not None and records:
                 names = ', '.join(display_record(r) for r in records[:3])
                 return ModelAnswer(
-                    answer=(date_scope + f"조회 가능한 담당 범위에서 조건에 맞는 구매 작업은 총 {total_count}건입니다. "
+                    answer=(date_scope + f"{scope_text} 중 조건에 맞는 구매 작업은 총 {total_count}건입니다. "
                             f"{'완료·취소·반려를 포함한' if plan.filters.include_closed else '완료·취소·반려를 제외한'} 결과이며, "
                             f"{names}{' 등' if total_count > 3 else ''}이 있습니다. "
                             f"아래에 {len(records)}건을 표시합니다."),
@@ -392,8 +459,8 @@ class AssistantService:
                 clarification = ("여기서 승인 대기는 구매 요청 검토와 PO 최종 승인을 뜻하며, RFQ 대상 선택이나 외부 회신 대기는 별도입니다. "
                                  if group == "approval" else "")
                 return ModelAnswer(
-                    answer=(date_scope + "조회할 수 있는 담당 범위에서 조건에 맞는 구매 요청을 찾지 못했습니다. "
-                            + clarification + "완료·취소 항목을 찾는 경우에는 해당 상태를 함께 말씀해 주세요."),
+                    answer=(date_scope + f"{scope_text} 중 조건에 맞는 구매 작업은 0건입니다. "
+                            + clarification + ("품목명이나 조회 조건을 바꿔 다시 찾아볼 수 있습니다." if plan.filters.include_closed else "완료·취소 항목을 찾는 경우에는 해당 상태를 함께 말씀해 주세요.")),
                     followups=["승인 대기 중인 MR 보여줘", "MAT-MR 번호로 현재 단계 알려줘"],
                 )
             if len(records) == 1:

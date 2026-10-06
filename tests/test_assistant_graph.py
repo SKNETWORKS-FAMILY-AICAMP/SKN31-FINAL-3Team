@@ -160,11 +160,13 @@ def test_database_failure_preserves_context_and_does_not_say_zero():
     with patch(PATH, side_effect=RuntimeError('offline')):
         response = turn(service(), '그중 승인 대기만 보여줘', ctx)
     assert not response.meta['query_available']
-    assert response.dialogue == ctx
+    assert response.dialogue.filters == ctx.filters
+    assert response.dialogue.references == ctx.references
+    assert response.dialogue.memory.recent[-1].question == '그중 승인 대기만 보여줘'
     assert '찾지 못했습니다' not in response.answer
 
 
 def test_graph_has_no_cycles_checkpointer_or_purchase_nodes():
     graph = service().graph
     assert graph.checkpointer is None
-    assert set(graph.get_graph().nodes) == {'__start__', '__end__', 'resolve_context', 'plan_and_validate', 'authorized_read', 'grounded_response', 'clarify'}
+    assert set(graph.get_graph().nodes) == {'__start__', '__end__', 'resolve_context', 'plan_and_validate', 'authorized_read', 'grounded_response', 'clarify', 'guide_lookup', 'remember_context'}

@@ -51,6 +51,8 @@ class AssistantModelPort(Protocol):
         recent_conversation: list[dict[str, str]],
         feature_candidates: list[FeatureMatch],
         help_candidates: list[HelpMatch],
+        memory: dict | None = None,
+        feature_index: list[dict] | None = None,
     ) -> AssistantPlan | None: ...
 
     def compose(
