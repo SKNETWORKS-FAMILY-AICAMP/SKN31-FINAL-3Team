@@ -37,6 +37,7 @@ from .ports import (
 from .query_routing import waiting_group, item_keyword, asks_for_count, explicit_item_prefix, due_window, due_item_keyword, business_today, personal_scope, decision_question, requests_mutation
 from .capabilities import normalize_capability
 from .memory import planner_memory
+from .query_constraints import apply_explicit_conditions, merge_filters
 from datetime import timedelta
 
 
@@ -235,12 +236,15 @@ class AssistantService:
             plan.capability = None
             keyword = (due_item_keyword(plan.filters.keyword, message) if due_window(message) is not None
                        else item_keyword(plan.filters.keyword, message))
-            plan.filters = fallback_plan.filters.model_copy(update={"keyword": keyword})
+            plan.filters.keyword = keyword
+            plan.filters.waiting_for = fallback_plan.filters.waiting_for
+            plan.filters.stage = plan.filters.status = None
         elif fallback_plan.intent == "case_query" and due_window(message) is not None:
             # A missing LLM date constraint must not silently mean "all jobs".
             plan.intent = "case_query"
             plan.capability = None
-            plan.filters = fallback_plan.filters.model_copy(update={"keyword": due_item_keyword(plan.filters.keyword, message)})
+            plan.filters.keyword = due_item_keyword(plan.filters.keyword, message)
+            plan.filters.due_within_days = due_window(message)
         elif fallback_plan.filters.count_requested and plan.intent not in {"case_query", "case_status"}:
             plan = fallback_plan
         elif fallback_plan.filters.keyword and not plan.filters.keyword and plan.intent in {"case_query", "case_status"}:
@@ -261,16 +265,7 @@ class AssistantService:
                 previous = request.dialogue.pending.filters
             if previous is None:
                 return {'plan': plan, 'clarification': '어떤 목록을 기준으로 좁힐까요? 품목이나 작업 단계를 먼저 알려주세요.'}
-            merged = previous.model_copy(deep=True)
-            changes = plan.filters.model_dump(exclude_none=True, exclude_defaults=True)
-            changes.pop('offset', None)
-            if 'waiting_for' in changes:
-                merged.stage = merged.status = None
-            elif 'status' in changes or 'stage' in changes:
-                merged.waiting_for = None
-            for key in plan.clear_filters:
-                setattr(merged, key, None)
-            plan.filters = merged.model_copy(update={**changes, 'offset': 0})
+            plan.filters = merge_filters(previous, plan)
 
         # Never allow the model to widen the closed-record boundary implicitly.
         lowered = message.casefold()
@@ -288,6 +283,8 @@ class AssistantService:
                 plan.filters.due_within_days = due_window(message)
         from .graph import apply_context_filters, validate_plan
         plan = apply_context_filters(state, plan)
+        if plan.intent in {'case_query', 'case_status'}:
+            plan.filters = apply_explicit_conditions(plan.filters, message)
         plan = normalize_capability(plan)
         error = validate_plan(plan)
         if plan.feature_id:
@@ -378,6 +375,9 @@ class AssistantService:
             answer = fallback.answer
             followups = fallback.followups
             source = "deterministic"
+
+        if requests_mutation(state.get('original_message', message)):
+            answer = '저는 읽기 전용 챗봇이므로 승인·발송·삭제를 직접 실행하지 않았습니다. 실제 처리는 권한이 있는 담당자가 업무 화면에서 진행해 주세요. ' + answer
 
         # Navigation actions come from trusted catalog/record values, never
         # directly from free-form model output.

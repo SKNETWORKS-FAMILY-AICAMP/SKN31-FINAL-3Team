@@ -15,6 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from .models import AssistantMessageRequest, AssistantMessageResponse, AssistantPlan, CaseQueryFilters, DialogueContext, PendingClarification
 from .query_routing import asks_for_count, due_window, waiting_group, ambiguous_personal_approval, requests_mutation
 from .stage_presenter import STAGE_PRESENTATION, STATUS_LABELS
+from .query_constraints import merge_filters
 
 
 class AssistantState(TypedDict, total=False):
@@ -71,7 +72,8 @@ def resolve_context(state: AssistantState):
     if re.search(r"MAT-MR-\d{4}-\d+", message, re.I) or requests_mutation(message):
         return {"inherit": False}
     compact = re.sub(r"\s", "", message)
-    ordinal = re.search(r"(?:(\d+)(?:번째|번)|(?P<word>첫|두|세|네|다섯)번째)", compact)
+    ordinal_words = ['첫', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열', '열한', '열두']
+    ordinal = re.search(r"(?:(\d+)(?:번째|번)|(?P<word>" + '|'.join(sorted(ordinal_words, key=len, reverse=True)) + r")번째)", compact)
     referring = any(word in compact for word in ("이단계", "그단계", "이건", "그건", "이거", "그거", "해당건", "관련화면", "거기서", "그화면"))
     subset = any(word in compact for word in ("그중", "그중에서", "그가운데", "이중", "이목록", "방금조회"))
     next_page = bool(re.search(r"다음(?:10)?(?:건|개|페이지|목록)", compact))
@@ -81,7 +83,7 @@ def resolve_context(state: AssistantState):
     if ordinal or (referring and previous and previous.references and not subset):
         refs = previous.references if previous else []
         index = (int(ordinal.group(1)) - 1 if ordinal and ordinal.group(1)
-                 else ["첫", "두", "세", "네", "다섯"].index(ordinal.group("word")) if ordinal
+                 else ordinal_words.index(ordinal.group("word")) if ordinal
                  else 0 if len(refs) == 1 else -1)
         if not (0 <= index < len(refs)):
             return {"clarification": "어느 구매 건을 말씀하시는지 알려주세요. 방금 목록의 순서(예: 첫 번째 건)나 MAT-MR 번호를 적어 주세요."}
@@ -120,30 +122,10 @@ def apply_context_filters(state: AssistantState, plan: AssistantPlan) -> Assista
     filters.offset = previous.offset + previous.limit if state.get("next_page") else 0
     if not state.get("next_page"):
         # Merge semantic refinements too, not only the small offline vocabulary.
-        changes = plan.filters.model_dump(exclude_none=True, exclude_defaults=True)
-        changes.pop('offset', None)
-        if 'waiting_for' in changes:
-            filters.stage = filters.status = None
-        elif 'status' in changes or 'stage' in changes:
-            filters.waiting_for = None
-        for key in plan.clear_filters:
-            setattr(filters, key, None)
-        filters = filters.model_copy(update=changes)
-        # Explicit offline vocabulary is a guardrail on the semantic refinement.
-        group = waiting_group(message)
-        if group:
-            filters.waiting_for, filters.stage, filters.status = group, None, None
-        window = due_window(message)
-        if window is not None:
-            filters.due_within_days = window
-        if "첨부" in message:
-            filters.has_attachments = not any(word in message for word in ("없는", "없음", "없이"))
-        for word, status in (("완료", "COMPLETED"), ("취소", "CANCELLED"), ("반려", "REJECTED"), ("실패", "FAILED")):
-            if word in message:
-                filters.status, filters.waiting_for = status, None
-                filters.include_closed = True
+        filters = merge_filters(filters, plan)
     filters.count_requested = asks_for_count(message) or plan.filters.count_requested
-    return AssistantPlan(intent="case_query", query=message[:300], filters=filters)
+    # Preserve unsupported-condition and confidence metadata from the planner.
+    return plan.model_copy(update={'intent': 'case_query', 'capability': None, 'query': message[:300], 'filters': filters})
 
 
 def validate_plan(plan: AssistantPlan) -> str | None:

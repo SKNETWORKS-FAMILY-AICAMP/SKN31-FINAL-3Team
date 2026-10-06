@@ -20,6 +20,10 @@ WAITING_STAGES = {
 
 
 def waiting_group(message: str) -> str | None:
+    message = current_request_clause(message)
+    formal = formal_approval_group(message)
+    if formal:
+        return formal
     if decision_question(message):
         return 'decision'
     text = re.sub(r"\s+", "", message).casefold()
@@ -92,11 +96,32 @@ def matches_waiting(row: dict, group: str) -> bool:
 
 
 def asks_for_count(message: str) -> bool:
-    return bool(re.search(r"몇\s*(?:개|건)|개수|갯수|건수|총\s*얼마|얼마나\s*(?:남|있)", message))
+    return bool(re.search(r"몇\s*(?:개|건)|개수|갯수|건수|총\s*얼마|얼마나\s*(?:남|있)|세어\s*(?:줘|주|봐)|세\s*줘|집계", message))
+
+
+def current_request_clause(message: str) -> str:
+    """Ignore a rejected earlier clause when identifying the current actor/group.
+
+    Keep the original message for item extraction and explicit condition removal.
+    This is not authorization: the read adapter still checks the real actor.
+    """
+    return re.split(r"말고|아니라", message)[-1]
+
+
+def formal_approval_group(message: str) -> str | None:
+    compact = re.sub(r"\s+", "", current_request_clause(message)).casefold()
+    if any(word in compact for word in ('승인', '결재', '검토')):
+        if 'po' in compact or '발주승인' in compact or '발주결재' in compact:
+            return 'po_approval'
+        # '승인 대기 중인 MR' historically means cases awaiting either formal
+        # approval. Only an explicit MR-approval phrase narrows it to MR review.
+        if any(word in compact for word in ('mr승인', 'mr결재', 'mr검토', '요청승인', '요청검토')):
+            return 'mr_review'
+    return None
 
 
 def personal_scope(message: str) -> str | None:
-    compact = re.sub(r"\s+", "", message)
+    compact = re.sub(r"\s+", "", current_request_clause(message))
     if any(word in compact for word in ("내담당", "제가담당", "내게배정", "나한테배정")):
         return "assigned"
     if any(word in compact for word in ("내가", "제가", "내승인", "내결재", "내할일", "나한테")):
@@ -107,6 +132,9 @@ def personal_scope(message: str) -> str | None:
 
 
 def decision_question(message: str) -> bool:
+    message = current_request_clause(message)
+    if formal_approval_group(message):
+        return False
     compact = re.sub(r"\s+", "", message)
     if any(word in compact for word in ('요청자', '요청부서', '대체품', '외부')):
         return False
