@@ -222,6 +222,19 @@ class ProcessRfqReminderTest(unittest.TestCase):
         self.assertEqual(kwargs["recipients"], "buyer@daehan.example.com")
         self.assertIn(rr.REMINDER_SUBJECT_PREFIX, kwargs["subject"])
 
+    def test_reminder_is_sent_on_deadline_date(self):
+        comms = [sent_comm("2026-09-01 11:00:00", "buyer@daehan.example.com")]
+        results, mock_send = self._run(comms, now=datetime(2026, 9, 4, 15, 0, 0))
+        self.assertEqual(results[0]["action"], "sent")
+        mock_send.assert_called_once()
+
+    def test_no_reminder_after_deadline_date(self):
+        comms = [sent_comm("2026-09-01 11:00:00", "buyer@daehan.example.com")]
+        results, mock_send = self._run(comms, now=datetime(2026, 9, 5, 9, 0, 0))
+        self.assertEqual(results[0]["action"], "skipped_deadline_passed")
+        self.assertEqual(results[0]["deadline_date"].date(), datetime(2026, 9, 4).date())
+        mock_send.assert_not_called()
+
     def test_no_reminder_when_supplier_already_replied(self):
         comms = [
             sent_comm("2026-09-01 11:00:00", "buyer@daehan.example.com"),

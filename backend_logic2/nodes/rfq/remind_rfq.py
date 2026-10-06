@@ -366,7 +366,8 @@ def process_rfq_reminder(rfq: dict, now: datetime | None = None) -> list:
 
     반환값: 공급사별 처리 결과 리스트. 각 항목의 "action"은 다음 중 하나:
         sent, skipped_no_email, skipped_not_sent_yet, skipped_replied,
-        skipped_not_due, skipped_already_reminded_today, error
+        skipped_not_due, skipped_deadline_passed,
+        skipped_already_reminded_today, error
     """
     now = now or datetime.now()
     rfq_name = rfq.get("name")
@@ -407,6 +408,16 @@ def process_rfq_reminder(rfq: dict, now: datetime | None = None) -> list:
             results.append(entry)
             continue
 
+        deadline_days = get_reply_deadline_days(supplier_name)
+        deadline_date = state["first_sent_at"] + timedelta(days=deadline_days)
+        # 독촉 메일은 회신 마감일 당일까지 보낸다. 마감 다음 날부터는
+        # 제출된 과거 RFQ가 스케줄러 조회 대상이어도 다시 발송하지 않는다.
+        if now.date() > deadline_date.date():
+            entry["action"] = "skipped_deadline_passed"
+            entry["deadline_date"] = deadline_date
+            results.append(entry)
+            continue
+
         # "다음날부터"는 정확히 24시간 경과가 아니라 달력 날짜 기준으로 판단.
         # 예: 9/1 23:50에 보냈어도 9/2가 되면(단 몇 분만 지나도) 독촉 대상.
         reminder_start_date = state["first_sent_at"].date() + timedelta(days=REMINDER_START_OFFSET_DAYS)
@@ -420,9 +431,6 @@ def process_rfq_reminder(rfq: dict, now: datetime | None = None) -> list:
             entry["action"] = "skipped_already_reminded_today"
             results.append(entry)
             continue
-
-        deadline_days = get_reply_deadline_days(supplier_name)
-        deadline_date = state["first_sent_at"] + timedelta(days=deadline_days)
 
         subject, content = build_reminder_email(
             rfq,
