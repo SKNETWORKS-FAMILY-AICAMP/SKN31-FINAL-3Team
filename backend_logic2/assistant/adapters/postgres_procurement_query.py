@@ -93,6 +93,7 @@ class PostgresProcurementQuery:
         due_until = today + timedelta(days=filters.due_within_days or 0)
         matched: list[dict[str, Any]] = []
         total_count = 0
+        has_more = False
         # Only canonical fields are filtered. User text is never interpolated
         # into SQL, and moving ERP-specific fields here remains unnecessary.
         def pages():
@@ -129,14 +130,19 @@ class PostgresProcurementQuery:
                 if schedule_date is None or not (today <= schedule_date <= due_until):
                     continue
             total_count += 1
+            if total_count <= filters.offset:
+                continue
             if len(matched) < filters.limit:
                 matched.append(row)
-            if len(matched) >= filters.limit and not filters.count_requested:
+            else:
+                has_more = True
+            if has_more and not filters.count_requested:
                 break
 
         return CaseQueryRecords(
             [self._record(row) for row in matched],
             total_count=total_count if filters.count_requested else None,
+            has_more=has_more,
         )
 
     @staticmethod

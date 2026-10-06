@@ -1,0 +1,48 @@
+// Render: dot -Tpng -Gdpi=160 assistant-readonly-graph.dot -o assistant-readonly-graph.png
+digraph Assistant {
+  graph [rankdir=LR, bgcolor="white", pad="0.45", nodesep="0.5", ranksep="0.65", fontname="Malgun Gothic", fontsize=25,
+    label="BiddingFlow  |  읽기 전용 챗봇 LangGraph\n", labelloc=t, compound=true];
+  node [shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#C5C8CE", penwidth=1.2, fontname="Malgun Gothic", fontsize=15, margin="0.22,0.17"];
+  edge [fontname="Malgun Gothic", fontsize=11, color="#464A51", arrowsize=0.7, penwidth=1.3];
+
+  ui [label="프론트 챗봇\n\n대화 안 → 세션 목록\n목록 화면 → 새 세션\n삭제는 확인 창에서 승인", fillcolor="#18181B", fontcolor="white", color="#18181B"];
+  auth [label="인증 · 세션 복원\n\n로그인 계정으로 소유권 확인\nDB의 대화 문맥 불러오기"];
+  ui -> auth [label="질문 + 세션 ID"];
+
+  subgraph cluster_graph {
+    label="챗봇 전용 StateGraph   ·   구매 그래프 / 체크포인트와 분리";
+    fontsize=17; fontcolor="#20242B"; color="#B8BEC8"; style=rounded; margin=24;
+    context [label="① 문맥 해석\nresolve_context\n\n‘그중’ → 조건 이어받기\n‘첫 번째’ → MR 선택\n‘다음 10건’ → 이어보기"];
+    plan [label="② 계획 · 검증\nplan_and_validate\n\nGPT-5.6 Luna / medium\n확실한 질문은 규칙으로 처리\n조건·단계·조회 범위 검증"];
+    read [label="③ 권한 내 읽기\nauthorized_read\n\n구매 건은 담당 범위로 재조회\n사용법은 기능사전·도움말\nDB 오류 ≠ 검색 결과 0건"];
+    answer [label="④ 근거 기반 응답\ngrounded_response\n\n조회 건수·단계는 코드로 응답\n사용법은 근거 문서로 설명\n허용된 화면만 바로가기"];
+    clarify [label="되묻기\nclarify\n\n대상·조건이 불분명하면\n조회하지 않고 질문", fillcolor="#F4F4F5"];
+    context -> plan [label="명확한 요청"];
+    context -> clarify [label="대상 불명확"];
+    plan -> read [label="검증 통과"];
+    plan -> clarify [label="지원하지 않는 조건"];
+    read -> answer;
+  }
+  auth -> context;
+  save [label="응답 · 문맥 저장\n\n세션 버전이 같을 때만 저장\n삭제된 세션은 복원하지 않음"];
+  answer -> save;
+  clarify -> save;
+  output [label="사용자에게 안내\n\n구매 목록 · 현재 단계\n다음 행동 · 화면 바로가기", fillcolor="#18181B", fontcolor=white, color="#18181B"];
+  save -> output;
+
+  chat [shape=cylinder, label="챗봇 전용 PostgreSQL\nprocurement.assistant_session\n\n계정별 대화·조건·버전 저장\n세션 삭제 시 대화 행 삭제", fillcolor="#F4F4F5"];
+  projection [shape=cylinder, label="구매 상태 읽기 모델\nPostgreSQL projection\n\n로그인 계정의 담당 범위만\n구매 데이터는 SELECT만", fillcolor="#F4F4F5"];
+  guides [shape=folder, label="기능사전 + 사용법\nJSON / SQLite FTS5\n\n화면 위치·절차·주의사항", fillcolor="#F4F4F5"];
+  auth -> chat [style=dashed, label="내 세션 읽기", constraint=false];
+  save -> chat [style=dashed, label="대화만 저장", constraint=false];
+  ui -> chat [style=dashed, label="세션 CRUD\n삭제 확인 후 DELETE", constraint=false];
+  read -> projection [style=dashed, label="읽기", constraint=false];
+  read -> guides [style=dashed, label="검색", constraint=false];
+  { rank=same; auth; chat; }
+  { rank=same; read; projection; guides; }
+  projection -> guides [style=invis];
+
+  guard [shape=note, style=filled, fillcolor="#FAFAFA", color="#D4D4D8", fontsize=13,
+    label="안전 경계\n승인·발송·반려·구매 삭제 도구 없음\nERPNext 직접 호출 / 구매 그래프 재개 없음\n체크포인터 없음 · 동시 처리 2개 / 프로세스\n실선: 처리 순서   점선: 데이터 접근"];
+  { rank=same; plan; guard; }
+}

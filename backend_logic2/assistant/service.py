@@ -7,6 +7,7 @@ import re
 import logging
 from functools import lru_cache
 from pathlib import Path
+from threading import BoundedSemaphore
 from typing import Any
 
 from .adapters.json_feature_catalog import JsonFeatureCatalog
@@ -23,6 +24,7 @@ from .models import (
     FeatureMatch,
     HelpMatch,
     ModelAnswer,
+    DialogueContext,
 )
 from .ports import (
     AssistantModelPort,
@@ -105,6 +107,16 @@ def _heuristic_plan(message: str) -> AssistantPlan:
         filters.keyword = explicit_item_prefix(message)
         filters.count_requested = True
         return AssistantPlan(intent="case_query", query=message, filters=filters)
+    if any(word in lowered for word in ("보여", "찾아", "목록", "조회")):
+        # Also usable during a model outage: product + purchase-list phrasing.
+        keyword = explicit_item_prefix(message)
+        if keyword or any(word in lowered for word in ("작업", "구매", "mr")):
+            filters.keyword = keyword
+            for word, status in (("완료", "COMPLETED"), ("반려", "REJECTED"), ("취소", "CANCELLED"), ("실패", "FAILED")):
+                if word in lowered:
+                    filters.status = status
+                    filters.include_closed = True
+            return AssistantPlan(intent="case_query", query=message, filters=filters)
     if any(word in lowered for word in CASE_WORDS):
         if "승인 대기" in lowered or "확인 대기" in lowered:
             filters.status = "WAITING_INPUT"
@@ -142,6 +154,10 @@ class AssistantService:
         self.procurement_query = procurement_query
         self.freshness = freshness
         self.model = model
+        # This graph owns no purchase checkpoint, graph lock, or ERP writer.
+        from .graph import build_assistant_graph
+        self.graph = build_assistant_graph(self)
+        self._slots = BoundedSemaphore(2)
 
     def answer(
         self,
@@ -149,6 +165,23 @@ class AssistantService:
         *,
         current_user: dict[str, Any],
     ) -> AssistantMessageResponse:
+        if not self._slots.acquire(blocking=False):
+            return AssistantMessageResponse(
+                answer="현재 안내 요청이 많습니다. 잠시 뒤 다시 질문해 주세요. 구매 업무 처리는 영향을 받지 않습니다.",
+                intent="general", dialogue=request.dialogue,
+                meta={"read_only": True, "busy": True, "query_executed": False},
+            )
+        try:
+            result = self.graph.invoke(
+                {"request": request, "current_user": current_user},
+                config={"recursion_limit": 12},
+            )
+            return result["response"]
+        finally:
+            self._slots.release()
+
+    def _plan_node(self, state):
+        request = state["request"]
         message = request.message.strip()
         screen_question = (
             not MR_PATTERN.search(message)
@@ -159,16 +192,20 @@ class AssistantService:
         # prompt compact and provides a deterministic fallback if Luna is down.
         feature_candidates = self.feature_catalog.search(lookup_query, limit=5)
         help_candidates = self.help_knowledge.search(lookup_query, limit=4)
-        recent = [entry.model_dump() for entry in request.conversation[-6:]]
+        # Assistant answers may contain private purchase facts. The planner
+        # needs user utterances only; structured follow-ups are resolved locally.
+        recent = [entry.model_dump() for entry in request.conversation[-6:] if entry.role == "user"]
         # Luna only produces a validated query plan here. It never receives a
         # database connection or a callable purchase-mutation tool.
-        plan = self.model.plan(
+        deterministic_route = bool(MR_PATTERN.search(message) or screen_question or state.get("inherit")
+                                   or any(word in message.casefold() for word in ACTION_WORDS))
+        plan = (None if deterministic_route else self.model.plan(
             message=message,
             context=request.context,
             recent_conversation=recent,
             feature_candidates=feature_candidates,
             help_candidates=help_candidates,
-        ) or _heuristic_plan(message)
+        )) or _heuristic_plan(message)
         fallback_plan = _heuristic_plan(message)
         if MR_PATTERN.search(message):
             # An exact identifier must not be lost or combined with a guessed keyword.
@@ -186,6 +223,8 @@ class AssistantService:
             plan.filters = fallback_plan.filters.model_copy(update={"keyword": due_item_keyword(plan.filters.keyword, message)})
         elif fallback_plan.filters.count_requested and plan.intent not in {"case_query", "case_status"}:
             plan = fallback_plan
+        elif fallback_plan.filters.keyword and plan.intent in {"case_query", "case_status"}:
+            plan.filters.keyword = fallback_plan.filters.keyword
         if screen_question:
             plan = AssistantPlan(intent="help", query=lookup_query)
 
@@ -203,8 +242,14 @@ class AssistantService:
             plan.filters.count_requested = asks_for_count(message)
             if not plan.filters.exact_reference and due_window(message) is not None:
                 plan.filters.due_within_days = due_window(message)
+        from .graph import apply_context_filters, validate_plan
+        plan = apply_context_filters(state, plan)
+        error = validate_plan(plan)
+        return {"plan": plan, "clarification": error}
 
-        actor = actor_id(current_user)
+    def _read_node(self, state):
+        plan = state["plan"]
+        actor = actor_id(state["current_user"])
         freshness_attempted = False
         freshness_refreshed = False
         if plan.require_freshness and plan.filters.exact_reference:
@@ -227,7 +272,18 @@ class AssistantService:
             except Exception:
                 LOGGER.exception("Assistant procurement projection query failed")
                 query_available = False
+        return {
+            "records": records, "query_available": query_available,
+            "freshness_attempted": freshness_attempted, "freshness_refreshed": freshness_refreshed,
+        }
 
+    def _respond_node(self, state):
+        request, plan = state["request"], state["plan"]
+        message = request.message.strip()
+        records = state["records"]
+        query_available = state["query_available"]
+        freshness_attempted = state["freshness_attempted"]
+        freshness_refreshed = state["freshness_refreshed"]
         features = self.feature_catalog.search(plan.query or message, limit=3)
         help_matches = self.help_knowledge.search(plan.query or message, limit=3)
         # The model may phrase help, but must never turn real records into
@@ -277,7 +333,10 @@ class AssistantService:
             actions = self._actions(
                 records, [] if plan.intent == "help" and help_matches else features, help_matches,
             )
-        return AssistantMessageResponse(
+        has_more = getattr(records, "has_more", False)
+        if query_executed and has_more:
+            followups = ["다음 10건 보여줘", *followups[:2]]
+        response = AssistantMessageResponse(
             answer=answer,
             intent=plan.intent,
             records=records,
@@ -294,8 +353,17 @@ class AssistantService:
                 "query_available": query_available,
                 "query_executed": query_executed,
                 "applied_filters": plan.filters.model_dump() if query_executed else None,
+                "has_more": has_more,
+                "graph": "read-only-assistant-v1",
             },
+            dialogue=(DialogueContext(
+                filters=plan.filters if query_executed else None,
+                references=[record.reference for record in records[:10]],
+                guide_query=(plan.query or message)[:300] if not query_executed else "",
+                guide_target=actions[0].target if not query_executed and actions else None,
+            ) if query_available else request.dialogue),
         )
+        return {"response": response}
 
     @staticmethod
     def _deterministic_answer(plan, records, features, help_matches) -> ModelAnswer:
@@ -333,7 +401,7 @@ class AssistantService:
                 return ModelAnswer(
                     answer=(
                         date_scope + f"{display_record(record)}은(는) 현재 ‘{record.stage_label}’ 단계입니다. "
-                        f"지금은 {record.waiting_on}의 처리를 기다리고 있으며, 다음 행동은 “{record.next_action}”입니다. "
+                        f"현재 상태는 ‘{record.status_label}’이며, 단계 안내는 “{record.next_action}”입니다. "
                         "아래 바로가기로 해당 업무 화면을 열 수 있습니다."
                     ),
                     followups=["이 단계에서 무엇을 확인해야 해?", "관련 화면으로 이동"],
@@ -367,7 +435,7 @@ class AssistantService:
     @staticmethod
     def _actions(records, features, help_matches) -> list[AssistantAction]:
         actions: list[AssistantAction] = []
-        for record in records[:5]:
+        for record in records[:10]:
             actions.append(
                 AssistantAction(
                     type="navigate_with_filters",

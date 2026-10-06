@@ -21,6 +21,9 @@ PLANNER_INSTRUCTIONS = """
 14. '몇 개/몇 건/개수/건수' 질문은 case_query와 count_requested=true입니다. 품목 표현만 keyword로 추출하고 '구매 작업', '몇개나 있지' 같은 문구는 제외합니다.
 15. 새 질문에 독립적인 품목이나 상태가 명시되면 이전 질문의 필터를 이어받지 않습니다. '그중', '이 중'처럼 명시적으로 조건을 좁힐 때만 이전 조건을 참고합니다.
 16. '납기가 가까운/납기 임박'은 기간을 말하지 않았다면 due_within_days=7입니다. 사용자가 N일 이내라고 명시하면 N을 적용합니다. 날짜 조건을 비워 전체 목록으로 대체하지 않습니다.
+17. 이 도구의 실시간 조회 대상은 로그인 계정이 볼 수 있는 구매 작업(MR 중심)입니다. 재고 수량, 협력사 연락처, 관리자 설정값 등을 조회했다고 꾸미지 말고 해당 화면의 기능 안내로 분류합니다.
+18. 구조화된 대화 문맥과 목록의 순서 해석은 서버가 담당합니다. 독립적인 새 질문에 최근 대화의 품목·MR 번호를 임의로 끼워 넣지 마세요.
+19. offset은 기본 0입니다. 사용자가 ‘다음 10건’처럼 이어보기를 요청한 경우에만 서버가 계산합니다.
 
 대표 stage: MR_REVIEW, ITEM_CHECK, SUBSTITUTE_DECISION, SUPPLIER_RECOMMENDATION,
 RFQ_TARGET_SELECTION, QUOTATION_COLLECTION, SUPPLIER_SELECTION, ORDER_START,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -35,6 +36,13 @@ class AssistantMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=3000)
     context: AssistantContext = Field(default_factory=AssistantContext)
     conversation: list[ConversationMessage] = Field(default_factory=list, max_length=8)
+    dialogue: DialogueContext | None = None
+    session_id: UUID | None = None
+    session_version: int | None = Field(default=None, ge=0)
+
+
+class AssistantSessionCreate(BaseModel):
+    id: UUID
 
 
 class CaseQueryFilters(BaseModel):
@@ -48,6 +56,19 @@ class CaseQueryFilters(BaseModel):
     has_attachments: bool | None = None
     include_closed: bool = False
     limit: int = Field(default=10, ge=1, le=20)
+    offset: int = Field(default=0, ge=0, le=1990)
+
+
+class DialogueContext(BaseModel):
+    """Untrusted browser context, never an authorization or cached case record."""
+
+    filters: CaseQueryFilters | None = None
+    references: list[str] = Field(default_factory=list, max_length=10)
+    guide_query: str = Field(default="", max_length=300)
+    guide_target: NavigationTarget | None = None
+
+
+AssistantMessageRequest.model_rebuild()
 
 
 class AssistantPlan(BaseModel):
@@ -63,9 +84,10 @@ class CaseQueryRecords(list):
     Remains list-compatible with query ports and test adapters. Never treat the
     display limit as the total number of matching purchases.
     """
-    def __init__(self, records, *, total_count: int | None = None):
+    def __init__(self, records, *, total_count: int | None = None, has_more: bool = False):
         super().__init__(records)
         self.total_count = total_count
+        self.has_more = has_more
 
 
 class AssistantAction(BaseModel):
@@ -124,6 +146,7 @@ class AssistantMessageResponse(BaseModel):
     source: Literal["model", "deterministic"] = "deterministic"
     model: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
+    dialogue: DialogueContext | None = None
 
 
 class AssistantCapabilities(BaseModel):
