@@ -57,9 +57,27 @@ def item_keyword(keyword: str | None, message: str) -> str | None:
     return " ".join(value.split()) or None
 
 
+def auto_progress_blockers(row: dict) -> list[dict]:
+    """Read the same stored verdict used by dashboardTasks, without rerunning it.
+
+    A quote-stage case can be waiting for a buyer's decision rather than a
+    supplier reply. Stage alone is not enough to classify that case as external.
+    Failed cases retain their failure meaning, as in the dashboard.
+    """
+    if str(row.get("status") or "").upper() == "FAILED":
+        return []
+    value = row.get("workflow_snapshot")
+    for key in ("values", "quotation_ranking_meta", "auto_progress"):
+        value = value.get(key) if isinstance(value, dict) else None
+    checks = value.get("checks") if isinstance(value, dict) else None
+    return [check for check in checks if isinstance(check, dict) and check.get("status") == "blocked"] if isinstance(checks, list) else []
+
+
 def matches_waiting(row: dict, group: str) -> bool:
     stage = str(row.get("stage") or "").upper()
     status = str(row.get("status") or "").upper()
+    if group == "external" and auto_progress_blockers(row):
+        return False
     # Delivery can remain RUNNING while waiting for an ERP receipt.
     return stage in WAITING_STAGES[group] and (
         status == "WAITING_INPUT"

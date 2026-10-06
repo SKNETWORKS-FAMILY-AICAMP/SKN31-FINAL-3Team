@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import NavigationTarget
+from .query_routing import auto_progress_blockers
 
 
 STAGE_PRESENTATION: dict[str, tuple[str, str, str, NavigationTarget]] = {
@@ -62,6 +63,11 @@ def summarize_case(row: dict[str, Any]) -> dict[str, str]:
     summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
     stage = str(row.get("stage") or "PROCESSING").upper()
     label, waiting_on, next_action, target = present_stage(stage)
+    blockers = auto_progress_blockers(row)
+    if blockers:
+        waiting_on = "구매 담당자"
+        reason = str(blockers[0].get("detail") or blockers[0].get("label") or "자동 진행 조건 미달")[:400]
+        next_action = f"자동 진행이 멈춰 담당자 확인이 필요합니다. {reason} 상세 화면에서 판정 근거와 가능한 조치를 확인하세요."
     item_name = str(
         summary.get("item_name")
         or row.get("item_name")
