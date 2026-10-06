@@ -1,6 +1,6 @@
 // Render: dot -Tpng -Gdpi=160 assistant-readonly-graph.dot -o assistant-readonly-graph.png
 digraph Assistant {
-  graph [rankdir=LR, bgcolor="white", pad="0.45", nodesep="0.5", ranksep="0.65", fontname="Malgun Gothic", fontsize=25,
+  graph [rankdir=LR, newrank=true, bgcolor="white", pad="0.45", nodesep="0.5", ranksep="0.65", fontname="Malgun Gothic", fontsize=25,
     label="BiddingFlow  |  읽기 전용 챗봇 LangGraph\n", labelloc=t, compound=true];
   node [shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#C5C8CE", penwidth=1.2, fontname="Malgun Gothic", fontsize=15, margin="0.22,0.17"];
   edge [fontname="Malgun Gothic", fontsize=11, color="#464A51", arrowsize=0.7, penwidth=1.3];
